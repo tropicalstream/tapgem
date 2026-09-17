@@ -28,7 +28,7 @@ object WidgetRefreshEngine {
     private const val TAG = "WidgetRefresh"
     private const val TICK_MS = 10_000L
     private const val GC_EVERY_MS = 30 * 60_000L
-    private const val NAV_TRACK_MS = 20_000L
+    private const val NAV_TRACK_MS = 8_000L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -66,7 +66,8 @@ object WidgetRefreshEngine {
     private suspend fun trackNavigation() {
         val navs = DesktopBridge.current().widgets.filter { it.type == WidgetType.MAP && it.state["nav"] == "on" && it.content.isNotBlank() }
         if (navs.isEmpty()) return
-        val fix = com.tapgem.app.core.location.LocationSource.current(appContext, allowIpFallback = false) ?: return
+        com.tapgem.app.core.location.LocationSource.keepPhoneStream(appContext)
+        val fix = com.tapgem.app.core.location.LocationSource.current(appContext, allowIpFallback = false, maxAgeMs = NAV_TRACK_MS) ?: return
         val pos = "%.6f,%.6f,%d".format(java.util.Locale.US, fix.lat, fix.lon, fix.accuracyM.toInt())
         navs.forEach { w ->
             val route = com.tapgem.app.core.network.Router.Route.fromJson(w.content) ?: return@forEach

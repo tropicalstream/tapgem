@@ -186,8 +186,12 @@ can then adjust ("a bit bigger", "move it down").
 - "Take me to Berkeley High School on foot." · "Drive me to SFO." → **TapGem's own turn-by-turn**: the route
   is drawn on the dark street map with the current step as a banner and the first step is read aloud.
   "Next step." · "Previous step." · "Repeat." · "Stop navigation."
-- "Where am I?" — the glasses have no GPS: position comes from nearby Wi-Fi (BeaconDB) or, failing that, your
-  internet connection, and it says how rough that is. A real fix moves the dot and advances steps by itself.
+- "Where am I?" — the glasses have no GPS chip, but **your phone's GPS is relayed to them**: pair the
+  glasses in the RayNeo app (Bluetooth on, RayNeo app location permission set to *Always / Precise*) and
+  TapGem receives the phone's real fix through RayNeo's own IPC — the same channel the built-in navigation
+  uses. Without the phone, position falls back to nearby Wi-Fi (BeaconDB) or your internet connection, and
+  TapGem says how rough that is. "Check phone GPS" reports what the launcher is sending. A real fix moves
+  the dot and advances steps by itself (every 8 s while navigating).
 - "Show me a simple map of Paris." (the clean tile map) · "Zoom in." · "Pan north." · "Recenter."
 
 **Tickers**
@@ -299,7 +303,8 @@ core/store/DesktopStore     files/desktops/<id>.json + .png (atomic writes)
 core/session            TapGemForegroundService + GeminiVoicePipeline (mic → Live → speaker, barge-in)
 core/network            GeminiLiveClient (WebSocket + tool declarations), GeminiRest (flash / image), Geocoder (Nominatim / IP),
                         Router (OSRM turn-by-turn), WebAdBlocker
-core/location           LocationSource: platform fix → last known → Wi-Fi (BeaconDB) → IP, cached and labelled
+core/location           LocationSource: phone GPS (RayNeo IPC) → platform fix → last known → Wi-Fi (BeaconDB) → IP, cached and labelled
+                        PhoneGps: RayNeo IPC SDK stream (GPSIPCHelper) + launcher one-shot, auto-released when idle
 core/tools              desktop · widget · web · theme · wallpaper · app_builder · media (+ Layout.arrange tiling)
 core/bridge/WebCommandBus   tool → live WebView commands, display capture
 core/live/WidgetRefreshEngine   "how often it updates"

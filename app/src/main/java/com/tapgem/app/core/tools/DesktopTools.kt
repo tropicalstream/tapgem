@@ -538,7 +538,12 @@ object WidgetOps {
         }
         DesktopBridge.setActive(id)
         val first = route.steps.firstOrNull()
-        val quality = when { from.isPrecise -> ""; else -> " Your position is only approximate (no GPS on the glasses), so the route starts from the nearest known area." }
+        val quality = when {
+            from.source == "phone" -> " Using your phone's GPS."
+            from.isPrecise -> ""
+            else -> " Your position is only approximate — connect your phone in the RayNeo app for real GPS; ${com.tapgem.app.core.location.PhoneGps.whyNot(context)}."
+        }
+        if (from.source == "phone") LocationSource.keepPhoneStream(context)
         Result.success("Navigation started to ${to.label}: ${Router.distance(route.distM)}, about ${Router.duration(route.durS)} $mode. " +
             (first?.let { "First: ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "") +
             " Say next step / previous step / stop navigation.$quality")
@@ -988,9 +993,17 @@ class DesktopTool(private val context: Context) : AiTool {
             }
             "locate", "where", "where_am_i", "location" -> {
                 val fix = LocationSource.current(context)
-                    ?: return@withContext Result.success("I can't determine your location right now — location services may be off or permission missing.")
+                    ?: return@withContext Result.success("I can't determine your location right now — ${com.tapgem.app.core.location.PhoneGps.whyNot(context)}.")
                 val label = Geocoder.reverse(fix.lat, fix.lon)
-                Result.success("You're ${LocationSource.describe(fix, label)}. Coordinates ${fix.latLon()}.")
+                val hint = if (fix.isPrecise) "" else " For a precise position, connect your phone in the RayNeo app (its GPS is relayed to the glasses)."
+                Result.success("You're ${LocationSource.describe(fix, label)}. Coordinates ${fix.latLon()}.$hint")
+            }
+            "phone_gps", "check_phone_gps", "gps_status" -> {
+                // Troubleshooting: ask the launcher for the phone stream and report what comes back.
+                val pg = com.tapgem.app.core.location.PhoneGps
+                val fix = pg.awaitFix(context, timeoutMs = 7_000L, maxAgeMs = 30_000L)
+                Result.success(if (fix != null) "Phone GPS is flowing: ${fix.latLon()}, about ${fix.accuracyM.toInt()} m."
+                    else "No phone GPS yet — ${pg.whyNot(context)}. Launcher status: ${pg.lastStatus} ${pg.lastStatusMessage ?: ""}; BLE link ${if (pg.isPhoneConnected(context)) "up" else "down"}.")
             }
             "screenshot", "capture", "snap" -> {
                 val bmp = WebCommandBus.capture() ?: return@withContext Result.failure(IllegalStateException("Couldn't capture the display."))

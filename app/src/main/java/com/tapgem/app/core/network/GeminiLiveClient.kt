@@ -373,8 +373,9 @@ class GeminiLiveClient(
                 "load: switch to a saved desktop by name. delete: remove a saved desktop by exact name. " +
                 "list: saved desktops. rename. set_mode: hud or desktop. undo: revert the last change. " +
                 "clear: remove all widgets. screenshot: save a picture of the display to the photo gallery. " +
-                "locate: where the glasses are right now (place name + coordinates).",
-            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|screenshot|locate",
+                "locate: where the glasses are right now (place name + coordinates). phone_gps: check whether " +
+                "the paired phone is streaming its GPS to the glasses (troubleshooting).",
+            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|screenshot|locate|phone_gps",
                 "name" to "Desktop name for new/save/load/delete/rename.",
                 "mode" to "set_mode: hud or desktop.",
                 "layout" to "arrange: grid (default) | columns | rows | cascade.",

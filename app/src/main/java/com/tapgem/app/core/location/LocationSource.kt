@@ -38,6 +38,7 @@ object LocationSource {
     private const val FRESH_MS = 2 * 60_000L
     private const val FIX_TIMEOUT_MS = 7_000L
     private const val LAST_KNOWN_MAX_AGE_MS = 15 * 60_000L
+    private const val PHONE_FIX_TIMEOUT_MS = 6_000L
 
     data class Fix(val lat: Double, val lon: Double, val accuracyM: Float, val source: String, val atMs: Long) {
         val isPrecise: Boolean get() = source != "ip"
@@ -52,12 +53,22 @@ object LocationSource {
 
     /** Best available position, or null if nothing at all could be determined. */
     suspend fun current(context: Context, allowIpFallback: Boolean = true, maxAgeMs: Long = FRESH_MS): Fix? = withContext(Dispatchers.IO) {
-        cached?.takeIf { SystemClock.elapsedRealtime() - it.atMs < maxAgeMs && (allowIpFallback || it.isPrecise) }?.let { return@withContext it }
         val app = context.applicationContext
+        // Tier 0 — the paired phone's real GPS through RayNeo's IPC (what the stock navigation uses).
+        // A fresh cached push, else the launcher's last fix, else start the stream and wait briefly.
+        PhoneGps.latest(maxAgeMs)?.let { cached = it; return@withContext it }
+        if (PhoneGps.isPhoneConnected(app)) {
+            PhoneGps.oneShot(app, maxAgeMs)?.let { cached = it; return@withContext it }
+            PhoneGps.awaitFix(app, timeoutMs = PHONE_FIX_TIMEOUT_MS, maxAgeMs = maxAgeMs)?.let { cached = it; return@withContext it }
+        } else runCatching { PhoneGps.oneShot(app, maxAgeMs) }.getOrNull()?.let { cached = it; return@withContext it }
+        cached?.takeIf { SystemClock.elapsedRealtime() - it.atMs < maxAgeMs && (allowIpFallback || it.isPrecise) }?.let { return@withContext it }
         val fix = platformFix(app) ?: lastKnown(app) ?: wifiFix(app)?.takeIf { allowIpFallback || it.isPrecise } ?: (if (allowIpFallback) ipFix() else null)
         if (fix != null) cached = fix
         fix
     }
+
+    /** Keep the phone stream alive (navigation): cheap to call repeatedly. */
+    fun keepPhoneStream(context: Context) = PhoneGps.ensureStreaming(context)
 
     private suspend fun platformFix(context: Context): Fix? {
         if (!hasPermission(context)) { Log.i(TAG, "no location permission — skipping platform fix"); return null }
@@ -145,6 +156,7 @@ object LocationSource {
     /** Human words for the fix: "near Downtown Oakland (Wi-Fi fix, ±40 m)". */
     fun describe(fix: Fix, placeLabel: String?): String {
         val how = when {
+            fix.source == "phone" -> "from your phone's GPS, about ${fix.accuracyM.toInt()} m"
             fix.source == "ip" -> "rough, from your internet connection"
             fix.source == "wifi" -> "from nearby Wi-Fi, about ${fix.accuracyM.toInt()} m"
             fix.source.startsWith("last") -> "recent fix, about ${fix.accuracyM.toInt()} m"
