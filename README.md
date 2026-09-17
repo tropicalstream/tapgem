@@ -185,7 +185,10 @@ can then adjust ("a bit bigger", "move it down").
   window, dark tiles; search and "ask Maps" questions go through the web tool)
 - "Take me to Berkeley High School on foot." · "Drive me to SFO." → **TapGem's own turn-by-turn**: the route
   is drawn on the dark street map with the current step as a banner and the first step is read aloud.
-  "Next step." · "Previous step." · "Repeat." · "Stop navigation."
+  "Next step." · "Previous step." · "Repeat." · "Stop navigation." There is **one navigation at a time**: a new
+  destination re-routes the same window; asking again for the same place just repeats the current step.
+  With phone GPS the step follows where you are on the route, and **two fixes off the line re-route
+  automatically** ("Off route — recalculating…", then the new first step).
 - "Where am I?" — the glasses have no GPS chip, but **your phone's GPS is relayed to them**: pair the
   glasses in the RayNeo app (Bluetooth on, RayNeo app location permission set to *Always / Precise*) and
   TapGem receives the phone's real fix through RayNeo's own IPC — the same channel the built-in navigation
@@ -222,7 +225,8 @@ adb -s <X3_SERIAL> push Alice.epub /sdcard/Android/data/com.tapgem.app/files/med
 access is granted, see Permissions.)
 
 **Look**
-- "Give it a neon theme." (presets: midnight, neon, paper, forest, sunset, mono, ocean)
+- "Give it a neon theme." (presets: midnight, neon, paper, forest, sunset, mono, ocean, **wood** — dark walnut
+  grain drawn procedurally, brass accents)
 - "Make the accent orange and the panels darker." · "Bigger text everywhere."
 - "Paint a wallpaper of a calm night sky over a misty pine forest." (switches to desktop mode)
 - "Set the background to a purple-to-black gradient." · "Clear the wallpaper."

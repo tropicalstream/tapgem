@@ -438,7 +438,8 @@ class GeminiLiveClient(
                 "amount" to "scroll: pixels (default 300).",
                 "url" to "url: address to open.")))
         .put(decl("theme",
-            "Set the look of all widgets. Presets: midnight, neon, paper, forest, sunset, mono, ocean; " +
+            "Set the look of all widgets. Presets: midnight, neon, paper, forest, sunset, mono, ocean, wood (dark " +
+                "walnut grain with brass accents); " +
                 "or custom accent/panel/text colors, font_scale, corner_radius.",
             mapOf("action" to "set|list", "name" to "Preset name.",
                 "accent" to "Hex/name.", "panel" to "Panel background hex/name (can include alpha).",

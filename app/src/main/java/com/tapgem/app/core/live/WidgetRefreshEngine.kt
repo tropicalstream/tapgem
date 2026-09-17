@@ -72,13 +72,49 @@ object WidgetRefreshEngine {
         navs.forEach { w ->
             val route = com.tapgem.app.core.network.Router.Route.fromJson(w.content) ?: return@forEach
             val step = w.state["step"]?.toIntOrNull() ?: 0
-            var next = step
-            if (fix.isPrecise && fix.accuracyM < 80f) {
-                val target = route.steps.getOrNull(step + 1)
-                if (target != null && com.tapgem.app.core.network.Router.distanceM(fix.lat, fix.lon, target.lat, target.lon) < 30.0) next = step + 1
+            val offCount = w.state["offRoute"]?.toIntOrNull() ?: 0
+            if (!fix.isPrecise || fix.accuracyM >= 80f) {
+                DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source) }
+                return@forEach
             }
-            DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source, "step" to next.toString()) }
+            val toDest = com.tapgem.app.core.network.Router.distanceM(fix.lat, fix.lon, route.destLat, route.destLon)
+            val offBy = route.distanceToRoute(fix.lat, fix.lon)
+            val tolerance = maxOf(40.0, 2.0 * fix.accuracyM)
+            when {
+                toDest < 30.0 -> DesktopBridge.mutateWidget(w.id, pushUndo = false) {
+                    it.withState("pos" to pos, "posSrc" to fix.source, "step" to (route.steps.size - 1).toString(), "offRoute" to "")
+                }
+                offBy > tolerance -> {
+                    // Two consecutive fixes off the line: recompute from where the traveller actually is.
+                    if (offCount + 1 >= 2) reroute(w, fix, route, pos)
+                    else DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source, "offRoute" to (offCount + 1).toString()) }
+                }
+                else -> {
+                    val at = route.stepIndexNear(fix.lat, fix.lon)
+                    // Never jump backwards because of GPS jitter; do follow forward progress.
+                    val next = if (at >= step) at else step
+                    DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source, "step" to next.toString(), "offRoute" to "") }
+                }
+            }
         }
+    }
+
+    private fun reroute(w: Widget, fix: com.tapgem.app.core.location.LocationSource.Fix, old: com.tapgem.app.core.network.Router.Route, pos: String) {
+        val mode = w.state["mode"] ?: old.mode
+        com.tapgem.app.core.bridge.HudStateBridge.notice("Off route — recalculating…")
+        val fresh = com.tapgem.app.core.network.Router.route(fix.lat, fix.lon, old.destLat, old.destLon, mode, old.dest)
+        if (fresh == null) {
+            Log.w(TAG, "reroute failed; keeping the old route")
+            DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source, "offRoute" to "1") }
+            return
+        }
+        Log.i(TAG, "rerouted to ${old.dest}: ${com.tapgem.app.core.network.Router.distance(fresh.distM)}")
+        DesktopBridge.mutateWidget(w.id, pushUndo = false) {
+            it.copy(content = fresh.toJson().toString(), updatedAt = System.currentTimeMillis())
+                .withState("pos" to pos, "posSrc" to fix.source, "step" to "0", "offRoute" to "", "rerouted" to System.currentTimeMillis().toString())
+        }
+        val first = fresh.steps.firstOrNull()
+        com.tapgem.app.core.bridge.HudStateBridge.notice("New route: ${first?.text ?: ""} · ${com.tapgem.app.core.network.Router.distance(fresh.distM)} left")
     }
 
     private fun dueAfterMs(w: Widget): Long {

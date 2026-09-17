@@ -393,12 +393,28 @@ class WidgetView(context: Context) : FrameLayout(context) {
         }
     }
 
+    private var texturedBg: TexturedPanelDrawable? = null
+    private var texturedName: String? = null
+
     private fun applyStyle() {
         val base = widget.style.bgColor ?: theme.panel
-        bg.shape = GradientDrawable.RECTANGLE
-        bg.cornerRadius = (widget.style.cornerRadius ?: theme.corner).toFloat()
-        bg.setColor(base)
-        bg.setStroke(if (active) 2 else 1, ColorUtil.withAlpha(theme.accent, if (active) 1f else 0.55f))
+        val corner = (widget.style.cornerRadius ?: theme.corner).toFloat()
+        val strokeW = if (active) 2f else 1f
+        val strokeC = ColorUtil.withAlpha(theme.accent, if (active) 1f else 0.55f)
+        val tile = if (widget.style.bgColor == null) PanelTextures.tile(theme.texture) else null
+        if (tile != null) {
+            val d = texturedBg?.takeIf { texturedName == theme.texture } ?: TexturedPanelDrawable(tile).also { texturedBg = it; texturedName = theme.texture }
+            d.cornerRadius = corner
+            d.tintColor = 0                          // the grain is the colour; a custom bg_color switches back to flat
+            d.setStroke(strokeW, strokeC)
+            if (background !== d) background = d
+        } else {
+            bg.shape = GradientDrawable.RECTANGLE
+            bg.cornerRadius = corner
+            bg.setColor(base)
+            bg.setStroke(strokeW.toInt(), strokeC)
+            if (background !== bg) background = bg
+        }
         alpha = widget.style.opacity
     }
 

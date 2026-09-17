@@ -506,6 +506,17 @@ object WidgetOps {
             when { it.startsWith("walk") || it.startsWith("foot") -> "walking"; it.startsWith("bik") || it.startsWith("cycl") -> "bicycling"
                 it.startsWith("driv") || it.startsWith("car") -> "driving"; else -> "walking" }
         } ?: "walking"
+        // One navigation at a time — and the model likes to repeat itself: an identical, fresh
+        // request just re-reads the current instruction instead of routing again.
+        val navWidget = existingId?.let { DesktopBridge.current().widget(it) }
+            ?: DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.MAP && (it.state["navMap"] == "1" || it.state["nav"] == "on" || it.state.containsKey("mode") || it.title.startsWith("→ ")) }
+        if (navWidget != null && navWidget.state["nav"] == "on" && navWidget.state["dest"].equals(dest, ignoreCase = true)
+            && System.currentTimeMillis() - navWidget.updatedAt < 120_000L) {
+            val r = Router.Route.fromJson(navWidget.content)
+            val st = r?.steps?.getOrNull(navWidget.state["step"]?.toIntOrNull() ?: 0)
+            DesktopBridge.setActive(navWidget.id)
+            return@withContext Result.success("Already navigating to ${r?.dest ?: dest}${st?.let { ": ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}" } ?: ""}.")
+        }
         HudStateBridge.notice("Finding $dest…")
         val to = Geocoder.lookup(dest) ?: return@withContext Result.failure(IllegalStateException("I couldn't find a place called \"$dest\"."))
         val from = LocationSource.current(context) ?: return@withContext Result.failure(IllegalStateException("I can't tell where you are right now, so I can't route from here."))
@@ -515,11 +526,11 @@ object WidgetOps {
         HudStateBridge.notice(null)
         val json = route.toJson().toString()
         val source = "geo:%.6f,%.6f?q=%s".format(Locale.US, to.lat, to.lon, URLEncoder.encode(to.label, "UTF-8"))
-        val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode,
+        val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode, "dest" to dest, "navMap" to "1",
             "pos" to "%.6f,%.6f,%d".format(Locale.US, from.lat, from.lon, from.accuracyM.toInt()), "posSrc" to from.source)
         val title = "→ ${to.label.take(26)}"
-        // One navigation at a time: a second "take me to…" (or the model repeating itself) re-routes the existing map.
-        var id = existingId ?: DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.MAP && it.state["nav"] == "on" }?.id
+        // One navigation window per desktop: a new destination re-routes the existing map (even a stopped one).
+        var id = navWidget?.id
         if (id != null && DesktopBridge.current().widget(id) != null) {
             DesktopBridge.mutateWidget(id) { w -> w.copy(type = WidgetType.MAP, title = title, source = source, content = json, state = state, updatedAt = System.currentTimeMillis()) }
         } else {
@@ -841,7 +852,7 @@ class WidgetTool(private val context: Context) : AiTool {
                 val step = w.state["step"]?.toIntOrNull() ?: 0
                 if (route != null && nav in setOf("next", "next_step", "forward", "prev", "previous", "back", "previous_step", "stop", "end", "cancel", "stop_navigation", "repeat", "current", "first", "start")) {
                     return when (nav) {
-                        "stop", "end", "cancel", "stop_navigation" -> { DesktopBridge.mutateWidget(w.id) { it.copy(content = "", title = it.title.removePrefix("→ ")).withState("nav" to "", "step" to "", "pos" to "", "zoom" to "15") }; Result.success("Navigation stopped.") }
+                        "stop", "end", "cancel", "stop_navigation" -> { DesktopBridge.mutateWidget(w.id) { it.copy(content = "", title = it.title.removePrefix("→ ")).withState("nav" to "", "step" to "", "pos" to "", "offRoute" to "", "zoom" to "15") }; Result.success("Navigation stopped.") }
                         "start", "first" -> { DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to "0") }; Result.success("Back to the first step: ${route.steps.firstOrNull()?.text}.") }
                         "repeat", "current" -> Result.success(route.steps.getOrNull(step)?.let { "${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "No current step.")
                         "prev", "previous", "back", "previous_step" -> { val n = (step - 1).coerceAtLeast(0); DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to n.toString()) }; Result.success("Step ${n + 1}: ${route.steps[n].text}.") }
@@ -1047,7 +1058,8 @@ class ThemeTool : AiTool {
                     panel = ColorUtil.parse(args.str("panel", "panel_color", "background", "bg_color")) ?: base.panel,
                     text = ColorUtil.parse(args.str("text_color", "text")) ?: base.text,
                     fontScale = args.float("font_scale", "text_scale")?.coerceIn(0.6f, 2.2f) ?: base.fontScale,
-                    corner = args.int("corner_radius", "corner") ?: base.corner
+                    corner = args.int("corner_radius", "corner") ?: base.corner,
+                    texture = args.str("texture")?.lowercase(Locale.US)?.let { if (it in setOf("none", "flat", "off")) null else it } ?: base.texture
                 )
                 if (preset == null && t == cur && unknown.isNotEmpty())
                     return Result.success("I don't know the colour${if (unknown.size > 1) "s" else ""} ${unknown.joinToString(", ") { "\"$it\"" }} — try a hex code or a common colour name. Presets: ${Themes.ALL.joinToString(", ") { it.name }}.")

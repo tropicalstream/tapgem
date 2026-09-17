@@ -240,11 +240,14 @@ data class Theme(
     val panel: Int,
     val text: Int,
     val fontScale: Float = 1f,
-    val corner: Int = 10
+    val corner: Int = 10,
+    /** Procedural panel texture name ("wood"), or null for a flat panel colour. */
+    val texture: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("name", name).put("accent", ColorUtil.hex(accent)).put("panel", ColorUtil.hex(panel))
         .put("text", ColorUtil.hex(text)).put("fontScale", fontScale.toDouble()).put("corner", corner)
+        .put("texture", texture ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(o: JSONObject?): Theme {
@@ -256,7 +259,8 @@ data class Theme(
                 panel = ColorUtil.parse(o.optString("panel")) ?: base.panel,
                 text = ColorUtil.parse(o.optString("text")) ?: base.text,
                 fontScale = o.optDouble("fontScale", base.fontScale.toDouble()).toFloat().coerceIn(0.6f, 2.2f),
-                corner = o.optInt("corner", base.corner)
+                corner = o.optInt("corner", base.corner),
+                texture = if (o.has("texture") && !o.isNull("texture")) o.optString("texture").takeIf { it.isNotBlank() } else base.texture
             )
         }
     }
@@ -273,8 +277,10 @@ object Themes {
     val SUNSET = Theme("sunset", 0xFFFFB347.toInt(), 0xCC2A0F14.toInt(), 0xFFFFE9D6.toInt(), 1f, 14)
     val MONO = Theme("mono", 0xFFFFFFFF.toInt(), 0xCC101010.toInt(), 0xFFF2F2F2.toInt(), 1f, 4)
     val OCEAN = Theme("ocean", 0xFF5E5CE6.toInt(), 0xCC061428.toInt(), 0xFFD9ECFF.toInt(), 1f, 12)
+    /** Dark walnut panels with a brass accent and cream text — the grain is drawn procedurally. */
+    val WOOD = Theme("wood", 0xFFD9A066.toInt(), 0xFF2B1A10.toInt(), 0xFFF3E6CF.toInt(), 1f, 8, texture = "wood")
     val DEFAULT = MIDNIGHT
-    val ALL = listOf(MIDNIGHT, NEON, PAPER, FOREST, SUNSET, MONO, OCEAN)
+    val ALL = listOf(MIDNIGHT, NEON, PAPER, FOREST, SUNSET, MONO, OCEAN, WOOD)
     fun byName(n: String?): Theme? {
         val k = n?.trim()?.lowercase(Locale.US) ?: return null
         return ALL.firstOrNull { it.name == k } ?: ALL.firstOrNull { k.contains(it.name) }

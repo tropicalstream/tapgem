@@ -21,6 +21,49 @@ object Router {
 
     class Step(val lat: Double, val lon: Double, val text: String, val distM: Double, val durS: Double)
     class Route(val coords: List<DoubleArray>, val steps: List<Step>, val distM: Double, val durS: Double, val mode: String, val dest: String) {
+        val destLat: Double get() = coords.last()[1]
+        val destLon: Double get() = coords.last()[0]
+
+        /** Polyline index nearest to each step's manoeuvre point (lazy). */
+        private val stepIdx: List<Int> by lazy { steps.map { st -> nearestCoordIndex(st.lat, st.lon) } }
+
+        fun nearestCoordIndex(lat: Double, lon: Double): Int {
+            var best = 0; var bd = Double.MAX_VALUE
+            for (i in coords.indices) { val d = distanceM(lat, lon, coords[i][1], coords[i][0]); if (d < bd) { bd = d; best = i } }
+            return best
+        }
+
+        /** Shortest distance from a position to the route line, in metres. */
+        fun distanceToRoute(lat: Double, lon: Double): Double {
+            if (coords.size < 2) return distanceM(lat, lon, destLat, destLon)
+            val kx = Math.cos(Math.toRadians(lat)) * 111_320.0; val ky = 110_540.0
+            val px = lon * kx; val py = lat * ky
+            var best = Double.MAX_VALUE
+            for (i in 0 until coords.size - 1) {
+                val ax = coords[i][0] * kx; val ay = coords[i][1] * ky; val bx = coords[i + 1][0] * kx; val by = coords[i + 1][1] * ky
+                val dx = bx - ax; val dy = by - ay
+                val t = if (dx == 0.0 && dy == 0.0) 0.0 else (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).coerceIn(0.0, 1.0)
+                val cx = ax + t * dx; val cy = ay + t * dy
+                val d = Math.hypot(px - cx, py - cy)
+                if (d < best) best = d
+            }
+            return best
+        }
+
+        /**
+         * The step the traveller is on: the last step whose manoeuvre lies at or
+         * before the nearest point of the route — so a fix half-way down a
+         * street reports that street's instruction, not the turn already made.
+         */
+        fun stepIndexNear(lat: Double, lon: Double): Int {
+            if (steps.isEmpty()) return 0
+            val at = nearestCoordIndex(lat, lon)
+            var idx = 0
+            for (i in steps.indices) if (stepIdx[i] <= at) idx = i
+            // Within 25 m of the next manoeuvre → announce it already.
+            if (idx + 1 < steps.size && distanceM(lat, lon, steps[idx + 1].lat, steps[idx + 1].lon) < 25.0) idx += 1
+            return idx
+        }
         fun toJson(): JSONObject = JSONObject()
             .put("coords", JSONArray().also { a -> coords.forEach { c -> a.put(JSONArray().put(c[0]).put(c[1])) } })
             .put("steps", JSONArray().also { a -> steps.forEach { s -> a.put(JSONObject().put("lat", s.lat).put("lon", s.lon).put("text", s.text).put("dist", s.distM).put("dur", s.durS)) } })
