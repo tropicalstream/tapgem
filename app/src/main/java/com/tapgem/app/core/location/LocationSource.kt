@@ -38,7 +38,7 @@ object LocationSource {
     private const val FRESH_MS = 2 * 60_000L
     private const val FIX_TIMEOUT_MS = 7_000L
     private const val LAST_KNOWN_MAX_AGE_MS = 15 * 60_000L
-    private const val PHONE_FIX_TIMEOUT_MS = 6_000L
+    private const val PHONE_FIX_TIMEOUT_MS = 12_000L
 
     data class Fix(val lat: Double, val lon: Double, val accuracyM: Float, val source: String, val atMs: Long) {
         val isPrecise: Boolean get() = source != "ip"

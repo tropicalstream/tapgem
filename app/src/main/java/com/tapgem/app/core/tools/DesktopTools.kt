@@ -1001,7 +1001,8 @@ class DesktopTool(private val context: Context) : AiTool {
             "phone_gps", "check_phone_gps", "gps_status" -> {
                 // Troubleshooting: ask the launcher for the phone stream and report what comes back.
                 val pg = com.tapgem.app.core.location.PhoneGps
-                val fix = pg.awaitFix(context, timeoutMs = 7_000L, maxAgeMs = 30_000L)
+                // The phone needs ~10 s to begin pushing after it is asked; wait long enough for the first fix.
+                val fix = pg.awaitFix(context, timeoutMs = 15_000L, maxAgeMs = 30_000L)
                 Result.success(if (fix != null) "Phone GPS is flowing: ${fix.latLon()}, about ${fix.accuracyM.toInt()} m."
                     else "No phone GPS yet — ${pg.whyNot(context)}. Launcher status: ${pg.lastStatus} ${pg.lastStatusMessage ?: ""}; BLE link ${if (pg.isPhoneConnected(context)) "up" else "down"}.")
             }
