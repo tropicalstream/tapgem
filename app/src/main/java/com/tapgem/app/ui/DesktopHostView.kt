@@ -143,7 +143,8 @@ class DesktopHostView @JvmOverloads constructor(
         // so the glasses never take the whole burst at once — the unplugged X3 shuts down on peaks.
         val cold = views.isEmpty() && d.widgets.isNotEmpty()
         var heavyIndex = 0
-        val sorted = d.widgets.sortedBy { it.z }
+        // Pinned ("stay on top") windows always come last in the draw order, whatever their z.
+        val sorted = d.widgets.sortedWith(compareBy<Widget> { it.onTop }.thenBy { it.z })
         val covered = coveredIds(sorted)
         sorted.forEach { w ->
             val v = views.getOrPut(w.id) {

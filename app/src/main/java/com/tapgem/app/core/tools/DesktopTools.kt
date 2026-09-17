@@ -594,6 +594,7 @@ class WidgetTool(private val context: Context) : AiTool {
             "move", "position" -> move(args)
             "resize", "size", "scale" -> resize(args)
             "front", "focus", "raise", "activate", "select" -> front(args)
+            "pin", "unpin", "stay_on_top", "on_top", "always_on_top", "toggle_pin", "toggle_on_top", "keep_on_top" -> pin(args)
             "navigate", "control", "nav" -> navigate(args)
             "refresh", "reload", "update_now" -> refresh(args)
             else -> Result.failure(IllegalArgumentException("Unknown widget action '${args.action}'. Use add, update, remove, move, resize, front, list, navigate, refresh."))
@@ -643,6 +644,10 @@ class WidgetTool(private val context: Context) : AiTool {
         val after = DesktopBridge.mutateWidget(w.id) { f ->
             var n = f
             args.str("new_title", "rename", "rename_to")?.let { t -> n = n.copy(title = t.take(32)); changes += "renamed to \"${t.take(32)}\"" }
+            args.str("on_top", "pinned")?.lowercase(Locale.US)?.let { v ->
+                val want = if (v == "toggle") !n.onTop else v in setOf("true", "yes", "on", "1")
+                if (want != n.onTop) { n = n.copy(onTop = want); changes += if (want) "stays on top" else "no longer on top" }
+            }
             args.str("text", "content", "body")?.let { t ->
                 n = if (f.type == WidgetType.TEXT) n.copy(source = t, content = "") else n.copy(content = t, updatedAt = System.currentTimeMillis())
                 changes += "text changed"
@@ -732,6 +737,21 @@ class WidgetTool(private val context: Context) : AiTool {
         }
         val nw = after.widget(w.id) ?: return Result.success("\"${w.title}\" is gone.")
         return Result.success("Resized \"${nw.title}\" to ${nw.w}x${nw.h}.")
+    }
+
+    /** "Keep this on top" / "toggle stay on top" / "unpin": pinned windows sit above everything else. */
+    private fun pin(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        val raw = args.str("on_top", "pinned", "value", "state")?.lowercase(Locale.US)
+        val want = when {
+            args.action in setOf("unpin") -> false
+            args.action.startsWith("toggle") || raw == "toggle" || raw == "flip" -> !w.onTop
+            raw == null -> if (args.action == "pin" || args.action == "stay_on_top" || args.action == "always_on_top" || args.action == "keep_on_top" || args.action == "on_top") true else !w.onTop
+            else -> raw in setOf("true", "yes", "on", "1", "pin", "pinned")
+        }
+        if (want == w.onTop) return Result.success(if (want) "\"${w.title}\" already stays on top." else "\"${w.title}\" wasn't pinned on top.")
+        DesktopBridge.mutateWidget(w.id) { it.copy(onTop = want) }
+        return Result.success(if (want) "\"${w.title}\" now stays on top of every other window." else "\"${w.title}\" no longer stays on top.")
     }
 
     private fun front(args: Args): Result<String> {

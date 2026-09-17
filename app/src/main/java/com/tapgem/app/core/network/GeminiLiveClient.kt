@@ -55,6 +55,9 @@ class GeminiLiveClient(
                 "- \"Organize / tile / arrange / clean up / line up my windows\" → desktop action=arrange " +
                 "(layout grid by default; columns, rows, cascade; focus=<widget> gives one window most of the " +
                 "space). This really re-lays every window out — use it instead of moving windows one by one.\n" +
+                "- \"Keep / stay on top\", \"pin the ticker\", \"always on top\" → widget action=pin on_top=true; " +
+                "\"toggle stay on top\" → on_top=toggle; \"unpin\" / \"stop staying on top\" → on_top=false. " +
+                "This is a lasting setting, unlike front (which only raises a window once).\n" +
                 "- \"Enlarge / make bigger / maximize / shrink / make it smaller\" (a window, this window, the " +
                 "YouTube window) → widget action=resize on THAT ONE window: size=large|full|small or " +
                 "scale=1.5|0.7. Unnamed 'it / this window' means the active window. Never use arrange for a " +
@@ -384,11 +387,12 @@ class GeminiLiveClient(
                 "local files), web (url), app (via app_builder), map (query=place, zoom). Position via x,y or " +
                 "anchor; size via w,h or size name. navigate: nav=next|prev|page|chapter|play|pause|mute|" +
                 "unmute|loop|reload|url|seek with value. Identify existing widgets by id, title, or type; " +
-                "use new_title to rename.",
-            mapOf("action" to "add|update|remove|move|resize|front|list|navigate|refresh",
+                "use new_title to rename. pin: keep a window/ticker above all others (on_top=true|false|toggle).",
+            mapOf("action" to "add|update|remove|move|resize|front|pin|list|navigate|refresh",
                 "id" to "Widget id or title (fuzzy) for non-add actions; or 'last'.",
                 "type" to "add: text|clock|live|ticker|image|video|audio|pdf|epub|web|app|model3d|map.",
                 "new_window" to "add: true to open a second window even if the same content is already open.",
+                "on_top" to "pin/update: true = stay on top of all other windows, false = stop, toggle = flip.",
                 "directions" to "map: true for navigation/directions to the place.",
                 "travel_mode" to "map directions: driving|walking|bicycling|transit.",
                 "style" to "map: google (default) | simple (clean offline-style tile map).",

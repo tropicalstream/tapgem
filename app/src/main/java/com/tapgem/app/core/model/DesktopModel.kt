@@ -187,7 +187,9 @@ data class Widget(
     val state: Map<String, String> = emptyMap(),
     val content: String = "",
     val updatedAt: Long = 0L,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** Pinned above every other window regardless of focus ("stay on top"). */
+    val onTop: Boolean = false
 ) {
     /** Merge state; an empty value REMOVES that key. */
     fun withState(vararg pairs: Pair<String, String>): Widget = withState(pairs.toMap())
@@ -205,6 +207,7 @@ data class Widget(
         put("style", style.toJson())
         put("state", JSONObject().also { s -> state.forEach { (k, v) -> s.put(k, v) } })
         put("content", content); put("updatedAt", updatedAt); put("createdAt", createdAt)
+        put("onTop", onTop)
     }
 
     companion object {
@@ -224,7 +227,8 @@ data class Widget(
                 state = st,
                 content = o.optString("content"),
                 updatedAt = o.optLong("updatedAt"),
-                createdAt = o.optLong("createdAt", System.currentTimeMillis())
+                createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                onTop = o.optBoolean("onTop", false)
             )
         }
     }

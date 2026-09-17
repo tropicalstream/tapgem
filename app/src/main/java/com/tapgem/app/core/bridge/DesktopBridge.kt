@@ -215,6 +215,7 @@ object DesktopBridge {
             d.widgets.sortedBy { it.z }.forEach { w ->
                 sb.append("- id=${w.id} ${w.type.name.lowercase(Locale.US)} \"${w.title}\" at (${w.x},${w.y}) ${w.w}x${w.h}")
                 if (w.id == activeWidgetId) sb.append(" [active]")
+                if (w.onTop) sb.append(" [stays on top]")
                 if (w.refreshSec > 0) sb.append(" refresh=${w.refreshSec}s")
                 if (w.type == WidgetType.WEB || w.type.isFetched) sb.append(" src=\"${w.source.take(60)}\"")
                 sb.append('\n')

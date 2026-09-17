@@ -176,6 +176,8 @@ can then adjust ("a bit bigger", "move it down").
   (tickers are strips: they stay along the bottom edge while the windows share the space above)
 - "Make the video the main window." (it takes the left two thirds, the rest stack beside it)
 - "Enlarge the YouTube window." · "Make this bigger." · "Shrink it." (resizes that one window only)
+- "Keep the ticker on top." · "Pin this window." · "Toggle stay on top." · "Unpin it." (a lasting setting —
+  a pinned window sits above every other, marked ⬆ in its title bar; "bring it to the front" only raises once)
 - "Bring the clock to the front." · "Take a screenshot."
 
 **Maps & navigation**

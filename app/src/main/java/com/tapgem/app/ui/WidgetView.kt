@@ -378,7 +378,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun applyChrome() {
         val show = chromeVisible()
         titleBar.visibility = if (show) VISIBLE else GONE
-        titleText.text = widget.title
+        titleText.text = if (widget.onTop) "⬆ ${widget.title}" else widget.title
         titleText.setTextColor(ColorUtil.withAlpha(widget.style.textColor ?: theme.text, if (active) 1f else 0.85f))
         titleText.setTextSize(TypedValue.COMPLEX_UNIT_PX, 11f * theme.fontScale)
         closeBtn.setTextColor(theme.accent)
