@@ -778,8 +778,14 @@ class MainActivity : AppCompatActivity() {
             if (event.action == KeyEvent.ACTION_UP) Log.d(TAG, "BACK (pad double-tap echo) swallowed")
             return true
         }
-        val isTapKey = code == KeyEvent.KEYCODE_BUTTON_A || code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
-        if (!isTapKey) return super.dispatchKeyEvent(event)
+        // A page or app is active: everything a keyboard produces (scrcpy, a paired keyboard) types
+        // into it — letters, backspace, arrows, and Enter (which is then a real Enter, not a tap).
+        val typingTarget = host.activeAcceptsKeys()
+        val isTapKey = code == KeyEvent.KEYCODE_BUTTON_A || code == KeyEvent.KEYCODE_DPAD_CENTER || (code == KeyEvent.KEYCODE_ENTER && !typingTarget)
+        if (!isTapKey) {
+            if (typingTarget && host.forwardKey(event)) return true
+            return super.dispatchKeyEvent(event)
+        }
         when (event.action) {
             KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) { rightArmKeyDownMs = SystemClock.uptimeMillis(); rightArmKeyTracking = true }
             KeyEvent.ACTION_UP -> {

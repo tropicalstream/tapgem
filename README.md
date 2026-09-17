@@ -84,6 +84,12 @@ The pad is a touch surface first: the tap / double-tap keys the RayNeo
 firmware injects afterwards (BUTTON_A, BACK) are treated as echoes and never
 close the app.
 
+**Typing from a computer or a paired keyboard** (scrcpy, Bluetooth): while a
+page or app window is active, every key you type goes straight into its
+focused field — letters, backspace, arrows, Enter — with no on-screen
+keyboard ever appearing. Tap the field first (cursor tap or "click on the
+search box"), then type.
+
 ### The strip
 
 Left: **camera** — one tap saves a screenshot of what you see (both video and

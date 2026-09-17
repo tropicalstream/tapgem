@@ -147,6 +147,20 @@ class WidgetView(context: Context) : FrameLayout(context) {
         return handled
     }
 
+    /**
+     * Hardware/remote keyboards (scrcpy, a paired keyboard) type straight into
+     * the page: the WebView never holds Android focus (that is what keeps the
+     * soft keyboard away), so the activity hands key events to it directly.
+     * Chromium delivers them to the page's focused field as real key presses.
+     */
+    fun forwardKey(event: android.view.KeyEvent): Boolean {
+        val wv = webView ?: return false
+        if (!wv.settings.javaScriptEnabled && widget.type != WidgetType.EPUB) return false
+        return runCatching { wv.dispatchKeyEvent(event) }.getOrDefault(false)
+    }
+
+    val acceptsKeys: Boolean get() = webView != null && widget.type.isWebLike
+
     fun isOnResizeHandle(localX: Float, localY: Float): Boolean =
         localX >= width - HANDLE - 6 && localY >= height - HANDLE - 6
 

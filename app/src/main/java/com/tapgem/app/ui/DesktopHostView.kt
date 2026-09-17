@@ -209,6 +209,15 @@ class DesktopHostView @JvmOverloads constructor(
 
     val contentDragActive: Boolean get() = interaction?.kind == Kind.CONTENT
 
+    /** The active window is a page/app that can take typed keys. */
+    fun activeAcceptsKeys(): Boolean = DesktopBridge.activeWidgetId?.let { views[it]?.acceptsKeys } == true
+
+    /** Typed keys go to the active page/app (scrcpy, a paired keyboard). */
+    fun forwardKey(event: android.view.KeyEvent): Boolean {
+        val id = DesktopBridge.activeWidgetId ?: return false
+        return views[id]?.forwardKey(event) == true
+    }
+
     fun pauseMedia() { views.values.forEach { it.pauseForBackground() } }
     fun resumeMedia() { views.values.forEach { it.resumeFromBackground() } }
 
