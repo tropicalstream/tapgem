@@ -1009,6 +1009,7 @@ class DesktopTool(private val context: Context) : AiTool {
                 val hint = if (fix.isPrecise) "" else " For a precise position, connect your phone in the RayNeo app (its GPS is relayed to the glasses)."
                 Result.success("You're ${LocationSource.describe(fix, label)}. Coordinates ${fix.latLon()}.$hint")
             }
+            "usage", "tokens", "session_info", "which_model", "model" -> Result.success(com.tapgem.app.core.session.SessionStats.report())
             "phone_gps", "check_phone_gps", "gps_status" -> {
                 // Troubleshooting: ask the launcher for the phone stream and report what comes back.
                 val pg = com.tapgem.app.core.location.PhoneGps

@@ -235,6 +235,11 @@ access is granted, see Permissions.)
 - "Build me a pomodoro timer with start, pause and reset." · "Make a dice roller." · "A unit converter for cooking."
 - "Change the pomodoro to 50 minutes." (updates the existing app)
 
+**About the session**
+- "Which model are you?" · "How many tokens have we used?" — reads the server's own token accounting for the
+  session (context in use of the 128k window, turns, tool calls, screen frames) and names the models. Remaining
+  API *quota* is not exposed by the Gemini API; see Google AI Studio's usage page for that.
+
 **Desktops**
 - "Save this desktop as Work." · "New desktop called Reading." · "Load Work." · "Delete Reading."
 - "Switch to HUD mode." · "Desktop mode." · "What's on screen?"

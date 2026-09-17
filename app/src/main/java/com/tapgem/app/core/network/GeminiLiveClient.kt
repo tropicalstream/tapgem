@@ -30,6 +30,8 @@ class GeminiLiveClient(
         private const val LIVE_WS_URL =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         const val LIVE_MODEL = "gemini-3.8-live"
+        /** Context window of the Live model (models.get inputTokenLimit); compression keeps sessions under it. */
+        const val LIVE_CONTEXT_TOKENS = 131_072
 
         private const val SYSTEM_PROMPT =
             "You are TapGem, the voice-driven desktop designer for RayNeo X3 Pro AR glasses. The user " +
@@ -135,6 +137,8 @@ class GeminiLiveClient(
         fun onToolCallCancellation(ids: List<String>) {}
         /** The server will close the connection soon. */
         fun onGoAway(timeLeft: String?) {}
+        /** Token accounting for the session so far (prompt = everything the model holds, response = what it produced). */
+        fun onUsage(promptTokens: Int, responseTokens: Int, totalTokens: Int, byModality: Map<String, Int>) {}
         fun onTurnComplete(finishReason: String?)
         fun onInterrupted() {}
         fun onError(message: String)
@@ -275,6 +279,15 @@ class GeminiLiveClient(
                     (root.optJSONObject("goAway") ?: root.optJSONObject("go_away"))?.let {
                         listener.onGoAway(it.optString("timeLeft").takeIf { t -> t.isNotBlank() })
                     }
+                    (root.optJSONObject("usageMetadata") ?: root.optJSONObject("usage_metadata"))?.let { u ->
+                        val mods = HashMap<String, Int>()
+                        (u.optJSONArray("promptTokensDetails") ?: u.optJSONArray("prompt_tokens_details"))?.let { arr ->
+                            for (i in 0 until arr.length()) { val d = arr.optJSONObject(i) ?: continue; mods[d.optString("modality", "?")] = d.optInt("tokenCount", d.optInt("token_count")) }
+                        }
+                        listener.onUsage(u.optInt("promptTokenCount", u.optInt("prompt_token_count")),
+                            u.optInt("responseTokenCount", u.optInt("response_token_count")),
+                            u.optInt("totalTokenCount", u.optInt("total_token_count")), mods)
+                    }
 
                     val sc = root.optJSONObject("serverContent") ?: root.optJSONObject("server_content")
                     if (sc != null) {
@@ -374,8 +387,10 @@ class GeminiLiveClient(
                 "list: saved desktops. rename. set_mode: hud or desktop. undo: revert the last change. " +
                 "clear: remove all widgets. screenshot: save a picture of the display to the photo gallery. " +
                 "locate: where the glasses are right now (place name + coordinates). phone_gps: check whether " +
-                "the paired phone is streaming its GPS to the glasses (troubleshooting).",
-            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|screenshot|locate|phone_gps",
+                "the paired phone is streaming its GPS to the glasses (troubleshooting). usage: which models " +
+                "are in use and this session's token/turn/tool counts — call it for any question about the " +
+                "model, tokens, context or quota, and read the numbers back plainly.",
+            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|screenshot|locate|phone_gps|usage",
                 "name" to "Desktop name for new/save/load/delete/rename.",
                 "mode" to "set_mode: hud or desktop.",
                 "layout" to "arrange: grid (default) | columns | rows | cascade.",

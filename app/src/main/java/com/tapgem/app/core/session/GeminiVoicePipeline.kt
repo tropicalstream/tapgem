@@ -99,6 +99,7 @@ class GeminiVoicePipeline(context: Context) {
             fail("No Gemini API key — push it via adb (see README)."); return
         }
         Log.i(TAG, "activate(): starting session")
+        SessionStats.startSession()
         synchronized(caption) { caption.setLength(0); captionFresh = true }
         cancelledToolIds.clear()
         HudStateBridge.update {
@@ -146,6 +147,7 @@ class GeminiVoicePipeline(context: Context) {
             dropLateOutputUntilMs = 0L
         }
         runCatching { audioPlayer.release() }
+        SessionStats.endSession()
         HudStateBridge.update {
             it.copy(phase = VoicePhase.IDLE,
                 connection = if (error) ConnectionStatus.ERROR else ConnectionStatus.IDLE,
@@ -246,11 +248,18 @@ class GeminiVoicePipeline(context: Context) {
 
         override fun onGoAway(timeLeft: String?) {
             if (!isSessionEpochCurrent(epoch)) return
+            SessionStats.goAwayTimeLeft = timeLeft ?: "a moment"; SessionStats.goAwayAtMs = SystemClock.uptimeMillis()
             HudStateBridge.notice("Session ending soon${timeLeft?.let { " ($it)" }.orEmpty()} — tap the wave to start a new one")
+        }
+
+        override fun onUsage(promptTokens: Int, responseTokens: Int, totalTokens: Int, byModality: Map<String, Int>) {
+            if (!isSessionEpochCurrent(epoch)) return
+            if (totalTokens > 0) { SessionStats.promptTokens = promptTokens; SessionStats.responseTokens = responseTokens; SessionStats.totalTokens = totalTokens; SessionStats.byModality = byModality }
         }
 
         override fun onTurnComplete(finishReason: String?) {
             if (!isSessionEpochCurrent(epoch)) return
+            SessionStats.turns++
             noteConversationActivity()
             localBargeAtMs = 0L
             dropLateOutputUntilMs = SystemClock.uptimeMillis() + LATE_OUTPUT_DROP_MS
@@ -280,6 +289,7 @@ class GeminiVoicePipeline(context: Context) {
             return
         }
         toolCallsInFlight.incrementAndGet()
+        SessionStats.toolCalls++
         scope.launch(toolDispatcherThread) {
             try {
                 if (!isSessionEpochCurrent(epoch)) return@launch
@@ -302,7 +312,7 @@ class GeminiVoicePipeline(context: Context) {
                     val jpeg = runCatching { captureFrameJpeg() }.getOrNull()
                     if (jpeg != null && isSessionEpochCurrent(epoch)) {
                         runCatching { liveSession?.sendImageFrame(jpeg) }
-                        lastFrameSentMs = SystemClock.uptimeMillis()
+                        lastFrameSentMs = SystemClock.uptimeMillis(); SessionStats.framesSent++
                     }
                 }
                 if (!isSessionEpochCurrent(epoch)) return@launch
@@ -347,7 +357,7 @@ class GeminiVoicePipeline(context: Context) {
                     val jpeg = runCatching { captureFrameJpeg() }.getOrNull()
                     if (jpeg != null && isSessionEpochCurrent(epoch)) {
                         val ok = runCatching { liveSession?.sendImageFrame(jpeg) }.getOrDefault(false) == true
-                        if (ok) lastFrameSentMs = SystemClock.uptimeMillis()
+                        if (ok) { lastFrameSentMs = SystemClock.uptimeMillis(); SessionStats.framesSent++ }
                         Log.d(TAG, "screen frame ${jpeg.size / 1024} KB sent=$ok")
                     }
                 }
