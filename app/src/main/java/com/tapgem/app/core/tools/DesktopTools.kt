@@ -1,0 +1,1225 @@
+package com.tapgem.app.core.tools
+
+import android.content.Context
+import android.util.Log
+import com.tapgem.app.core.bridge.DesktopBridge
+import com.tapgem.app.core.bridge.HudStateBridge
+import com.tapgem.app.core.bridge.WebCommandBus
+import com.tapgem.app.core.live.WidgetRefreshEngine
+import com.tapgem.app.core.media.EpubUnpacker
+import com.tapgem.app.core.media.MediaScanner
+import com.tapgem.app.core.media.Screenshots
+import com.tapgem.app.core.model.Canvas
+import com.tapgem.app.core.model.ColorUtil
+import com.tapgem.app.core.model.Desktop
+import com.tapgem.app.core.model.DesktopMode
+import com.tapgem.app.core.model.Theme
+import com.tapgem.app.core.model.Themes
+import com.tapgem.app.core.model.Wallpaper
+import com.tapgem.app.core.model.WallpaperKind
+import com.tapgem.app.core.model.Widget
+import com.tapgem.app.core.model.WidgetStyle
+import com.tapgem.app.core.model.WidgetType
+import com.tapgem.app.core.network.GeminiRest
+import com.tapgem.app.core.network.Geocoder
+import com.tapgem.app.core.network.Router
+import com.tapgem.app.core.location.LocationSource
+import com.tapgem.app.core.store.DesktopStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.URLEncoder
+import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
+
+// ─────────────────────────────────────────────────────────────────────
+// Geometry helpers shared by the tools
+// ─────────────────────────────────────────────────────────────────────
+
+object Layout {
+    const val MARGIN = 8
+
+    fun sizeFor(type: WidgetType, sizeName: String?, fallback: Pair<Int, Int>? = null): Pair<Int, Int> {
+        val base = fallback ?: type.defaultSize()
+        val k = sizeName?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "") ?: return base
+        val (bw, bh) = base
+        val area = Canvas.HEIGHT - Canvas.CONTENT_TOP
+        return when (k) {
+            "tiny" -> (bw * 0.55).roundToInt() to (bh * 0.55).roundToInt()
+            "small", "smaller" -> (bw * 0.72).roundToInt() to (bh * 0.72).roundToInt()
+            "medium", "normal", "default" -> base
+            "large", "big", "bigger", "larger" -> (bw * 1.4).roundToInt() to (bh * 1.4).roundToInt()
+            "huge", "xl", "giant" -> (bw * 1.8).roundToInt() to (bh * 1.8).roundToInt()
+            "full", "fullscreen", "max", "maximize", "maximized" -> Canvas.WIDTH to area
+            "half", "halfleft", "halfright" -> Canvas.WIDTH / 2 to area
+            "wide", "banner" -> Canvas.WIDTH - 2 * MARGIN to bh
+            "tall", "column" -> bw to area
+            else -> base
+        }
+    }
+
+    /** Size names that imply a position too (half_left …, full). */
+    fun impliedAnchor(sizeName: String?): String? {
+        val k = sizeName?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "") ?: return null
+        return when (k) {
+            "halfleft" -> "halfleft"; "halfright" -> "halfright"; "half" -> "halfleft"
+            "full", "fullscreen", "max", "maximize", "maximized" -> "full"
+            "wide", "banner" -> "top"; "tall", "column" -> "left"
+            else -> null
+        }
+    }
+
+    fun clampSize(w: Int, h: Int): Pair<Int, Int> =
+        w.coerceIn(Canvas.MIN_W, Canvas.WIDTH) to h.coerceIn(Canvas.MIN_H, Canvas.HEIGHT - Canvas.CONTENT_TOP)
+
+    fun clampPos(x: Int, y: Int, w: Int, h: Int): Pair<Int, Int> =
+        x.coerceIn(0, max(0, Canvas.WIDTH - w)) to y.coerceIn(Canvas.CONTENT_TOP, max(Canvas.CONTENT_TOP, Canvas.HEIGHT - h))
+
+    fun anchorPos(anchor: String?, w: Int, h: Int): Pair<Int, Int>? {
+        val k = anchor?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "") ?: return null
+        val right = Canvas.WIDTH - w - MARGIN
+        val bottom = Canvas.HEIGHT - h - MARGIN
+        val cx = (Canvas.WIDTH - w) / 2
+        val cy = Canvas.CONTENT_TOP + (Canvas.HEIGHT - Canvas.CONTENT_TOP - h) / 2
+        val top = Canvas.CONTENT_TOP + MARGIN
+        return when (k) {
+            "topleft", "upperleft", "lefttop", "northwest" -> MARGIN to top
+            "top", "topcenter", "topmiddle", "uppercenter", "north" -> cx to top
+            "topright", "upperright", "righttop", "northeast" -> right to top
+            "left", "middleleft", "centerleft", "leftcenter", "west" -> MARGIN to cy
+            "center", "centre", "middle" -> cx to cy
+            "right", "middleright", "centerright", "rightcenter", "east" -> right to cy
+            "bottomleft", "lowerleft", "leftbottom", "southwest" -> MARGIN to bottom
+            "bottom", "bottomcenter", "bottommiddle", "lowercenter", "south" -> cx to bottom
+            "bottomright", "lowerright", "rightbottom", "southeast" -> right to bottom
+            "halfleft" -> 0 to Canvas.CONTENT_TOP
+            "halfright" -> Canvas.WIDTH / 2 to Canvas.CONTENT_TOP
+            "full" -> 0 to Canvas.CONTENT_TOP
+            else -> null
+        }
+    }
+
+    /** First spot (16px grid) where a w×h box overlaps nothing; cascade fallback. */
+    fun freeSlot(widgets: List<Widget>, w: Int, h: Int): Pair<Int, Int> {
+        var y = Canvas.CONTENT_TOP + MARGIN
+        while (y + h <= Canvas.HEIGHT) {
+            var x = MARGIN
+            while (x + w <= Canvas.WIDTH) {
+                if (widgets.none { intersects(x, y, w, h, it) }) return x to y
+                x += 16
+            }
+            y += 16
+        }
+        val n = widgets.size
+        return clampPos(MARGIN + n * 24, Canvas.CONTENT_TOP + MARGIN + n * 24, w, h)
+    }
+
+    private fun intersects(x: Int, y: Int, w: Int, h: Int, o: Widget): Boolean {
+        val m = 6
+        return x < o.x + o.w + m && x + w + m > o.x && y < o.y + o.h + m && y + h + m > o.y
+    }
+
+    class Arrangement(val widgets: List<Widget>, val description: String)
+
+    /**
+     * Re-lay out every window so nothing overlaps. grid balances rows and
+     * columns (a short last row is stretched); columns / rows are one line;
+     * cascade staggers same-size windows; a focus window takes the left ~62%
+     * with the others stacked beside it.
+     */
+    fun arrange(all: List<Widget>, layout: String?, focusId: String?, gapIn: Int?): Arrangement {
+        if (all.isEmpty()) return Arrangement(all, "There are no windows to arrange.")
+        val gap = (gapIn ?: 8).coerceIn(0, 40)
+        val left = gap; val top = Canvas.CONTENT_TOP + gap
+        val areaW = Canvas.WIDTH - 2 * gap; val areaH = Canvas.HEIGHT - Canvas.CONTENT_TOP - 2 * gap
+        val ordered = all.sortedWith(compareBy({ it.y / 40 }, { it.x }))
+        val k = layout?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "").orEmpty()
+        val focus = focusId?.let { id -> ordered.firstOrNull { it.id == id } }
+        val out = ArrayList<Widget>(ordered.size)
+        val desc = StringBuilder()
+
+        fun cell(w: Widget, x: Int, y: Int, cw: Int, ch: Int): Widget {
+            val (sw, sh) = clampSize(cw, ch)
+            val (px, py) = clampPos(x, y, sw, sh)
+            return w.copy(x = px, y = py, w = sw, h = sh)
+        }
+
+        when {
+            focus != null && ordered.size > 1 -> {
+                val others = ordered.filter { it.id != focus.id }
+                val mainW = (areaW * 0.62).roundToInt()
+                val sideW = areaW - mainW - gap
+                out += cell(focus, left, top, mainW, areaH)
+                val rh = (areaH - (others.size - 1) * gap) / others.size
+                others.forEachIndexed { i, w -> out += cell(w, left + mainW + gap, top + i * (rh + gap), sideW, rh) }
+                desc.append("\"${focus.title}\" fills the left two thirds; ")
+                desc.append(others.joinToString(", ") { "\"${it.title}\"" }).append(" stacked on the right.")
+            }
+            k == "cascade" || k == "stack" || k == "stacked" -> {
+                val cw = (areaW * 0.62).roundToInt(); val ch = (areaH * 0.66).roundToInt()
+                val stepX = if (ordered.size > 1) ((areaW - cw) / (ordered.size - 1)).coerceIn(12, 40) else 0
+                val stepY = if (ordered.size > 1) ((areaH - ch) / (ordered.size - 1)).coerceIn(12, 40) else 0
+                ordered.forEachIndexed { i, w -> out += cell(w, left + i * stepX, top + i * stepY, cw, ch).copy(z = i + 1) }
+                desc.append("Cascaded ${ordered.size} windows front to back: ").append(ordered.joinToString(", ") { "\"${it.title}\"" }).append('.')
+            }
+            else -> {
+                val n = ordered.size
+                val cols = when {
+                    k == "columns" || k == "column" || k == "sidebyside" || k == "horizontal" || k == "row" -> n
+                    k == "rows" || k == "stacked" || k == "vertical" || k == "list" -> 1
+                    n == 1 -> 1
+                    n == 2 -> 2
+                    n <= 4 -> 2
+                    n <= 9 -> 3
+                    else -> 4
+                }
+                val rows = ceil(n / cols.toDouble()).toInt()
+                val rh = (areaH - (rows - 1) * gap) / rows
+                var i = 0
+                val rowNames = ArrayList<String>()
+                for (r in 0 until rows) {
+                    val inRow = minOf(cols, n - i)
+                    val cw = (areaW - (inRow - 1) * gap) / inRow
+                    val names = ArrayList<String>()
+                    for (c in 0 until inRow) {
+                        val w = ordered[i++]
+                        out += cell(w, left + c * (cw + gap), top + r * (rh + gap), cw, rh)
+                        names += "\"${w.title}\""
+                    }
+                    rowNames += names.joinToString(", ")
+                }
+                desc.append(when {
+                    cols == n && n > 1 -> "Lined up $n windows side by side: ${rowNames.first()}."
+                    cols == 1 && n > 1 -> "Stacked $n windows top to bottom: ${rowNames.joinToString("; ")}."
+                    n == 1 -> "\"${ordered.first().title}\" now fills the desktop."
+                    else -> "Tiled $n windows in a $rows×$cols grid — " + rowNames.mapIndexed { r, s -> "row ${r + 1}: $s" }.joinToString("; ") + "."
+                })
+            }
+        }
+        // Preserve stacking order for non-cascade layouts.
+        val zById = all.associate { it.id to it.z }
+        val fixed = if (k == "cascade") out else out.map { it.copy(z = zById[it.id] ?: it.z) }
+        return Arrangement(fixed, desc.toString())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Shared "add a widget" flow (used by widget, media, app_builder)
+// ─────────────────────────────────────────────────────────────────────
+
+object WidgetOps {
+
+    private const val TAG = "WidgetOps"
+    const val MAX_TEXT_FILE_CHARS = 24_000
+
+    fun isUrl(s: String?) = s != null && (s.startsWith("http://") || s.startsWith("https://"))
+
+    /** Style from args; [warnings] collects colour words we couldn't parse. */
+    fun styleFrom(args: Args, base: WidgetStyle = WidgetStyle(), warnings: MutableList<String>? = null): WidgetStyle {
+        val bgRaw = args.str("bg_color", "background", "bg"); val fgRaw = args.str("text_color", "color")
+        if (ColorUtil.isUnknown(bgRaw)) warnings?.add("I don't know the colour \"$bgRaw\" — use a hex code or a common name")
+        if (ColorUtil.isUnknown(fgRaw)) warnings?.add("I don't know the colour \"$fgRaw\" — use a hex code or a common name")
+        return base.copy(
+            bgColor = ColorUtil.parse(bgRaw) ?: base.bgColor,
+            textColor = ColorUtil.parse(fgRaw) ?: base.textColor,
+            opacity = args.float("opacity")?.let { if (it > 1f) it / 100f else it }?.coerceIn(0.05f, 1f) ?: base.opacity,
+            cornerRadius = args.int("corner_radius", "corner") ?: base.cornerRadius,
+            fontSize = args.float("font_size", "text_size")?.coerceIn(6f, 96f) ?: base.fontSize,
+            chrome = args.bool("chrome", "title_bar") ?: base.chrome
+        )
+    }
+
+    fun refreshFrom(args: Args, default: Int): Int {
+        args.int("refresh_seconds", "refresh", "interval_seconds", "update_seconds")?.let { return max(0, it) }
+        args.int("refresh_minutes", "interval_minutes", "update_minutes")?.let { return max(0, it * 60) }
+        return default
+    }
+
+    fun titleFromWords(s: String, n: Int = 3): String =
+        s.split(Regex("\\s+")).filter { it.isNotBlank() }.take(n).joinToString(" ").take(24).replaceFirstChar { it.uppercase() }
+
+    fun readTextFile(f: File): String = runCatching {
+        val s = f.readText()
+        if (s.length > MAX_TEXT_FILE_CHARS) s.take(MAX_TEXT_FILE_CHARS) + "\n…" else s
+    }.getOrDefault("Couldn't read ${f.name}.")
+
+    fun isAppPath(path: String): Boolean = runCatching {
+        File(path).canonicalPath.startsWith(DesktopStore.appsDir.canonicalPath + File.separator)
+    }.getOrDefault(false)
+
+    suspend fun add(
+        context: Context,
+        args: Args,
+        forcedType: WidgetType? = null,
+        forcedSource: String? = null,
+        forcedTitle: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val explicit = forcedSource ?: args.str("path", "url", "source", "file")
+        val query = args.str("query", "name", "search", "place", "location")
+        var type = forcedType ?: WidgetType.parse(args.str("type"))
+            ?: explicit?.let { WidgetType.forExtension(it.substringBefore('?').substringAfterLast('.', "")) }
+            ?: when {
+                args.has("text") || args.has("content") || args.has("prompt") -> WidgetType.TEXT
+                args.has("place") || args.has("location") || args.has("directions") -> WidgetType.MAP
+                args.has("query") -> WidgetType.LIVE
+                isUrl(explicit) -> WidgetType.WEB
+                else -> null
+            }
+            ?: return@withContext Result.failure(IllegalArgumentException("widget add needs a type (text, clock, live, ticker, image, video, audio, pdf, epub, web, app, model3d, map)."))
+
+        var source = ""
+        var content = ""
+        var note = ""
+        var title = forcedTitle ?: args.str("title", "label")
+        var refreshDefault = 0
+        val state = HashMap<String, String>()
+        val warnings = ArrayList<String>()
+
+        when (type) {
+            WidgetType.TEXT -> {
+                val prompt = args.str("prompt", "generate")
+                val text = args.str("text", "content", "body")
+                when {
+                    prompt != null -> {
+                        source = "prompt:$prompt"
+                        content = GeminiRest.generateText(context, prompt, system = WidgetRefreshEngine.PROMPT_TEXT_SYSTEM, search = true)
+                            .getOrElse { warnings += "the text couldn't be generated yet (${it.message?.take(60)}); it will retry on refresh"; "" }
+                        title = title ?: titleFromWords(prompt)
+                        if (content.isBlank()) refreshDefault = 60
+                    }
+                    text != null -> { source = text; title = title ?: titleFromWords(text) }
+                    else -> {
+                        // A text file from disk (Notes.txt) by path or by name.
+                        val f = explicit?.let { MediaScanner.ensureLocal(context, it) }
+                            ?: MediaScanner.find(context, query ?: explicit?.let { File(it).name }, WidgetType.TEXT).firstOrNull()?.let { File(it.path) }
+                            ?: return@withContext Result.failure(IllegalArgumentException("text widget needs 'text', 'prompt', or a text file (path/query)."))
+                        source = "file:" + f.absolutePath
+                        content = readTextFile(f)
+                        title = title ?: f.nameWithoutExtension.replace(Regex("[_\\-]+"), " ").take(28)
+                    }
+                }
+            }
+            WidgetType.CLOCK -> {
+                source = args.str("format")?.lowercase(Locale.US) ?: "time+date"
+                title = title ?: "Clock"
+            }
+            WidgetType.LIVE -> {
+                val q = query ?: args.str("text", "prompt")
+                    ?: return@withContext Result.failure(IllegalArgumentException("live widget needs 'query' — what to watch."))
+                source = q
+                title = title ?: liveTitle(q)
+                refreshDefault = 300
+                content = WidgetRefreshEngine.fetchLive(q).getOrElse {
+                    warnings += "the first fetch failed (${it.message?.take(60)}); it will retry shortly"
+                    state["failCount"] = "1"; ""
+                }
+            }
+            WidgetType.TICKER -> {
+                val q = query ?: args.str("text", "prompt")
+                    ?: return@withContext Result.failure(IllegalArgumentException("ticker widget needs 'query' — what should scroll by (stocks, headlines, scores, weather)."))
+                source = q
+                title = title ?: liveTitle(q)
+                refreshDefault = 300
+                content = WidgetRefreshEngine.fetchTicker(q).getOrElse {
+                    warnings += "the first fetch failed (${it.message?.take(60)}); it will retry shortly"
+                    state["failCount"] = "1"; ""
+                }
+            }
+            WidgetType.WEB -> {
+                val raw = explicit ?: query ?: args.str("text")
+                    ?: return@withContext Result.failure(IllegalArgumentException("web widget needs 'url' (or a search query)."))
+                source = normalizeUrl(raw)
+                title = title ?: runCatching { java.net.URL(source).host.removePrefix("www.") }.getOrDefault("Web")
+            }
+            WidgetType.APP -> {
+                val p = explicit ?: return@withContext Result.failure(IllegalArgumentException("Use app_builder to create apps."))
+                if (!isAppPath(p) || !File(p).isFile) return@withContext Result.failure(IllegalArgumentException("Apps can only be loaded from TapGem's own app folder — use app_builder to make one."))
+                source = p
+                title = title ?: File(p).nameWithoutExtension.substringBefore("__v").replace('_', ' ').take(28)
+            }
+            WidgetType.MAP -> {
+                val place = query ?: args.str("text", "title", "destination")
+                val style = args.str("style", "provider", "map_style")?.lowercase(Locale.US).orEmpty()
+                val simple = style in setOf("simple", "osm", "tiles", "offline", "clean", "minimal")
+                val wantsDirections = args.bool("directions", "navigate") == true || style == "directions"
+                if (wantsDirections && style != "google") {
+                    // Turn-by-turn lives in TapGem itself: Google's web "Start" only hands off to an app the glasses don't have.
+                    return@withContext startNavigation(context, place, args.str("travel_mode", "mode"), null, args)
+                }
+                if (!simple) {
+                    // Default: Google Maps in a web window — search, directions, "ask Maps" all work through the web tool.
+                    val directions = wantsDirections
+                    val mode = args.str("travel_mode", "mode")?.lowercase(Locale.US)?.let {
+                        when { it.startsWith("walk") -> "walking"; it.startsWith("bik") || it.startsWith("cycl") -> "bicycling"
+                            it.startsWith("transit") || it.startsWith("bus") || it.startsWith("train") -> "transit"; else -> "driving" }
+                    } ?: "driving"
+                    // The device's own position (fused/network fix → last known → IP) is the
+                    // origin of every route and the centre of "where am I", so Maps never asks.
+                    val here = if (Geocoder.isHere(place) || directions) LocationSource.current(context) else null
+                    source = when {
+                        Geocoder.isHere(place) ->
+                            if (here != null) "https://www.google.com/maps/@%.5f,%.5f,%dz".format(Locale.US, here.lat, here.lon, if (here.isPrecise) 16 else 13)
+                            else "https://www.google.com/maps"
+                        directions -> "https://www.google.com/maps/dir/?api=1" +
+                            (here?.let { "&origin=" + URLEncoder.encode(it.latLon(), "UTF-8") } ?: "") +
+                            "&destination=" + URLEncoder.encode(place, "UTF-8") + "&travelmode=$mode"
+                        else -> "https://www.google.com/maps/search/?api=1&query=" + URLEncoder.encode(place, "UTF-8")
+                    }
+                    type = WidgetType.WEB
+                    title = title ?: (if (directions) "Directions: " else "Maps: ") + (place?.take(22) ?: "here")
+                    val whence = when { here == null -> ""; here.isPrecise -> " from your current location"; else -> " from a rough (internet-based) position" }
+                    note = if (directions) " Google Maps directions ($mode) to $place$whence." else " Google Maps: ${place ?: "your location"}$whence."
+                    if (Geocoder.isHere(place) && here == null) warnings += "I couldn't get your location (permission or location services off)"
+                } else {
+                    val geo = if (Geocoder.isHere(place)) LocationSource.current(context)?.let { f ->
+                            Geocoder.Place(f.lat, f.lon, Geocoder.reverse(f.lat, f.lon) ?: "You are here", if (f.isPrecise) "road" else "city")
+                        } else Geocoder.lookup(place)
+                    geo ?: return@withContext Result.failure(IllegalStateException(
+                            if (Geocoder.isHere(place)) "I couldn't work out where you are right now." else "I couldn't find a place called \"$place\"."))
+                    source = "geo:%.6f,%.6f?q=%s".format(Locale.US, geo.lat, geo.lon, URLEncoder.encode(geo.label, "UTF-8"))
+                    state["zoom"] = (args.int("zoom") ?: Geocoder.zoomFor(geo.kind)).coerceIn(1, 18).toString()
+                    title = title ?: geo.label.take(28)
+                    note = " Showing ${geo.label} on the simple map."
+                }
+            }
+            WidgetType.IMAGE, WidgetType.VIDEO, WidgetType.AUDIO, WidgetType.PDF, WidgetType.EPUB, WidgetType.MODEL3D -> {
+                var resolved: String? = null
+                if (explicit != null) {
+                    resolved = if (isUrl(explicit)) {
+                        if (type == WidgetType.IMAGE || type == WidgetType.VIDEO || type == WidgetType.AUDIO) explicit
+                        else MediaScanner.ensureLocal(context, explicit)?.absolutePath
+                            ?: return@withContext Result.failure(IllegalStateException("Couldn't download that file."))
+                    } else MediaScanner.ensureLocal(context, explicit)?.absolutePath
+                }
+                if (resolved == null && (query != null || explicit != null)) {
+                    val hit = MediaScanner.find(context, query ?: File(explicit!!).name, type).firstOrNull()
+                    if (hit != null) { resolved = hit.path; type = hit.type; note = " Found ${hit.name}." }
+                }
+                if (resolved == null) {
+                    val hint = if (!MediaScanner.hasAllFilesAccess())
+                        " (Nothing matched. For files outside Pictures/Movies/Music, grant All-files access or push into the media folder.)" else " (Nothing matched.)"
+                    return@withContext Result.failure(IllegalStateException("No ${type.name.lowercase(Locale.US)} found for \"${query ?: explicit}\".$hint"))
+                }
+                if (type == WidgetType.EPUB) {
+                    val ch = EpubUnpacker.chapters(context, File(resolved))
+                    if (ch.isEmpty()) return@withContext Result.failure(IllegalStateException("That EPUB has no readable chapters."))
+                    state["chapters"] = ch.size.toString()
+                    note += " ${ch.size} chapters."
+                }
+                source = resolved
+                title = title ?: File(resolved).nameWithoutExtension.replace(Regex("[_\\-]+"), " ").take(28)
+            }
+        }
+
+        // One request, one window: the same page / query / file already open is reused, not duplicated.
+        if (args.bool("new_window", "duplicate") != true) {
+            val key = dedupeKey(type, source)
+            val dup = DesktopBridge.current().widgets.firstOrNull { dedupeKey(it.type, it.source) == key }
+            if (dup != null) {
+                DesktopBridge.mutate(pushUndo = false) { d -> d.widget(dup.id)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d }
+                DesktopBridge.setActive(dup.id)
+                return@withContext Result.success("\"${dup.title}\" is already open — brought it to the front instead of opening a second copy (pass new_window=true if a second window is really wanted).")
+            }
+        }
+
+        // Geometry (computed against the live desktop inside mutate so two
+        // quick adds never land on the same free slot).
+        val (dw, dh) = Layout.sizeFor(type, args.str("size"))
+        val (w, h) = Layout.clampSize(args.int("w", "width") ?: dw, args.int("h", "height") ?: dh)
+        val anchor = args.str("anchor", "position", "place_at") ?: Layout.impliedAnchor(args.str("size"))
+            ?: if (type == WidgetType.TICKER) "bottom" else null
+        val refresh = refreshFrom(args, refreshDefault)
+        args.bool("autoplay")?.let { state["playing"] = it.toString() }
+        args.bool("loop")?.let { state["loop"] = it.toString() }
+        args.bool("muted", "mute")?.let { state["muted"] = it.toString() }
+        args.int("page")?.let { state["page"] = (it - 1).coerceAtLeast(0).toString() }
+        args.int("chapter")?.let { state["chapter"] = (it - 1).coerceAtLeast(0).toString() }
+        val finalTitle = (title ?: type.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() }).take(32)
+        val style = styleFrom(args, warnings = warnings)
+
+        var placed: Widget? = null
+        DesktopBridge.mutate { d ->
+            val existing = d.widgets
+            val (px, py) = when {
+                args.has("x") || args.has("y") -> (args.int("x") ?: Layout.MARGIN) to (args.int("y") ?: Canvas.CONTENT_TOP + Layout.MARGIN)
+                else -> Layout.anchorPos(anchor, w, h) ?: Layout.freeSlot(existing, w, h)
+            }
+            val (x, y) = Layout.clampPos(px, py, w, h)
+            val widget = Widget(
+                type = type, title = finalTitle, x = x, y = y, w = w, h = h,
+                z = (existing.maxOfOrNull { it.z } ?: 0) + 1,
+                source = source, refreshSec = refresh, style = style, state = state,
+                content = content, updatedAt = if (content.isNotBlank()) System.currentTimeMillis() else 0L
+            )
+            placed = widget
+            d.copy(widgets = existing + widget)
+        }
+        val widget = placed!!
+        DesktopBridge.setActive(widget.id)
+
+        Log.i(TAG, "added ${widget.type} '${widget.title}' at (${widget.x},${widget.y}) ${w}x$h src=${source.take(60)}")
+        val refreshNote = if (refresh > 0) " Refreshes every ${humanSecs(refresh)}." else ""
+        val warn = if (warnings.isEmpty()) "" else " Note: " + warnings.joinToString("; ") + "."
+        Result.success("Added ${type.name.lowercase(Locale.US)} \"${widget.title}\" (id ${widget.id}) at (${widget.x},${widget.y}) size ${w}x$h.$refreshNote$note$warn")
+    }
+
+    /**
+     * TapGem's own navigation: destination geocoded, position from
+     * [LocationSource], route from OSRM, drawn on the dark map with the
+     * current step as a banner. Replaces [existingId] (e.g. an open Google
+     * Maps directions window) or adds a new map window.
+     */
+    suspend fun startNavigation(context: Context, destination: String?, modeArg: String?, existingId: String?, args: Args): Result<String> = withContext(Dispatchers.IO) {
+        val dest = destination?.trim()?.takeIf { it.isNotBlank() }
+            ?: return@withContext Result.failure(IllegalArgumentException("Where to? Navigation needs a destination."))
+        val mode = modeArg?.lowercase(Locale.US)?.let {
+            when { it.startsWith("walk") || it.startsWith("foot") -> "walking"; it.startsWith("bik") || it.startsWith("cycl") -> "bicycling"
+                it.startsWith("driv") || it.startsWith("car") -> "driving"; else -> "walking" }
+        } ?: "walking"
+        HudStateBridge.notice("Finding $dest…")
+        val to = Geocoder.lookup(dest) ?: return@withContext Result.failure(IllegalStateException("I couldn't find a place called \"$dest\"."))
+        val from = LocationSource.current(context) ?: return@withContext Result.failure(IllegalStateException("I can't tell where you are right now, so I can't route from here."))
+        HudStateBridge.notice("Routing…")
+        val route = Router.route(from.lat, from.lon, to.lat, to.lon, mode, to.label)
+            ?: run { HudStateBridge.notice(null); return@withContext Result.failure(IllegalStateException("I couldn't get a $mode route to ${to.label}.")) }
+        HudStateBridge.notice(null)
+        val json = route.toJson().toString()
+        val source = "geo:%.6f,%.6f?q=%s".format(Locale.US, to.lat, to.lon, URLEncoder.encode(to.label, "UTF-8"))
+        val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode,
+            "pos" to "%.6f,%.6f,%d".format(Locale.US, from.lat, from.lon, from.accuracyM.toInt()), "posSrc" to from.source)
+        val title = "→ ${to.label.take(26)}"
+        // One navigation at a time: a second "take me to…" (or the model repeating itself) re-routes the existing map.
+        var id = existingId ?: DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.MAP && it.state["nav"] == "on" }?.id
+        if (id != null && DesktopBridge.current().widget(id) != null) {
+            DesktopBridge.mutateWidget(id) { w -> w.copy(type = WidgetType.MAP, title = title, source = source, content = json, state = state, updatedAt = System.currentTimeMillis()) }
+        } else {
+            val (dw, dh) = Layout.sizeFor(WidgetType.MAP, args.str("size") ?: "large")
+            val (w, h) = Layout.clampSize(args.int("w", "width") ?: dw, args.int("h", "height") ?: dh)
+            var placed: Widget? = null
+            DesktopBridge.mutate { d ->
+                val (px, py) = Layout.anchorPos(args.str("anchor", "position") ?: "center", w, h) ?: Layout.freeSlot(d.widgets, w, h)
+                val (x, y) = Layout.clampPos(px, py, w, h)
+                val widget = Widget(type = WidgetType.MAP, title = title, x = x, y = y, w = w, h = h, z = (d.widgets.maxOfOrNull { it.z } ?: 0) + 1,
+                    source = source, state = state, content = json, updatedAt = System.currentTimeMillis())
+                placed = widget
+                d.copy(widgets = d.widgets + widget)
+            }
+            id = placed!!.id
+        }
+        DesktopBridge.setActive(id)
+        val first = route.steps.firstOrNull()
+        val quality = when { from.isPrecise -> ""; else -> " Your position is only approximate (no GPS on the glasses), so the route starts from the nearest known area." }
+        Result.success("Navigation started to ${to.label}: ${Router.distance(route.distM)}, about ${Router.duration(route.durS)} $mode. " +
+            (first?.let { "First: ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "") +
+            " Say next step / previous step / stop navigation.$quality")
+    }
+
+    /** Same type + same normalised content = the same window. */
+    fun dedupeKey(type: WidgetType, source: String): String {
+        val s = source.trim().lowercase(Locale.US)
+        val norm = when (type) {
+            WidgetType.WEB -> s.removePrefix("https://").removePrefix("http://").removePrefix("www.").removePrefix("m.").trimEnd('/')
+            WidgetType.LIVE, WidgetType.TICKER -> s.replace(Regex("[^a-z0-9 ]"), "").replace(Regex("\\s+"), " ")
+            WidgetType.TEXT -> if (s.startsWith("prompt:") || s.startsWith("file:")) s else "text:" + s.hashCode()
+            WidgetType.CLOCK -> "clock"
+            else -> s
+        }
+        return "${type.name}|$norm"
+    }
+
+    /** "current weather in oakland" → "Weather · Oakland"-ish short title. */
+    fun liveTitle(q: String): String {
+        val words = q.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").split(Regex("\\s+"))
+            .filter { it.isNotBlank() && it !in setOf("the", "current", "latest", "today", "todays", "now", "right", "please", "show", "me", "what", "is", "whats", "a", "an", "of", "for", "in", "at", "on") }
+        return words.take(3).joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }.take(24).ifBlank { "Live" }
+    }
+
+    fun normalizeUrl(raw: String): String {
+        val s = raw.trim()
+        if (isUrl(s)) return s
+        return if (s.contains('.') && !s.contains(' ')) "https://$s"
+        else "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
+    }
+
+    fun humanSecs(s: Int): String = when {
+        s % 3600 == 0 -> "${s / 3600} hour${if (s / 3600 == 1) "" else "s"}"
+        s % 60 == 0 -> "${s / 60} minute${if (s / 60 == 1) "" else "s"}"
+        else -> "$s seconds"
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// widget
+// ─────────────────────────────────────────────────────────────────────
+
+class WidgetTool(private val context: Context) : AiTool {
+    override val name = "widget"
+
+    override suspend fun execute(args: Args): Result<String> {
+        return when (args.action) {
+            "add", "create", "new", "place", "show", "open" -> WidgetOps.add(context, args)
+            "list", "describe" -> Result.success(DesktopBridge.describe())
+            "update", "set", "style", "edit", "change", "rename" -> update(args)
+            "remove", "delete", "close", "hide" -> remove(args)
+            "move", "position" -> move(args)
+            "resize", "size", "scale" -> resize(args)
+            "front", "focus", "raise", "activate", "select" -> front(args)
+            "navigate", "control", "nav" -> navigate(args)
+            "refresh", "reload", "update_now" -> refresh(args)
+            else -> Result.failure(IllegalArgumentException("Unknown widget action '${args.action}'. Use add, update, remove, move, resize, front, list, navigate, refresh."))
+        }
+    }
+
+    private fun resolve(args: Args): Widget? =
+        DesktopBridge.resolveWidget(args.str("id", "title", "widget", "name", "target"), args.str("type"))
+
+    private fun missing(args: Args): Result<String> = Result.success(
+        "No widget matches \"${args.str("id", "title", "widget", "name", "type") ?: ""}\". ${DesktopBridge.describe()}"
+    )
+
+    /**
+     * Network work happens first against a snapshot; the change itself is
+     * then applied to the LIVE widget inside mutate so a drag or refresh that
+     * landed meanwhile is never overwritten.
+     */
+    private suspend fun update(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        val w = resolve(args) ?: return@withContext missing(args)
+        val warnings = ArrayList<String>()
+        val changes = ArrayList<String>()
+
+        val generated: String? = args.str("prompt")?.let { p ->
+            GeminiRest.generateText(context, p, system = WidgetRefreshEngine.PROMPT_TEXT_SYSTEM, search = true)
+                .getOrElse { warnings += "couldn't generate the text (${it.message?.take(60)})"; null }
+        }
+        val liveContent: String? = if (w.type.isFetched) args.str("query")?.let { q ->
+            (if (w.type == WidgetType.TICKER) WidgetRefreshEngine.fetchTicker(q) else WidgetRefreshEngine.fetchLive(q))
+                .getOrElse { warnings += "couldn't fetch \"$q\" yet"; "" }
+        } else null
+        val geo = if (w.type == WidgetType.MAP) args.str("query", "place", "location")?.let { q ->
+            Geocoder.lookup(q).also { if (it == null) warnings += "couldn't find \"$q\"" }
+        } else null
+        val newSource: String? = args.str("url", "path", "source")?.let { s ->
+            when (w.type) {
+                WidgetType.WEB -> WidgetOps.normalizeUrl(s)
+                WidgetType.APP -> if (WidgetOps.isAppPath(s)) s else { warnings += "apps can only load from TapGem's app folder"; null }
+                WidgetType.IMAGE, WidgetType.VIDEO, WidgetType.AUDIO -> if (WidgetOps.isUrl(s)) s else MediaScanner.ensureLocal(context, s)?.absolutePath.also { if (it == null) warnings += "couldn't find $s" }
+                WidgetType.TEXT -> MediaScanner.ensureLocal(context, s)?.let { "file:" + it.absolutePath }.also { if (it == null) warnings += "couldn't find $s" }
+                else -> MediaScanner.ensureLocal(context, s)?.absolutePath.also { if (it == null) warnings += "couldn't find $s" }
+            }
+        }
+        val newSourceText = newSource?.takeIf { w.type == WidgetType.TEXT }?.let { WidgetOps.readTextFile(File(it.removePrefix("file:"))) }
+        val style0 = WidgetOps.styleFrom(args, WidgetStyle(), warnings) // only for colour validation messages
+
+        val after = DesktopBridge.mutateWidget(w.id) { f ->
+            var n = f
+            args.str("new_title", "rename", "rename_to")?.let { t -> n = n.copy(title = t.take(32)); changes += "renamed to \"${t.take(32)}\"" }
+            args.str("text", "content", "body")?.let { t ->
+                n = if (f.type == WidgetType.TEXT) n.copy(source = t, content = "") else n.copy(content = t, updatedAt = System.currentTimeMillis())
+                changes += "text changed"
+            }
+            args.str("prompt")?.let { p ->
+                n = n.copy(source = "prompt:$p", content = generated ?: n.content, updatedAt = if (generated != null) System.currentTimeMillis() else n.updatedAt)
+                changes += "prompt changed"
+            }
+            if (f.type.isFetched) args.str("query")?.let { q ->
+                n = n.copy(source = q, title = if (args.has("new_title")) n.title else WidgetOps.liveTitle(q),
+                    content = liveContent?.ifBlank { n.content } ?: n.content, updatedAt = System.currentTimeMillis())
+                changes += "now watching \"$q\""
+            }
+            if (geo != null) {
+                n = n.copy(source = "geo:%.6f,%.6f?q=%s".format(Locale.US, geo.lat, geo.lon, URLEncoder.encode(geo.label, "UTF-8")),
+                    title = if (args.has("new_title")) n.title else geo.label.take(28))
+                    .withState("zoom" to (args.int("zoom") ?: Geocoder.zoomFor(geo.kind, n.state["zoom"]?.toIntOrNull() ?: 13)).coerceIn(1, 18).toString())
+                changes += "map moved to ${geo.label}"
+            } else if (f.type == WidgetType.MAP) args.int("zoom")?.let { z -> n = n.withState("zoom" to z.coerceIn(1, 18).toString()); changes += "zoom $z" }
+            if (f.type == WidgetType.CLOCK) args.str("format")?.let { fm -> n = n.copy(source = fm.lowercase(Locale.US)); changes += "format $fm" }
+            newSource?.let { s ->
+                n = n.copy(source = s, content = newSourceText ?: n.content).withState("reload" to System.currentTimeMillis().toString())
+                changes += "source changed"
+            }
+            val refresh = WidgetOps.refreshFrom(args, n.refreshSec)
+            if (refresh != n.refreshSec) { n = n.copy(refreshSec = refresh); changes += if (refresh == 0) "refresh off" else "refreshes every ${WidgetOps.humanSecs(refresh)}" }
+            val style = WidgetOps.styleFrom(args, n.style)
+            if (style != n.style) { n = n.copy(style = style); changes += "style updated" }
+            // Geometry: explicit w/h, size names, scale; then anchor or x/y.
+            val scale = args.float("scale", "factor")
+            val (bw, bh) = when {
+                scale != null -> (n.w * scale).roundToInt() to (n.h * scale).roundToInt()
+                args.has("size") -> Layout.sizeFor(n.type, args.str("size"), n.w to n.h)
+                else -> (args.int("w", "width") ?: n.w) to (args.int("h", "height") ?: n.h)
+            }
+            val (sw, sh) = Layout.clampSize(bw, bh)
+            val anchor = args.str("anchor", "position") ?: Layout.impliedAnchor(args.str("size"))
+            val (ax, ay) = Layout.anchorPos(anchor, sw, sh)
+                ?: ((args.int("x") ?: (n.x + (args.int("dx") ?: 0))) to (args.int("y") ?: (n.y + (args.int("dy") ?: 0))))
+            val (x, y) = Layout.clampPos(ax, ay, sw, sh)
+            if (sw != n.w || sh != n.h) changes += "resized to ${sw}x$sh"
+            if (x != n.x || y != n.y) changes += "moved to ($x,$y)"
+            n.copy(x = x, y = y, w = sw, h = sh)
+        }
+        val nw = after.widget(w.id) ?: return@withContext Result.success("\"${w.title}\" was closed before the change applied.")
+        val warn = if (warnings.isEmpty()) "" else " Note: " + warnings.joinToString("; ") + "."
+        Result.success(if (changes.isEmpty()) "Nothing to change on \"${nw.title}\".$warn" else "Updated \"${nw.title}\": ${changes.joinToString(", ")}.$warn")
+    }
+
+    private fun remove(args: Args): Result<String> {
+        val ref = args.str("id", "title", "widget", "name")?.lowercase(Locale.US)
+        if (ref in setOf("all", "everything", "*", "all widgets", "all windows")) {
+            DesktopBridge.mutate { it.copy(widgets = emptyList()) }
+            return Result.success("Removed all widgets. Say undo to bring them back.")
+        }
+        val w = resolve(args) ?: return missing(args)
+        DesktopBridge.mutate { d -> d.copy(widgets = d.widgets.filterNot { it.id == w.id }) }
+        return Result.success("Removed \"${w.title}\". Say undo to bring it back.")
+    }
+
+    private fun move(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        val after = DesktopBridge.mutateWidget(w.id) { f ->
+            val (tx, ty) = Layout.anchorPos(args.str("anchor", "position", "to"), f.w, f.h)
+                ?: ((args.int("x") ?: (f.x + (args.int("dx") ?: 0))) to (args.int("y") ?: (f.y + (args.int("dy") ?: 0))))
+            val (x, y) = Layout.clampPos(tx, ty, f.w, f.h)
+            f.copy(x = x, y = y)
+        }
+        val nw = after.widget(w.id) ?: return Result.success("\"${w.title}\" is gone.")
+        return Result.success("Moved \"${nw.title}\" to (${nw.x},${nw.y}).")
+    }
+
+    private fun resize(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        val after = DesktopBridge.mutateWidget(w.id) { f ->
+            val scale = args.float("scale", "factor")
+            val (bw, bh) = when {
+                scale != null -> (f.w * scale).roundToInt() to (f.h * scale).roundToInt()
+                args.has("size") -> Layout.sizeFor(f.type, args.str("size"), f.w to f.h)
+                else -> (args.int("w", "width") ?: f.w) to (args.int("h", "height") ?: f.h)
+            }
+            val (nw, nh) = Layout.clampSize(bw, bh)
+            val anchor = args.str("anchor", "position") ?: Layout.impliedAnchor(args.str("size"))
+            val (ax, ay) = Layout.anchorPos(anchor, nw, nh) ?: (f.x to f.y)
+            val (x, y) = Layout.clampPos(ax, ay, nw, nh)
+            f.copy(x = x, y = y, w = nw, h = nh)
+        }
+        val nw = after.widget(w.id) ?: return Result.success("\"${w.title}\" is gone.")
+        return Result.success("Resized \"${nw.title}\" to ${nw.w}x${nw.h}.")
+    }
+
+    private fun front(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        DesktopBridge.mutate(pushUndo = false) { d -> d.widget(w.id)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d }
+        DesktopBridge.setActive(w.id)
+        return Result.success("\"${w.title}\" is now the active window, in front.")
+    }
+
+    private suspend fun navigate(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        val nav = args.str("nav", "command", "do")?.lowercase(Locale.US)?.replace(Regex("[\\s_-]+"), "_")
+            ?: return Result.failure(IllegalArgumentException("navigate needs 'nav'."))
+        val value = args.str("value", "to", "page", "chapter", "url", "zoom")
+        val now = System.currentTimeMillis().toString()
+        val pages = w.state["pages"]?.toIntOrNull()
+        val chapters = w.state["chapters"]?.toIntOrNull()
+
+        // Web-like widgets: history and media playback go through the page itself.
+        if (w.type.isWebLike || w.type == WidgetType.EPUB && nav in setOf("scroll_down", "scroll_up")) {
+            if (w.type.isWebLike && nav in setOf("start", "navigate", "start_navigation", "go") && w.source.contains("google.") && w.source.contains("/maps")) {
+                val dest = value ?: Regex("destination=([^&]+)").find(w.source)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                    ?: Regex("/maps/dir/[^/]+/([^/@]+)").find(w.source)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it.replace('+', ' '), "UTF-8") }
+                    ?: w.title.removePrefix("Directions: ")
+                val mode = Regex("travelmode=([a-z]+)").find(w.source)?.groupValues?.get(1) ?: args.str("travel_mode", "mode")
+                return WidgetOps.startNavigation(context, dest, mode, w.id, args)
+            }
+            when (nav) {
+                "next", "forward" -> if (w.type.isWebLike) return Result.success(WebCommandBus.execute(w.id, WebCommandBus.Command("forward", emptyMap())))
+                "prev", "previous", "back" -> if (w.type.isWebLike) return Result.success(WebCommandBus.execute(w.id, WebCommandBus.Command("back", emptyMap())))
+                "play", "resume", "start", "pause", "stop" -> if (w.type.isWebLike)
+                    return Result.success(WebCommandBus.execute(w.id, WebCommandBus.Command(if (nav == "pause" || nav == "stop") "pause" else "play", emptyMap())))
+                "scroll_down", "scroll_up", "scroll" -> return Result.success(WebCommandBus.execute(w.id,
+                    WebCommandBus.Command("scroll", mapOf("direction" to (if (nav == "scroll_up") "up" else value ?: "down")))))
+                "reload", "refresh" -> return Result.success(WebCommandBus.execute(w.id, WebCommandBus.Command("reload", emptyMap())))
+                "url", "open", "go" -> {
+                    val u = value ?: return Result.failure(IllegalArgumentException("url needs 'value'."))
+                    DesktopBridge.mutateWidget(w.id) { it.copy(source = WidgetOps.normalizeUrl(u)).withState("reload" to now) }
+                    return Result.success("Opening ${WidgetOps.normalizeUrl(u)} in \"${w.title}\".")
+                }
+            }
+        }
+
+        fun clampPage(p: Int) = if (pages != null && pages > 0) p.coerceIn(0, pages - 1) else max(0, p)
+        fun clampChapter(c: Int) = if (chapters != null && chapters > 0) c.coerceIn(0, chapters - 1) else max(0, c)
+        val page = w.state["page"]?.toIntOrNull() ?: 0
+        val chapter = w.state["chapter"]?.toIntOrNull() ?: 0
+        var pushUndo = false
+        var detail = ""
+        val transform: (Widget) -> Widget = when (w.type) {
+            WidgetType.PDF -> when (nav) {
+                "next", "forward", "next_page" -> { val p = clampPage(page + 1); detail = if (p == page) " (already on the last page)" else " — page ${p + 1}${pages?.let { " of $it" } ?: ""}"; { it.withState("page" to p.toString()) } }
+                "prev", "previous", "back", "previous_page" -> { val p = clampPage(page - 1); detail = if (p == page) " (already on the first page)" else " — page ${p + 1}"; { it.withState("page" to p.toString()) } }
+                "page", "chapter", "go_to", "goto", "jump" -> { val p = clampPage((value?.toIntOrNull() ?: 1) - 1); detail = " — page ${p + 1}"; { it.withState("page" to p.toString()) } }
+                "first", "start", "beginning" -> { detail = " — page 1"; { it.withState("page" to "0") } }
+                "last", "end" -> { val p = clampPage((pages ?: 1) - 1); detail = " — page ${p + 1}"; { it.withState("page" to p.toString()) } }
+                else -> return Result.failure(IllegalArgumentException("A PDF understands next, prev, page N, first, last."))
+            }
+            WidgetType.EPUB -> when (nav) {
+                "next", "forward", "next_chapter", "next_page" -> { val c = clampChapter(chapter + 1); detail = if (c == chapter) " (already on the last chapter)" else " — chapter ${c + 1}${chapters?.let { " of $it" } ?: ""}"; { it.withState("chapter" to c.toString()) } }
+                "prev", "previous", "back", "previous_chapter" -> { val c = clampChapter(chapter - 1); detail = if (c == chapter) " (already on the first chapter)" else " — chapter ${c + 1}"; { it.withState("chapter" to c.toString()) } }
+                "chapter", "page", "go_to", "goto", "jump" -> { val c = clampChapter((value?.toIntOrNull() ?: 1) - 1); detail = " — chapter ${c + 1}"; { it.withState("chapter" to c.toString()) } }
+                "first", "start", "beginning" -> { detail = " — chapter 1"; { it.withState("chapter" to "0") } }
+                "last", "end" -> { val c = clampChapter((chapters ?: 1) - 1); detail = " — chapter ${c + 1}"; { it.withState("chapter" to c.toString()) } }
+                else -> return Result.failure(IllegalArgumentException("An ebook understands next, prev, chapter N, first, last."))
+            }
+            WidgetType.VIDEO, WidgetType.AUDIO -> when (nav) {
+                "next", "forward", "skip", "skip_forward" -> { detail = " — skipped ahead 15 s"; { it.withState("seekDelta" to "15000", "seekMs" to "", "seekNonce" to now) } }
+                "prev", "previous", "back", "rewind", "skip_back" -> { detail = " — back 15 s"; { it.withState("seekDelta" to "-15000", "seekMs" to "", "seekNonce" to now) } }
+                "play", "resume", "start" -> { { it.withState("playing" to "true") } }
+                "pause", "stop" -> { { it.withState("playing" to "false") } }
+                "restart", "beginning", "first" -> { { it.withState("seekMs" to "0", "seekDelta" to "", "seekNonce" to now, "playing" to "true") } }
+                "mute" -> { { it.withState("muted" to "true") } }
+                "unmute" -> { { it.withState("muted" to "false") } }
+                "loop" -> { val on = if (value == null) w.state["loop"] != "true" else value.equals("true", true) || value == "on"; detail = if (on) " on" else " off"; { it.withState("loop" to on.toString()) } }
+                "seek", "go_to", "goto", "jump" -> { val secs = parseSeconds(value); detail = " — to ${secs}s"; { it.withState("seekMs" to (secs * 1000).toString(), "seekDelta" to "", "seekNonce" to now) } }
+                else -> return Result.failure(IllegalArgumentException("Media understands play, pause, next, prev, restart, mute, unmute, loop, seek."))
+            }
+            WidgetType.MAP -> {
+                val z = w.state["zoom"]?.toIntOrNull() ?: 13
+                val route = if (w.state["nav"] == "on") Router.Route.fromJson(w.content) else null
+                val step = w.state["step"]?.toIntOrNull() ?: 0
+                if (route != null && nav in setOf("next", "next_step", "forward", "prev", "previous", "back", "previous_step", "stop", "end", "cancel", "stop_navigation", "repeat", "current", "first", "start")) {
+                    return when (nav) {
+                        "stop", "end", "cancel", "stop_navigation" -> { DesktopBridge.mutateWidget(w.id) { it.copy(content = "", title = it.title.removePrefix("→ ")).withState("nav" to "", "step" to "", "pos" to "", "zoom" to "15") }; Result.success("Navigation stopped.") }
+                        "start", "first" -> { DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to "0") }; Result.success("Back to the first step: ${route.steps.firstOrNull()?.text}.") }
+                        "repeat", "current" -> Result.success(route.steps.getOrNull(step)?.let { "${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "No current step.")
+                        "prev", "previous", "back", "previous_step" -> { val n = (step - 1).coerceAtLeast(0); DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to n.toString()) }; Result.success("Step ${n + 1}: ${route.steps[n].text}.") }
+                        else -> {
+                            val n = (step + 1).coerceAtMost(route.steps.size - 1)
+                            DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to n.toString()) }
+                            val st = route.steps[n]
+                            Result.success(if (n == step) "That was the last step — ${st.text}." else "Step ${n + 1} of ${route.steps.size}: ${st.text}${if (st.distM > 0) " for ${Router.distance(st.distM)}" else ""}.")
+                        }
+                    }
+                }
+                if (nav in setOf("start", "navigate", "go", "directions")) {
+                    val dest = value ?: Regex("q=([^&]+)").find(w.source)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: w.title
+                    return WidgetOps.startNavigation(context, dest, w.state["mode"] ?: args.str("travel_mode", "mode"), w.id, args)
+                }
+                when (nav) {
+                    "zoom_in", "in", "closer", "next" -> { detail = " — zoom ${(z + 1).coerceAtMost(18)}"; { it.withState("zoom" to (z + 1).coerceAtMost(18).toString()) } }
+                    "zoom_out", "out", "farther", "further", "prev", "back" -> { detail = " — zoom ${(z - 1).coerceAtLeast(1)}"; { it.withState("zoom" to (z - 1).coerceAtLeast(1).toString()) } }
+                    "zoom" -> { val nz = (value?.toIntOrNull() ?: z).coerceIn(1, 18); detail = " — zoom $nz"; { it.withState("zoom" to nz.toString()) } }
+                    "north", "up", "south", "down", "east", "right", "west", "left", "pan" -> {
+                        val dir = if (nav == "pan") (value ?: "north") else nav
+                        detail = " — panned $dir"; { it.withState("pan" to dir, "panNonce" to now) }
+                    }
+                    "center", "recenter", "reset", "home" -> { { it.withState("pan" to "center", "panNonce" to now) } }
+                    "reload", "refresh" -> { { it.withState("reload" to now) } }
+                    else -> return Result.failure(IllegalArgumentException("A map understands zoom in/out, zoom N, north/south/east/west, recenter."))
+                }
+            }
+            WidgetType.LIVE, WidgetType.TEXT, WidgetType.TICKER -> when (nav) {
+                "reload", "refresh", "update", "next" -> { WidgetRefreshEngine.refreshNow(w.id); return Result.success("Refreshing \"${w.title}\".") }
+                else -> return Result.failure(IllegalArgumentException("Use widget update to change what a ${w.type.name.lowercase(Locale.US)} widget shows."))
+            }
+            WidgetType.IMAGE, WidgetType.MODEL3D -> when (nav) {
+                "reload", "refresh" -> { { it.withState("reload" to now) } }
+                else -> return Result.failure(IllegalArgumentException("That widget only supports reload."))
+            }
+            WidgetType.CLOCK -> return Result.failure(IllegalArgumentException("Use widget update format=time|time+date|time+seconds for the clock."))
+            WidgetType.WEB, WidgetType.APP -> return Result.failure(IllegalArgumentException("Use the web tool to operate pages and apps (click, type, scroll, play)."))
+        }
+        DesktopBridge.mutateWidget(w.id, pushUndo = pushUndo, transform = transform)
+        return Result.success("OK — ${nav.replace('_', ' ')} on \"${w.title}\"$detail.")
+    }
+
+    private fun parseSeconds(v: String?): Long {
+        val s = v?.trim()?.lowercase(Locale.US) ?: return 0
+        if (s.contains(':')) { val p = s.split(':').mapNotNull { it.toLongOrNull() }; return p.fold(0L) { acc, x -> acc * 60 + x } }
+        val m = Regex("(\\d+)\\s*m").find(s)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        val sec = Regex("(\\d+)\\s*s").find(s)?.groupValues?.get(1)?.toLongOrNull()
+        return if (m > 0 || sec != null) m * 60 + (sec ?: 0L) else s.toDoubleOrNull()?.toLong() ?: 0L
+    }
+
+    private fun refresh(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        WidgetRefreshEngine.refreshNow(w.id)
+        return Result.success("Refreshing \"${w.title}\".")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// desktop
+// ─────────────────────────────────────────────────────────────────────
+
+class DesktopTool(private val context: Context) : AiTool {
+    override val name = "desktop"
+
+    override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        val cur = DesktopBridge.current()
+        val name = args.str("name", "title", "desktop")
+        when (args.action) {
+            "describe", "status", "what", "list_widgets" -> Result.success(DesktopBridge.describe())
+            "list" -> {
+                val all = DesktopStore.list()
+                Result.success(if (all.isEmpty()) "No saved desktops." else
+                    "Saved desktops: " + all.joinToString(", ") { if (it.id == cur.id) "${it.name} (current)" else it.name })
+            }
+            "arrange", "tile", "organize", "organise", "layout", "clean_up", "cleanup", "line_up" -> {
+                val focus = args.str("focus", "main", "big")?.let { DesktopBridge.resolveWidget(it) }
+                val layout = args.str("layout", "style", "mode")
+                var description = ""
+                DesktopBridge.mutate { d ->
+                    val a = Layout.arrange(d.widgets, layout, focus?.id, args.int("gap"))
+                    description = a.description
+                    d.copy(widgets = a.widgets)
+                }
+                Result.success(description + if (cur.widgets.isNotEmpty()) " Say undo to put them back." else "")
+            }
+            "new", "create" -> {
+                val n = (name ?: "Desktop ${DesktopStore.list().size + 1}").take(32)
+                DesktopBridge.saveNow()
+                val d = Desktop(name = n, mode = cur.mode, theme = cur.theme)
+                DesktopStore.save(d)
+                DesktopBridge.replace(d)
+                Result.success("Created a new empty desktop \"$n\" and switched to it.")
+            }
+            "save", "snapshot", "store" -> {
+                if (name != null && !name.equals(cur.name, ignoreCase = true)) {
+                    // Only an EXACT name reuses a saved desktop; anything else is a new one.
+                    val existing = DesktopStore.findExact(name)
+                    val d = cur.copy(id = existing?.id ?: java.util.UUID.randomUUID().toString().take(8), name = name.take(32),
+                        updatedAt = System.currentTimeMillis())
+                    DesktopStore.save(d)
+                    DesktopBridge.replace(d)
+                    DesktopBridge.saveNow()
+                    Result.success(if (existing != null) "Saved over \"${d.name}\"." else "Saved the desktop as \"${d.name}\" — its thumbnail is in the strip.")
+                } else {
+                    DesktopBridge.saveNow()
+                    Result.success("Saved \"${cur.name}\".")
+                }
+            }
+            "load", "open", "switch", "show" -> {
+                val meta = DesktopStore.findByName(name) ?: return@withContext Result.success(ambiguous(name))
+                if (meta.id == cur.id) return@withContext Result.success("\"${meta.name}\" is already showing.")
+                DesktopBridge.saveNow()
+                val d = DesktopStore.load(meta.id) ?: return@withContext Result.failure(IllegalStateException("Couldn't read \"${meta.name}\"."))
+                DesktopBridge.replace(d)
+                Result.success("Loaded \"${d.name}\" with ${d.widgets.size} widget${if (d.widgets.size == 1) "" else "s"}.")
+            }
+            "delete", "remove" -> {
+                val meta = DesktopStore.findByName(name) ?: return@withContext Result.success(ambiguous(name))
+                if (meta.id == cur.id) {
+                    val other = DesktopStore.list().firstOrNull { it.id != meta.id }?.let { DesktopStore.load(it.id) }
+                        ?: DesktopBridge.defaultDesktop().also { DesktopStore.save(it) }
+                    DesktopBridge.replace(other)
+                }
+                DesktopStore.delete(meta.id)
+                DesktopBridge.catalogChanged()
+                Result.success("Deleted the desktop \"${meta.name}\".")
+            }
+            "rename" -> {
+                val n = name ?: return@withContext Result.failure(IllegalArgumentException("rename needs 'name'."))
+                DesktopBridge.mutate(pushUndo = false) { it.copy(name = n.take(32)) }
+                DesktopBridge.saveNow(); DesktopBridge.catalogChanged()
+                Result.success("Renamed to \"$n\".")
+            }
+            "set_mode", "mode" -> {
+                val m = args.str("mode", "name")?.lowercase(Locale.US)
+                val mode = when {
+                    m == null || m == "toggle" -> if (cur.mode == DesktopMode.HUD) DesktopMode.DESKTOP else DesktopMode.HUD
+                    m.startsWith("hud") || m.contains("head") || m.contains("overlay") || m.contains("glance") -> DesktopMode.HUD
+                    else -> DesktopMode.DESKTOP
+                }
+                DesktopBridge.mutate { it.copy(mode = mode) }
+                Result.success("Switched to ${mode.name.lowercase(Locale.US)} mode.")
+            }
+            "undo", "revert" -> Result.success(if (DesktopBridge.undo()) "Undone." else "Nothing to undo.")
+            "clear", "empty" -> {
+                DesktopBridge.mutate { it.copy(widgets = emptyList()) }
+                Result.success("Cleared all widgets from \"${cur.name}\". Say undo to restore.")
+            }
+            "locate", "where", "where_am_i", "location" -> {
+                val fix = LocationSource.current(context)
+                    ?: return@withContext Result.success("I can't determine your location right now — location services may be off or permission missing.")
+                val label = Geocoder.reverse(fix.lat, fix.lon)
+                Result.success("You're ${LocationSource.describe(fix, label)}. Coordinates ${fix.latLon()}.")
+            }
+            "screenshot", "capture", "snap" -> {
+                val bmp = WebCommandBus.capture() ?: return@withContext Result.failure(IllegalStateException("Couldn't capture the display."))
+                val saved = Screenshots.save(context, bmp) ?: return@withContext Result.failure(IllegalStateException("Couldn't save the screenshot."))
+                HudStateBridge.notice("Screenshot saved")
+                Result.success(if (saved.inGallery) "Saved a screenshot to the photo gallery (Pictures/TapGem)." else "Saved a screenshot inside TapGem (the gallery wasn't writable).")
+            }
+            else -> Result.failure(IllegalArgumentException("Unknown desktop action '${args.action}'."))
+        }
+    }
+
+    private fun ambiguous(name: String?): String {
+        val c = DesktopStore.candidates(name)
+        return if (c.size > 1) "Which one — " + c.joinToString(" or ") { "\"${it.name}\"" } + "?"
+        else "No saved desktop named \"$name\". " + listNames()
+    }
+
+    private fun listNames() = "Saved: " + DesktopStore.list().joinToString(", ") { it.name }.ifBlank { "none" }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// theme
+// ─────────────────────────────────────────────────────────────────────
+
+class ThemeTool : AiTool {
+    override val name = "theme"
+
+    override suspend fun execute(args: Args): Result<String> {
+        return when (args.action) {
+            "list" -> Result.success("Themes: " + Themes.ALL.joinToString(", ") { it.name } + ". Current: ${DesktopBridge.current().theme.name}.")
+            "set", "apply", "use", "change", "update" -> {
+                val cur = DesktopBridge.current().theme
+                val preset = Themes.byName(args.str("name", "preset", "theme"))
+                val base = preset ?: cur
+                val unknown = listOf(args.str("accent", "accent_color"), args.str("panel", "panel_color", "background", "bg_color"), args.str("text_color", "text"))
+                    .filter { ColorUtil.isUnknown(it) }
+                val t = Theme(
+                    name = preset?.name ?: args.str("name")?.take(20) ?: cur.name,
+                    accent = ColorUtil.parse(args.str("accent", "accent_color")) ?: base.accent,
+                    panel = ColorUtil.parse(args.str("panel", "panel_color", "background", "bg_color")) ?: base.panel,
+                    text = ColorUtil.parse(args.str("text_color", "text")) ?: base.text,
+                    fontScale = args.float("font_scale", "text_scale")?.coerceIn(0.6f, 2.2f) ?: base.fontScale,
+                    corner = args.int("corner_radius", "corner") ?: base.corner
+                )
+                if (preset == null && t == cur && unknown.isNotEmpty())
+                    return Result.success("I don't know the colour${if (unknown.size > 1) "s" else ""} ${unknown.joinToString(", ") { "\"$it\"" }} — try a hex code or a common colour name. Presets: ${Themes.ALL.joinToString(", ") { it.name }}.")
+                DesktopBridge.mutate { it.copy(theme = t) }
+                val warn = if (unknown.isEmpty()) "" else " (Ignored unknown colour ${unknown.joinToString(", ") { "\"$it\"" }}.)"
+                Result.success("Theme set to ${t.name}.$warn")
+            }
+            else -> Result.failure(IllegalArgumentException("Unknown theme action '${args.action}'."))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// wallpaper
+// ─────────────────────────────────────────────────────────────────────
+
+class WallpaperTool(private val context: Context) : AiTool {
+    override val name = "wallpaper"
+
+    override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        when (args.action) {
+            "clear", "none", "remove" -> {
+                DesktopBridge.mutate { it.copy(wallpaper = Wallpaper()) }
+                Result.success("Wallpaper cleared.")
+            }
+            "set", "paint", "change", "generate", "create" -> {
+                val desc = args.str("description", "prompt", "text", "name")
+                val rawColors = args.str("colors", "color")?.split(',', ';', '/')?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+                val colors = rawColors.mapNotNull { ColorUtil.parse(it) }
+                val unknown = rawColors.filter { ColorUtil.isUnknown(it) }
+                val kind = args.str("kind", "type")?.lowercase(Locale.US)
+                val wp: Wallpaper
+                var note = if (unknown.isEmpty()) "" else " (Ignored unknown colour ${unknown.joinToString(", ") { "\"$it\"" }}.)"
+                when {
+                    kind == "none" -> wp = Wallpaper()
+                    (kind == "color" || (kind == null && desc == null)) && colors.size == 1 ->
+                        wp = Wallpaper(WallpaperKind.COLOR, colors.take(1), description = desc.orEmpty())
+                    (kind == "gradient" || (kind == null && desc == null)) && colors.size >= 2 ->
+                        wp = Wallpaper(WallpaperKind.GRADIENT, colors, description = desc.orEmpty())
+                    desc != null -> {
+                        HudStateBridge.notice("Painting wallpaper…")
+                        val prompt = "Wallpaper for a 640x480 landscape AR-glasses display. Rich, dark-friendly, high contrast, " +
+                            "no text, no watermarks, no borders. Scene: $desc"
+                        val png = GeminiRest.generateImage(context, prompt)
+                        wp = png.fold(
+                            onSuccess = { bytes ->
+                                val f = File(DesktopStore.wallpapersDir, "wp_${System.currentTimeMillis()}.png")
+                                f.writeBytes(bytes)
+                                Wallpaper(WallpaperKind.IMAGE, imagePath = f.absolutePath, description = desc)
+                            },
+                            onFailure = {
+                                Log.w("WallpaperTool", "image gen failed: ${it.message}")
+                                note += " (Image painting failed — used a gradient from the description instead.)"
+                                Wallpaper(WallpaperKind.GRADIENT, gradientFor(desc), description = desc)
+                            }
+                        )
+                        HudStateBridge.notice(null)
+                    }
+                    unknown.isNotEmpty() -> return@withContext Result.success("I don't know the colour ${unknown.joinToString(", ") { "\"$it\"" }} — try hex codes or common names, or describe a scene to paint.")
+                    else -> return@withContext Result.failure(IllegalArgumentException("wallpaper set needs 'description' or 'colors'."))
+                }
+                DesktopBridge.mutate { it.copy(wallpaper = wp, mode = if (wp.kind == WallpaperKind.NONE) it.mode else DesktopMode.DESKTOP) }
+                Result.success(when (wp.kind) {
+                    WallpaperKind.NONE -> "Wallpaper cleared."
+                    WallpaperKind.IMAGE -> "Painted a new wallpaper: $desc. Desktop mode is on.$note"
+                    else -> "Wallpaper set.$note Desktop mode is on."
+                })
+            }
+            else -> Result.failure(IllegalArgumentException("Unknown wallpaper action '${args.action}'."))
+        }
+    }
+
+    /** Deterministic pleasant two-tone gradient from the words. */
+    private fun gradientFor(desc: String): List<Int> {
+        val h = desc.lowercase(Locale.US).hashCode()
+        val hue1 = ((h and 0xFFFF) % 360).toFloat()
+        val hue2 = (hue1 + 40f + ((h ushr 16) % 80)) % 360f
+        return listOf(android.graphics.Color.HSVToColor(floatArrayOf(hue1, 0.75f, 0.45f)),
+            android.graphics.Color.HSVToColor(floatArrayOf(hue2, 0.85f, 0.12f)))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// app_builder — vibe-coded mini apps
+// ─────────────────────────────────────────────────────────────────────
+
+class AppBuilderTool(private val context: Context) : AiTool {
+    override val name = "app_builder"
+
+    override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        val appName = args.str("name", "title", "app") ?: return@withContext Result.failure(IllegalArgumentException("app_builder needs 'name'."))
+        val desc = args.str("description", "prompt", "text", "change") ?: return@withContext Result.failure(IllegalArgumentException("app_builder needs 'description'."))
+        when (args.action) {
+            "create", "build", "make", "new" -> {
+                HudStateBridge.notice("Building $appName…")
+                val html = GeminiRest.generateText(context, "App name: $appName\nWhat it should do: $desc", system = APP_SYSTEM)
+                    .map(::cleanHtml).getOrElse { HudStateBridge.notice(null); return@withContext Result.failure(IllegalStateException("Couldn't generate the app: ${it.message}")) }
+                val f = File(DesktopStore.appsDir, "${slug(appName)}__v1_${System.currentTimeMillis()}.html")
+                f.writeText(html)
+                HudStateBridge.notice(null)
+                WidgetOps.add(context, args, forcedType = WidgetType.APP, forcedSource = f.absolutePath, forcedTitle = appName)
+                    .map { "Built the app \"$appName\" and placed it on the desktop." }
+            }
+            "update", "change", "edit", "modify", "fix" -> {
+                val w = DesktopBridge.resolveWidget(appName, "app")?.takeIf { it.type == WidgetType.APP }
+                    ?: return@withContext Result.success("No app named \"$appName\" on this desktop.")
+                val current = runCatching { File(w.source).readText() }.getOrDefault("")
+                HudStateBridge.notice("Updating ${w.title}…")
+                val html = GeminiRest.generateText(context,
+                    "Here is the current app HTML:\n\n$current\n\nChange request: $desc\n\nReturn the COMPLETE updated HTML document.",
+                    system = APP_SYSTEM).map(::cleanHtml).getOrElse { HudStateBridge.notice(null); return@withContext Result.failure(IllegalStateException("Couldn't update the app: ${it.message}")) }
+                // Versioned: a new file each update, so undo can bring the previous version back.
+                val version = Regex("__v(\\d+)_").find(File(w.source).name)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                val f = File(DesktopStore.appsDir, "${slug(w.title)}__v${version + 1}_${System.currentTimeMillis()}.html")
+                f.writeText(html)
+                HudStateBridge.notice(null)
+                DesktopBridge.mutateWidget(w.id) { it.copy(source = f.absolutePath).withState("reload" to System.currentTimeMillis().toString()) }
+                Result.success("Updated the app \"${w.title}\" (version ${version + 1}). Say undo to go back to the previous version.")
+            }
+            else -> Result.failure(IllegalArgumentException("Unknown app_builder action '${args.action}'."))
+        }
+    }
+
+    private fun cleanHtml(raw: String): String {
+        var s = raw.trim()
+        s = s.removePrefix("```html").removePrefix("```HTML").removePrefix("```").removeSuffix("```").trim()
+        val i = s.indexOf("<!doctype", ignoreCase = true).takeIf { it >= 0 } ?: s.indexOf("<html", ignoreCase = true)
+        if (i > 0) s = s.substring(i)
+        if (!s.contains("<html", ignoreCase = true)) s = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body style=\"background:#000;color:#eee\">$s</body></html>"
+        return s
+    }
+
+    private fun slug(s: String) = s.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_').take(24).ifBlank { "app" }
+
+    companion object {
+        private const val APP_SYSTEM =
+            "You write complete, self-contained single-file HTML mini apps for a 640x480 AR-glasses display. " +
+                "Constraints: dark or black background, bright high-contrast text (min 14px), large touch targets " +
+                "(min 36px) with visible text labels on buttons, fluid layout that fills its container (use % / vw / " +
+                "vh, no fixed 640px assumptions — the window may be smaller), no scrolling if avoidable, no external " +
+                "resources, no fonts from the web, no alert()/prompt()/confirm(), vanilla HTML/CSS/JS only, " +
+                "everything inline. There is NO keyboard: never rely on typed input; use buttons, sliders and taps. " +
+                "The device runs on a small battery: NO infinite CSS animations, glows, pulses or " +
+                "requestAnimationFrame loops — update visuals only when state changes or at most once per second " +
+                "(setInterval >= 1000 ms); transitions on user actions are fine. " +
+                "Must work offline in Chrome 95. A tiny host bridge exists as window.TapGem with " +
+                "notify(text) to flash a one-line message on the glasses, setTitle(text) to rename the window, " +
+                "save(key, value) and load(key) (strings) for persistence — guard every call with " +
+                "`if (window.TapGem)`. Output ONLY the HTML document — no markdown fences, no commentary."
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// media
+// ─────────────────────────────────────────────────────────────────────
+
+class MediaTool(private val context: Context) : AiTool {
+    override val name = "media"
+
+    override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        val type = WidgetType.parse(args.str("type"))
+        val query = args.str("query", "name", "search", "text")
+        when (args.action) {
+            "find", "search", "list" -> {
+                val hits = MediaScanner.find(context, query, type)
+                if (hits.isEmpty()) {
+                    val hint = if (!MediaScanner.hasAllFilesAccess()) " Files outside Pictures/Movies/Music need All-files access, or push them to the media folder." else ""
+                    Result.success("No files match \"${query ?: type?.name ?: ""}\".$hint")
+                } else Result.success("Matches:\n" + hits.mapIndexed { i, h ->
+                    "${i + 1}. ${h.name} (${h.type.name.lowercase(Locale.US)}, ${h.sizeBytes / 1024} KB) path=${h.path}"
+                }.joinToString("\n"))
+            }
+            "open", "show", "play", "add" -> {
+                val path = args.str("path", "file")
+                if (path != null) WidgetOps.add(context, args, forcedType = type ?: WidgetType.forExtension(path.substringAfterLast('.', "")), forcedSource = path)
+                else {
+                    val hit = MediaScanner.find(context, query, type).firstOrNull()
+                        ?: return@withContext Result.success("No files match \"${query ?: ""}\".")
+                    WidgetOps.add(context, args, forcedType = hit.type, forcedSource = hit.path)
+                }
+            }
+            else -> Result.failure(IllegalArgumentException("Unknown media action '${args.action}'."))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// web — operate pages and apps like a user would
+// ─────────────────────────────────────────────────────────────────────
+
+class WebTool : AiTool {
+    override val name = "web"
+
+    private val actions = setOf("inspect", "read", "click", "type", "press", "scroll", "play", "pause", "url", "back", "forward", "reload", "eval")
+
+    override suspend fun execute(args: Args): Result<String> {
+        val action = when (args.action) {
+            "tap", "press_button", "select" -> "click"
+            "enter", "fill", "input", "write" -> "type"
+            "key", "keypress" -> "press"
+            "open", "go", "navigate", "goto" -> "url"
+            "refresh" -> "reload"
+            "look", "list", "elements", "see" -> "inspect"
+            "text", "content", "summarize" -> "read"
+            "stop" -> "pause"
+            "resume", "start" -> "play"
+            else -> args.action
+        }
+        if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
+        val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
+        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click"))) {
+            return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")
+        }
+        DesktopBridge.setActive(w.id)
+        if (action == "url") {
+            val u = args.str("url", "value", "text") ?: return Result.failure(IllegalArgumentException("url needs 'url'."))
+            val norm = WidgetOps.normalizeUrl(u)
+            if (w.type == WidgetType.WEB) DesktopBridge.mutateWidget(w.id) { it.copy(source = norm).withState("reload" to System.currentTimeMillis().toString()) }
+            val r = WebCommandBus.execute(w.id, WebCommandBus.Command("url", mapOf("url" to norm)))
+            return Result.success(r)
+        }
+        val passthrough = args.raw.filterKeys { it != "action" }
+        val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
+        return Result.success(result)
+    }
+
+    private fun resolveTarget(args: Args): Widget? {
+        val ref = args.str("target", "id", "title", "widget", "name")
+        if (ref != null) DesktopBridge.resolveWidget(ref)?.let { return it }
+        val d = DesktopBridge.current()
+        DesktopBridge.activeWidgetId?.let { id -> d.widget(id)?.takeIf { it.type.isWebLike }?.let { return it } }
+        return d.widgets.filter { it.type.isWebLike }.maxByOrNull { it.z }
+            ?: d.widgets.filter { it.type == WidgetType.EPUB || it.type == WidgetType.MAP }.maxByOrNull { it.z }
+    }
+}

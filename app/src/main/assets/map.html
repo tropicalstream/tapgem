@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Map</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; width: 100%; height: 100%; font-family: sans-serif; }
+  #map { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: grab; }
+  #layer { position: absolute; left: 0; top: 0; will-change: transform; }
+  #layer img { position: absolute; width: 256px; height: 256px; user-select: none; -webkit-user-drag: none; pointer-events: none; image-rendering: auto; }
+  /* Dark style: invert the standard tiles so streets glow on a near-black ground (transparent on the glasses). */
+  #layer.dark img { filter: invert(1) hue-rotate(180deg) saturate(0.55) brightness(0.82) contrast(1.15); }
+  #pin { position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+         background: #64D2FF; box-shadow: 0 0 0 3px rgba(100,210,255,.35), 0 0 14px 4px rgba(100,210,255,.55); pointer-events: none; }
+  #pin::after { content: ""; position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%;
+                border: 2px solid rgba(100,210,255,.55); animation: pulse 2.2s ease-out 4; }  /* a few pulses, then still: no always-on GPU work */
+  @keyframes pulse { 0% { transform: scale(.4); opacity: .9 } 100% { transform: scale(1.6); opacity: 0 } }
+  #label { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -34px); padding: 3px 9px; border-radius: 10px;
+           background: rgba(0,0,0,.72); color: #E6F1FF; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none;
+           border: 1px solid rgba(100,210,255,.45); max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
+  #ctl { position: absolute; right: 6px; bottom: 6px; display: flex; flex-direction: column; gap: 4px; }
+  #ctl button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(255,255,255,.35); background: rgba(0,0,0,.65);
+                color: #fff; font-size: 20px; line-height: 1; font-weight: 700; padding: 0; }
+  #ctl button:active { background: rgba(100,210,255,.5); }
+  #attr { position: absolute; left: 4px; bottom: 3px; font-size: 8px; color: rgba(255,255,255,.55); pointer-events: none; text-shadow: 0 0 3px #000; }
+  #z { position: absolute; left: 6px; top: 4px; font-size: 10px; color: rgba(255,255,255,.6); pointer-events: none; text-shadow: 0 0 3px #000; }
+  #route { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #nav { position: absolute; left: 6px; right: 46px; top: 6px; display: none; padding: 6px 10px; border-radius: 10px;
+         background: rgba(0,0,0,.78); border: 1px solid rgba(100,210,255,.5); color: #E6F1FF; pointer-events: none; }
+  #nav .step { font-size: 15px; font-weight: 700; line-height: 1.25; }
+  #nav .sub { font-size: 11px; color: #9AD6FF; margin-top: 2px; }
+  #eta { position: absolute; left: 6px; bottom: 16px; display: none; padding: 3px 8px; border-radius: 8px; background: rgba(0,0,0,.72);
+         color: #E6F1FF; font-size: 11px; border: 1px solid rgba(100,210,255,.35); pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="map">
+  <div id="layer"></div>
+  <canvas id="route"></canvas>
+  <div id="pin"></div>
+  <div id="nav"><div class="step"></div><div class="sub"></div></div>
+  <div id="eta"></div>
+  <div id="label"></div>
+  <div id="z"></div>
+  <div id="ctl">
+    <button id="zin" aria-label="Zoom in">+</button>
+    <button id="zout" aria-label="Zoom out">−</button>
+  </div>
+  <div id="attr">© OpenStreetMap contributors</div>
+</div>
+<script>
+(function () {
+  var q = {};
+  location.search.replace(/^\?/, '').split('&').forEach(function (kv) {
+    if (!kv) return; var p = kv.split('='); q[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || '').replace(/\+/g, ' '));
+  });
+  var dark = q.style !== 'light';
+  function tileUrl(z, x, y) { return 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png'; }
+  function fallbackUrl(z, x, y) { return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/' + z + '/' + y + '/' + x; }
+  var home = { lat: parseFloat(q.lat) || 0, lon: parseFloat(q.lon) || 0 };
+  var st = { lat: home.lat, lon: home.lon, zoom: Math.max(1, Math.min(18, parseInt(q.zoom, 10) || 13)) };
+  var layer = document.getElementById('layer'), map = document.getElementById('map');
+  if (dark) layer.className = 'dark';
+  var tiles = {};  // key -> img
+  document.getElementById('label').textContent = q.label || '';
+  if (!q.label) document.getElementById('label').style.display = 'none';
+
+  function world(lat, lon, z) {
+    var n = 256 * Math.pow(2, z), r = lat * Math.PI / 180;
+    return { x: (lon + 180) / 360 * n, y: (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n };
+  }
+  function unworld(x, y, z) {
+    var n = 256 * Math.pow(2, z);
+    var lon = x / n * 360 - 180, t = Math.PI * (1 - 2 * y / n);
+    return { lat: 180 / Math.PI * Math.atan(0.5 * (Math.exp(t) - Math.exp(-t))), lon: lon };
+  }
+  function render() {
+    var W = map.clientWidth || 320, H = map.clientHeight || 240, z = st.zoom;
+    var c = world(st.lat, st.lon, z), n = Math.pow(2, z);
+    var ox = c.x - W / 2, oy = c.y - H / 2;
+    var tx0 = Math.floor(ox / 256), tx1 = Math.floor((ox + W) / 256);
+    var ty0 = Math.floor(oy / 256), ty1 = Math.floor((oy + H) / 256);
+    var keep = {};
+    for (var ty = ty0; ty <= ty1; ty++) {
+      if (ty < 0 || ty >= n) continue;
+      for (var tx = tx0; tx <= tx1; tx++) {
+        var wx = ((tx % n) + n) % n, key = z + '/' + wx + '/' + ty + '@' + tx;
+        keep[key] = true;
+        var img = tiles[key];
+        if (!img) {
+          img = document.createElement('img');
+          img.src = tileUrl(z, wx, ty);
+          img.alt = '';
+          (function (im, zz, xx, yy) { im.onerror = function () { im.onerror = null; im.src = fallbackUrl(zz, xx, yy); }; })(img, z, wx, ty);
+          layer.appendChild(img); tiles[key] = img;
+        }
+        img.style.left = (tx * 256 - ox) + 'px';
+        img.style.top = (ty * 256 - oy) + 'px';
+      }
+    }
+    for (var k in tiles) if (!keep[k]) { layer.removeChild(tiles[k]); delete tiles[k]; }
+    document.getElementById('z').textContent = 'z' + z;
+    drawRoute(W, H, z, ox, oy);
+  }
+
+  // ── navigation layer ───────────────────────────────────────────
+  var route = null;       // {coords:[[lon,lat]...], steps:[{lat,lon,text,dist,dur}], dist, dur, dest}
+  var stepIdx = 0;
+  var pos = null;         // {lat, lon, acc}
+  var canvas = document.getElementById('route'), ctx = canvas.getContext('2d');
+  function toPx(lat, lon, z, ox, oy) { var w = world(lat, lon, z); return [w.x - ox, w.y - oy]; }
+  function drawRoute(W, H, z, ox, oy) {
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    ctx.clearRect(0, 0, W, H);
+    if (route && route.coords && route.coords.length > 1) {
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (var i = 0; i < route.coords.length; i++) { var p = toPx(route.coords[i][1], route.coords[i][0], z, ox, oy); if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]); }
+      ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.lineWidth = 9; ctx.stroke();
+      ctx.strokeStyle = '#64D2FF'; ctx.lineWidth = 5; ctx.stroke();
+      var last = route.coords[route.coords.length - 1], d = toPx(last[1], last[0], z, ox, oy);
+      ctx.beginPath(); ctx.arc(d[0], d[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#FF375F'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+      if (route.steps && route.steps[stepIdx]) {
+        var st = route.steps[stepIdx], sp = toPx(st.lat, st.lon, z, ox, oy);
+        ctx.beginPath(); ctx.arc(sp[0], sp[1], 9, 0, Math.PI * 2); ctx.strokeStyle = '#FFD60A'; ctx.lineWidth = 3; ctx.stroke();
+      }
+    }
+    if (pos) {
+      var q = toPx(pos.lat, pos.lon, z, ox, oy);
+      if (pos.acc && pos.acc < 2000) { var r = pos.acc / (156543.03 * Math.cos(pos.lat * Math.PI / 180) / Math.pow(2, z)); if (r > 6 && r < 400) { ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(100,210,255,.15)'; ctx.fill(); } }
+      ctx.beginPath(); ctx.arc(q[0], q[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#64D2FF'; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke();
+    }
+  }
+  function fmtDist(m) { var ft = m * 3.28084; return ft < 1000 ? (Math.round(ft / 10) * 10) + ' ft' : (m / 1609.344).toFixed(1) + ' mi'; }
+  function fmtDur(s) { var m = Math.round(s / 60); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; }
+  function showStep() {
+    var nav = document.getElementById('nav'), eta = document.getElementById('eta');
+    if (!route || !route.steps || !route.steps.length) { nav.style.display = 'none'; eta.style.display = 'none'; return; }
+    var i = Math.max(0, Math.min(stepIdx, route.steps.length - 1)), st = route.steps[i];
+    nav.querySelector('.step').textContent = st.text;
+    var next = route.steps[i + 1];
+    nav.querySelector('.sub').textContent = (st.dist > 0 ? 'for ' + fmtDist(st.dist) : '') + (next ? (st.dist > 0 ? ' · then ' : 'Then ') + next.text : '') + '  (' + (i + 1) + '/' + route.steps.length + ')';
+    nav.style.display = 'block';
+    var remain = 0, remT = 0; for (var k = i; k < route.steps.length; k++) { remain += route.steps[k].dist || 0; remT += route.steps[k].dur || 0; }
+    eta.textContent = fmtDist(remain) + ' · ' + fmtDur(remT) + ' left' + (route.dest ? ' · to ' + route.dest : '');
+    eta.style.display = 'block';
+    document.getElementById('pin').style.display = 'none'; document.getElementById('label').style.display = 'none';
+  }
+  window.setRoute = function (r) { route = (typeof r === 'string') ? JSON.parse(r) : r; stepIdx = 0; if (route && route.coords && route.coords.length) { var c0 = route.coords[0]; home = { lat: c0[1], lon: c0[0] }; } showStep(); window.setStep(0); return 'route set'; };
+  window.setStep = function (i) { if (!route || !route.steps) return 'no route'; stepIdx = Math.max(0, Math.min(i, route.steps.length - 1)); var st = route.steps[stepIdx]; st_center(st.lat, st.lon, 17); showStep(); return route.steps[stepIdx].text; };
+  window.setPosition = function (lat, lon, acc, follow) { pos = { lat: lat, lon: lon, acc: acc || 0 }; if (follow) { st.lat = lat; st.lon = lon; } render(); return 'ok'; };
+  function st_center(lat, lon, zoom) { st.lat = lat; st.lon = lon; if (zoom) st.zoom = zoom; render(); }
+  function setZoom(z) { st.zoom = Math.max(1, Math.min(18, Math.round(z))); render(); return 'zoom ' + st.zoom; }
+  function panPx(dx, dy) {
+    var c = world(st.lat, st.lon, st.zoom), p = unworld(c.x + dx, c.y + dy, st.zoom);
+    st.lat = Math.max(-85, Math.min(85, p.lat)); st.lon = ((p.lon + 540) % 360) - 180; render();
+  }
+  function panBy(dir, amount) {
+    var a = amount || Math.round((map.clientWidth || 320) * 0.4);
+    dir = String(dir || '').toLowerCase();
+    if (dir === 'north' || dir === 'up') panPx(0, -a);
+    else if (dir === 'south' || dir === 'down') panPx(0, a);
+    else if (dir === 'east' || dir === 'right') panPx(a, 0);
+    else if (dir === 'west' || dir === 'left') panPx(-a, 0);
+    else if (dir === 'center' || dir === 'home' || dir === 'top') { st.lat = home.lat; st.lon = home.lon; render(); return 'recentered'; }
+    else return 'unknown direction ' + dir;
+    return 'panned ' + dir;
+  }
+  function setCenter(lat, lon, zoom, label) {
+    home = { lat: lat, lon: lon }; st.lat = lat; st.lon = lon; if (zoom) st.zoom = zoom;
+    if (label != null) { document.getElementById('label').textContent = label; document.getElementById('label').style.display = label ? '' : 'none'; }
+    render(); return 'ok';
+  }
+  window.setZoom = setZoom; window.panBy = panBy; window.recenter = function () { return panBy('center'); }; window.setCenter = setCenter;
+  window.__tgScroll = function (dir, amount) { return panBy(dir, amount); };
+
+  document.getElementById('zin').addEventListener('click', function () { setZoom(st.zoom + 1); });
+  document.getElementById('zout').addEventListener('click', function () { setZoom(st.zoom - 1); });
+
+  var drag = null;
+  map.addEventListener('pointerdown', function (e) { if (e.target.tagName === 'BUTTON') return; drag = { x: e.clientX, y: e.clientY }; map.setPointerCapture(e.pointerId); });
+  map.addEventListener('pointermove', function (e) { if (!drag) return; panPx(drag.x - e.clientX, drag.y - e.clientY); drag = { x: e.clientX, y: e.clientY }; });
+  map.addEventListener('pointerup', function () { drag = null; });
+  map.addEventListener('pointercancel', function () { drag = null; });
+  map.addEventListener('wheel', function (e) { e.preventDefault(); setZoom(st.zoom + (e.deltaY < 0 ? 1 : -1)); }, { passive: false });
+  window.addEventListener('keydown', function (e) {
+    if (e.key === '+' || e.key === '=') setZoom(st.zoom + 1);
+    else if (e.key === '-' || e.key === '_') setZoom(st.zoom - 1);
+    else if (e.key === 'ArrowUp') panBy('north'); else if (e.key === 'ArrowDown') panBy('south');
+    else if (e.key === 'ArrowLeft') panBy('west'); else if (e.key === 'ArrowRight') panBy('east');
+  });
+  window.addEventListener('resize', render);
+  render();
+})();
+</script>
+</body>
+</html>

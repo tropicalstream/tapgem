@@ -1,0 +1,15 @@
+.gradle/
+build/
+app/build/
+local.properties
+
+# API key — NEVER commit it. It is pushed to the device over adb (see README).
+gemini_api_key.txt
+*.key
+.DS_Store
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/

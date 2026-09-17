@@ -1,0 +1,210 @@
+<com.tapgem.app.ui.BinocularSbsLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Single logical 640×480 viewport – BinocularSbsLayout draws it twice (L+R). -->
+    <FrameLayout
+        android:id="@+id/mainContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000">
+
+        <!-- The desktop: wallpaper (desktop mode) + widgets. Owns everything
+             under the strip. Black = transparent on the waveguide in HUD mode. -->
+        <com.tapgem.app.ui.DesktopHostView
+            android:id="@+id/desktopHost"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:clickable="false"
+            android:focusable="false" />
+
+        <!-- HUD overlay: strip + transient notice + assistant caption. -->
+        <FrameLayout
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:clickable="false"
+            android:focusable="false">
+
+            <!-- Status strip: screenshot button on the left; on the right the
+                 saved-desktop thumbnails sit right next to time · date · battery
+                 · net, then the Siri-style wave in the corner. -->
+            <LinearLayout
+                android:id="@+id/hudStrip"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_gravity="top"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:background="#B3000000"
+                android:elevation="8dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:clickable="false"
+                android:focusable="false">
+
+                <!-- Tap = capture the display to Pictures/TapGem. -->
+                <ImageView
+                    android:id="@+id/screenshotBtn"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:padding="4dp"
+                    android:src="@drawable/ic_screenshot"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Screenshot" />
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <!-- Saved desktops as tappable thumbnails (current = accent ring). -->
+                <LinearLayout
+                    android:id="@+id/thumbRow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginEnd="6dp"
+                    android:clipChildren="false"
+                    android:clickable="false"
+                    android:focusable="false" />
+
+                <TextView
+                    android:id="@+id/hudTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="--:--"
+                    android:textColor="#FFE0F4FF"
+                    android:textSize="14sp"
+                    android:letterSpacing="0.06"
+                    tools:ignore="UnusedAttribute" />
+
+                <TextView
+                    android:id="@+id/hudDate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="—"
+                    android:textColor="#FFB7CEDE"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.04"
+                    tools:ignore="UnusedAttribute" />
+
+                <TextView
+                    android:id="@+id/hudBattery"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="—%"
+                    android:textColor="#FF9FE6B0"
+                    android:textSize="11sp"
+                    tools:ignore="UnusedAttribute" />
+
+                <TextView
+                    android:id="@+id/hudNetwork"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="⊘"
+                    android:textColor="#FFFF5252"
+                    android:textSize="11sp"
+                    tools:ignore="UnusedAttribute" />
+
+                <!-- Siri-colored assistant wave: tap = talk, double-tap = exit. -->
+                <com.tapgem.app.ui.SiriWaveView
+                    android:id="@+id/siriWave"
+                    android:layout_width="76dp"
+                    android:layout_height="30dp"
+                    android:layout_marginStart="8dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Assistant" />
+
+            </LinearLayout>
+
+            <!-- Transient one-line notice under the strip; auto-clears. Taps pass through it. -->
+            <TextView
+                android:id="@+id/hudNotice"
+                android:tag="passthrough"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="44dp"
+                android:background="#B3000000"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="3dp"
+                android:elevation="12dp"
+                android:fontFamily="sans-serif-medium"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:textColor="#FFE0F4FF"
+                android:textSize="12.5sp"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute" />
+
+            <!-- Assistant caption (what it's saying), bottom-center, subtitle style. -->
+            <TextView
+                android:id="@+id/caption"
+                android:tag="passthrough"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxWidth="560dp"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="10dp"
+                android:background="#B3000000"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="5dp"
+                android:elevation="12dp"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:maxLines="2"
+                android:ellipsize="start"
+                android:textColor="#FFFFFFFF"
+                android:textSize="12.5sp"
+                android:visibility="gone"
+                tools:ignore="UnusedAttribute" />
+
+            <!-- Brief white flash when a screenshot is taken. -->
+            <View
+                android:id="@+id/flash"
+                android:tag="passthrough"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#FFFFFFFF"
+                android:elevation="14dp"
+                android:alpha="0"
+                android:visibility="gone" />
+
+        </FrameLayout>
+
+        <!-- Trackpad cursor. Inside the logical child so dispatchDraw duplicates
+             it to both eyes; elevation outranks every overlay. -->
+        <ImageView
+            android:id="@+id/cursorView"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/cursor_arrow_image"
+            android:elevation="1000dp"
+            android:visibility="gone"
+            android:contentDescription="@null" />
+
+    </FrameLayout>
+
+</com.tapgem.app.ui.BinocularSbsLayout>

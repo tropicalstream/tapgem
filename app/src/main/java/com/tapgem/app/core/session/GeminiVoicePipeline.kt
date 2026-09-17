@@ -1,0 +1,500 @@
+package com.tapgem.app.core.session
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Process
+import android.os.SystemClock
+import android.util.Log
+import androidx.core.content.ContextCompat
+import com.tapgem.app.core.audio.GeminiAudioPlayer
+import com.tapgem.app.core.bridge.DesktopBridge
+import com.tapgem.app.core.bridge.HudStateBridge
+import com.tapgem.app.core.bridge.HudStateBridge.Channel
+import com.tapgem.app.core.bridge.HudStateBridge.ConnectionStatus
+import com.tapgem.app.core.bridge.HudStateBridge.VoicePhase
+import com.tapgem.app.core.bridge.WebCommandBus
+import android.graphics.Bitmap
+import java.io.ByteArrayOutputStream
+import com.tapgem.app.core.network.GeminiLiveClient
+import com.tapgem.app.core.store.ApiKeyStore
+import com.tapgem.app.core.tools.ToolDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * The Gemini Live voice loop: mic in, audio out, tools in between. Barge-in
+ * cuts playback on-device the moment the user speaks (raw MIC keeps the
+ * capture path open through playback; an output-scaled gate rejects echo);
+ * a mutual-silence watchdog ends idle sessions; double-tap ends them on
+ * demand. All session state transitions happen under [sessionLock] so a
+ * cancel during connect can never strand an open mic or socket. Tool calls
+ * execute one at a time, in order, on their own thread; model audio is
+ * written on its own thread so the socket reader never blocks.
+ */
+class GeminiVoicePipeline(context: Context) {
+
+    private val appContext: Context = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val toolDispatcherThread = Executors.newSingleThreadExecutor { Thread(it, "TapGemTools") }.asCoroutineDispatcher()
+    private val audioExecutor = Executors.newSingleThreadExecutor { Thread(it, "TapGemPlayback") }
+    private val sessionLock = Any()
+    private var connectJob: Job? = null
+    private var silenceWatchdogJob: Job? = null
+    private var screenFeedJob: Job? = null
+    @Volatile private var lastFrameSentMs = 0L
+    @Volatile private var frameWantedAtMs = 0L
+
+    @Volatile private var liveSession: GeminiLiveClient.LiveSessionHandle? = null
+    @Volatile private var liveSessionReady = false
+    @Volatile private var localBargeAtMs = 0L
+    @Volatile private var captureActive = false
+    @Volatile private var audioRecord: AudioRecord? = null
+    @Volatile private var audioThread: Thread? = null
+    @Volatile private var activeSessionEpoch = 0L
+    @Volatile private var lastConversationActivityMs = 0L
+    @Volatile private var lastBargeDiagMs = 0L
+    @Volatile private var dropLateOutputUntilMs = 0L
+    private val toolCallsInFlight = AtomicInteger(0)
+    private val cancelledToolIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val caption = StringBuilder()
+    @Volatile private var captionFresh = true
+
+    /** Fired (any thread) whenever a session ends for any reason. */
+    @Volatile var onSessionEnded: (() -> Unit)? = null
+
+    private val audioPlayer: GeminiAudioPlayer by lazy { GeminiAudioPlayer(appContext) }
+    private val liveClient: GeminiLiveClient by lazy {
+        GeminiLiveClient(
+            apiKeyProvider = { ApiKeyStore.resolve(appContext) },
+            desktopSummaryProvider = { DesktopBridge.describe() }
+        )
+    }
+    private val toolDispatcher: ToolDispatcher by lazy { ToolDispatcher(appContext) }
+
+    fun isActive(): Boolean = synchronized(sessionLock) { captureActive || liveSession != null || connectJob?.isActive == true }
+
+    fun activate() {
+        synchronized(sessionLock) {
+            if (captureActive || liveSession != null || connectJob?.isActive == true) {
+                Log.d(TAG, "activate(): already active"); return
+            }
+        }
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            fail("Microphone permission needed."); return
+        }
+        if (ApiKeyStore.resolve(appContext).isNullOrBlank()) {
+            fail("No Gemini API key — push it via adb (see README)."); return
+        }
+        Log.i(TAG, "activate(): starting session")
+        synchronized(caption) { caption.setLength(0); captionFresh = true }
+        cancelledToolIds.clear()
+        HudStateBridge.update {
+            it.copy(phase = VoicePhase.LISTENING, connection = ConnectionStatus.CONNECTING,
+                transcript = null, caption = null, notification = "Connecting…", notificationSeq = it.notificationSeq + 1, level = 0f)
+        }
+        val epoch = beginSessionEpoch()
+        val listener = createListener(epoch)
+        connectJob = scope.launch {
+            val handle = runCatching { liveClient.startLiveAudioSession(listener) }.getOrNull()
+            if (handle == null) {
+                fail("Could not connect to Gemini Live."); return@launch
+            }
+            synchronized(sessionLock) {
+                if (!isSessionEpochCurrent(epoch)) { runCatching { handle.close() }; return@launch }
+                liveSession = handle
+            }
+        }
+    }
+
+    /** Preflight/connect failure: idle phase, sticky ERROR so the wave goes red. */
+    private fun fail(reason: String) {
+        HudStateBridge.update {
+            it.copy(phase = VoicePhase.IDLE, connection = ConnectionStatus.ERROR,
+                notification = reason, notificationSeq = it.notificationSeq + 1)
+        }
+        onSessionEnded?.invoke()
+    }
+
+    fun shutdown(reason: String? = null, error: Boolean = false) {
+        synchronized(sessionLock) {
+            invalidateSessionEpoch()
+            Log.i(TAG, "shutdown(reason=$reason)")
+            silenceWatchdogJob?.cancel(); silenceWatchdogJob = null
+            screenFeedJob?.cancel(); screenFeedJob = null
+            captureActive = false
+            val thread = audioThread; audioThread = null
+            runCatching { thread?.interrupt() }
+            val rec = audioRecord; audioRecord = null
+            runCatching { rec?.stop() }; runCatching { rec?.release() }
+            val session = liveSession; liveSession = null
+            liveSessionReady = false; localBargeAtMs = 0L
+            runCatching { session?.close() }
+            connectJob?.cancel(); connectJob = null
+            dropLateOutputUntilMs = 0L
+        }
+        runCatching { audioPlayer.release() }
+        HudStateBridge.update {
+            it.copy(phase = VoicePhase.IDLE,
+                connection = if (error) ConnectionStatus.ERROR else ConnectionStatus.IDLE,
+                transcript = null, level = 0f,
+                notification = reason ?: it.notification,
+                notificationSeq = if (reason != null) it.notificationSeq + 1 else it.notificationSeq)
+        }
+        onSessionEnded?.invoke()
+    }
+
+    fun release() { shutdown(null); runCatching { audioPlayer.release() }; audioExecutor.shutdownNow(); toolDispatcherThread.close() }
+
+    // ── internals ─────────────────────────────────────────────────────
+
+    @Synchronized private fun beginSessionEpoch(): Long { activeSessionEpoch += 1L; return activeSessionEpoch }
+    @Synchronized private fun invalidateSessionEpoch() { activeSessionEpoch += 1L }
+    private fun isSessionEpochCurrent(epoch: Long) = activeSessionEpoch == epoch
+    private fun noteConversationActivity() { lastConversationActivityMs = SystemClock.uptimeMillis() }
+
+    private fun onLocalBargeIn(level: Float, gate: Float) {
+        localBargeAtMs = SystemClock.uptimeMillis()
+        Log.i(TAG, "Local barge-in: mic=%.2f over gate=%.2f".format(level, gate))
+        noteConversationActivity()
+        runCatching { audioPlayer.stopAndFlush() }
+        HudStateBridge.update { it.copy(phase = VoicePhase.LISTENING, level = 0f, channel = Channel.USER) }
+    }
+
+    private fun inBargeHold(): Boolean =
+        localBargeAtMs != 0L && SystemClock.uptimeMillis() - localBargeAtMs < LOCAL_BARGE_HOLD_MS
+
+    private fun createListener(epoch: Long) = object : GeminiLiveClient.LiveSessionListener {
+        override fun onSessionReady() {
+            if (!isSessionEpochCurrent(epoch)) return
+            liveSessionReady = true
+            noteConversationActivity()
+            HudStateBridge.update { it.copy(connection = ConnectionStatus.CONNECTED, notification = null) }
+            startAudioStreaming(epoch)
+            startSilenceWatchdog(epoch)
+            startScreenFeed(epoch)
+        }
+
+        override fun onInputTranscription(text: String) {
+            if (!isSessionEpochCurrent(epoch) || text.isBlank()) return
+            noteConversationActivity()
+            HudStateBridge.update { it.copy(transcript = text) }
+        }
+
+        override fun onOutputTranscription(text: String) {
+            if (!isSessionEpochCurrent(epoch) || text.isBlank()) return
+            noteConversationActivity()
+            if (SystemClock.uptimeMillis() < dropLateOutputUntilMs || inBargeHold()) return
+            val snapshot: String
+            synchronized(caption) {
+                if (captionFresh) { caption.setLength(0); captionFresh = false }
+                // Transcription chunks arrive without separators ("paused" + "the") — add one.
+                if (caption.isNotEmpty() && !caption.last().isWhitespace() && !text.first().isWhitespace() &&
+                    text.first().isLetterOrDigit() && caption.last().isLetterOrDigit()) caption.append(' ')
+                caption.append(text)
+                if (caption.length > 400) caption.delete(0, caption.length - 400)
+                snapshot = caption.toString()
+            }
+            HudStateBridge.update { it.copy(phase = VoicePhase.SPEAKING, caption = snapshot) }
+            Log.i(TAG, "said: ${text.trim()}")
+        }
+
+        override fun onModelText(text: String) { if (isSessionEpochCurrent(epoch) && text.isNotBlank()) noteConversationActivity() }
+
+        override fun onModelAudio(mimeType: String, data: ByteArray) {
+            if (!isSessionEpochCurrent(epoch) || !liveSessionReady || data.isEmpty()) return
+            if (inBargeHold()) return
+            noteConversationActivity()
+            val norm = (calculatePcm16Peak(data, data.size) / 32_767f).coerceIn(0f, 1f)
+            HudStateBridge.update { it.copy(phase = VoicePhase.SPEAKING, level = norm, channel = Channel.MODEL) }
+            runCatching { audioExecutor.execute { if (isSessionEpochCurrent(epoch)) runCatching { audioPlayer.playChunk(mimeType, data) } } }
+        }
+
+        override fun onInterrupted() {
+            if (!isSessionEpochCurrent(epoch)) return
+            localBargeAtMs = 0L
+            noteConversationActivity()
+            runCatching { audioPlayer.stopAndFlush() }
+            HudStateBridge.update { it.copy(phase = VoicePhase.LISTENING, level = 0f) }
+        }
+
+        override fun onToolCall(callId: String, name: String, args: String) {
+            if (!isSessionEpochCurrent(epoch)) return
+            noteConversationActivity()
+            Log.i(TAG, "onToolCall id=$callId name=$name args=${args.take(200)}")
+            HudStateBridge.update { it.copy(phase = VoicePhase.THINKING) }
+            dispatchNativeTool(callId, name, args, epoch)
+        }
+
+        override fun onToolCallCancellation(ids: List<String>) {
+            if (!isSessionEpochCurrent(epoch)) return
+            Log.i(TAG, "tool calls cancelled by server: $ids")
+            cancelledToolIds.addAll(ids)
+        }
+
+        override fun onGoAway(timeLeft: String?) {
+            if (!isSessionEpochCurrent(epoch)) return
+            HudStateBridge.notice("Session ending soon${timeLeft?.let { " ($it)" }.orEmpty()} — tap the wave to start a new one")
+        }
+
+        override fun onTurnComplete(finishReason: String?) {
+            if (!isSessionEpochCurrent(epoch)) return
+            noteConversationActivity()
+            localBargeAtMs = 0L
+            dropLateOutputUntilMs = SystemClock.uptimeMillis() + LATE_OUTPUT_DROP_MS
+            synchronized(caption) { captionFresh = true }
+            if (liveSessionReady) HudStateBridge.update { it.copy(phase = VoicePhase.LISTENING) }
+        }
+
+        override fun onError(message: String) {
+            if (!isSessionEpochCurrent(epoch)) return
+            Log.w(TAG, "onError: $message")
+            shutdown(reason = "Voice error: $message", error = true)
+        }
+
+        override fun onClosed(code: Int, reason: String) {
+            if (!isSessionEpochCurrent(epoch)) return
+            if (code == 1000) shutdown(reason = null)
+            else shutdown(reason = "Voice session closed ($code${if (reason.isNotBlank()) ": $reason" else ""})", error = true)
+        }
+    }
+
+    /** Tools run strictly one at a time, in arrival order, off the socket thread. */
+    private fun dispatchNativeTool(callId: String, name: String, args: String, epoch: Long) {
+        val toolName = name.trim()
+        if (toolName.isBlank()) return
+        if (!toolDispatcher.isSupported(toolName)) {
+            runCatching { liveSession?.sendToolResponse(callId, toolName, "Unknown tool: $toolName") }
+            return
+        }
+        toolCallsInFlight.incrementAndGet()
+        scope.launch(toolDispatcherThread) {
+            try {
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                if (cancelledToolIds.remove(callId)) { Log.i(TAG, "skipping cancelled tool $callId"); return@launch }
+                val result = toolDispatcher.dispatch(toolName, args)
+                val resultText = result.getOrElse { err ->
+                    Log.w(TAG, "tool failed $toolName: ${err.message}")
+                    err.message?.trim().takeUnless { it.isNullOrBlank() } ?: "Tool $toolName is unavailable right now."
+                }
+                Log.i(TAG, "tool result $toolName: '${resultText.take(200)}'")
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                if (cancelledToolIds.remove(callId)) { Log.i(TAG, "result for cancelled tool $callId dropped"); return@launch }
+                // Evidence first: let the window/page settle, ship a fresh screen frame, THEN the
+                // tool result — so the model verifies inside the same turn instead of waiting
+                // (and going silent) for a frame that can never wake it.
+                val settle = settleMsFor(toolName, args)
+                if (settle > 0) {
+                    delay(settle)
+                    if (!isSessionEpochCurrent(epoch)) return@launch
+                    val jpeg = runCatching { captureFrameJpeg() }.getOrNull()
+                    if (jpeg != null && isSessionEpochCurrent(epoch)) {
+                        runCatching { liveSession?.sendImageFrame(jpeg) }
+                        lastFrameSentMs = SystemClock.uptimeMillis()
+                    }
+                }
+                if (!isSessionEpochCurrent(epoch)) return@launch
+                runCatching { liveSession?.sendToolResponse(callId, toolName, resultText + if (settle > 0) " (Screen frame just sent — what you see is the result.)" else "") }
+            } finally {
+                toolCallsInFlight.decrementAndGet()
+                noteConversationActivity()
+            }
+        }
+    }
+
+    /** Read-only tools need no evidence; anything that changes the screen gets a settle + frame. */
+    private fun settleMsFor(tool: String, args: String): Long {
+        val action = Regex("\"action\"\\s*:\\s*\"([a-z_]+)\"").find(args)?.groupValues?.get(1) ?: ""
+        return when (tool) {
+            "web" -> if (action in setOf("inspect", "read", "eval")) 0L else 1_100L
+            "desktop" -> if (action in setOf("describe", "list")) 0L else 500L
+            "media" -> if (action == "find") 0L else 900L
+            "theme", "wallpaper" -> 600L
+            "app_builder" -> 1_200L
+            else -> 700L
+        }
+    }
+
+    /**
+     * The model's eyes: a downscaled JPEG of the left-eye display goes to the
+     * session every [FRAME_PERIOD_MS] and ~1 s after each tool finishes, so it
+     * can verify results (is the video really playing?) instead of trusting
+     * tool text. Frames are skipped while the model is mid-sentence to keep
+     * the socket lean.
+     */
+    private fun startScreenFeed(epoch: Long) {
+        screenFeedJob?.cancel()
+        screenFeedJob = scope.launch {
+            delay(1_500L)
+            while (isActive && isSessionEpochCurrent(epoch)) {
+                val now = SystemClock.uptimeMillis()
+                val wanted = frameWantedAtMs
+                val due = (wanted != 0L && now >= wanted) || now - lastFrameSentMs >= FRAME_PERIOD_MS
+                if (due && liveSessionReady && liveSession != null) {
+                    frameWantedAtMs = 0L
+                    val jpeg = runCatching { captureFrameJpeg() }.getOrNull()
+                    if (jpeg != null && isSessionEpochCurrent(epoch)) {
+                        val ok = runCatching { liveSession?.sendImageFrame(jpeg) }.getOrDefault(false) == true
+                        if (ok) lastFrameSentMs = SystemClock.uptimeMillis()
+                        Log.d(TAG, "screen frame ${jpeg.size / 1024} KB sent=$ok")
+                    }
+                }
+                delay(250L)
+            }
+        }
+    }
+
+    private suspend fun captureFrameJpeg(): ByteArray? {
+        val bmp = WebCommandBus.capture(timeoutMs = 2_500L, hideCursor = false) ?: return null
+        val w = FRAME_WIDTH; val h = (bmp.height.toLong() * w / bmp.width).toInt().coerceAtLeast(1)
+        val scaled = if (bmp.width > w) Bitmap.createScaledBitmap(bmp, w, h, true) else bmp
+        val out = ByteArrayOutputStream(64 * 1024)
+        scaled.compress(Bitmap.CompressFormat.JPEG, FRAME_JPEG_QUALITY, out)
+        if (scaled !== bmp) scaled.recycle()
+        bmp.recycle()
+        return out.toByteArray()
+    }
+
+    private fun startSilenceWatchdog(epoch: Long) {
+        silenceWatchdogJob?.cancel()
+        silenceWatchdogJob = scope.launch {
+            while (isActive && isSessionEpochCurrent(epoch)) {
+                delay(SILENCE_WATCHDOG_TICK_MS)
+                if (!liveSessionReady || !isSessionEpochCurrent(epoch)) continue
+                val now = SystemClock.uptimeMillis()
+                if (toolCallsInFlight.get() > 0 || audioPlayer.isActivelySpeaking(windowMs = 600L)) {
+                    lastConversationActivityMs = now; continue
+                }
+                if (now - lastConversationActivityMs >= SILENCE_END_MS) {
+                    Log.i(TAG, "Silence watchdog: ending session")
+                    shutdown(reason = null)
+                    break
+                }
+            }
+        }
+    }
+
+    private fun startAudioStreaming(epoch: Long) {
+        synchronized(sessionLock) { if (captureActive || !isSessionEpochCurrent(epoch)) return }
+        val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE_HZ, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuffer <= 0) { shutdown("Microphone buffer could not be created.", error = true); return }
+        val recorder = createAudioRecord(maxOf(minBuffer * 2, 4096))
+            ?: run { shutdown("Microphone could not be opened.", error = true); return }
+        val thread = Thread({ captureLoop(recorder, epoch) }, "TapGemAudioThread").apply { isDaemon = true }
+        synchronized(sessionLock) {
+            // A cancel may have landed while the mic was opening — never keep a
+            // recorder the session no longer owns.
+            if (captureActive || !isSessionEpochCurrent(epoch)) { runCatching { recorder.release() }; return }
+            audioRecord = recorder
+            captureActive = true
+            runCatching { recorder.startRecording() }
+            audioThread = thread
+            thread.start()
+        }
+    }
+
+    private fun captureLoop(recorder: AudioRecord, epoch: Long) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+        val chunk = ByteArray(2048)
+        val silence = ByteArray(2048)
+        var bargeFrames = 0
+        var userSpeakingUntilMs = 0L
+        var readErrors = 0
+        try {
+            while (captureActive && isSessionEpochCurrent(epoch)) {
+                val read = try { recorder.read(chunk, 0, chunk.size) } catch (e: Throwable) { -1 }
+                if (read < 0) {
+                    if (++readErrors > 20) { shutdown("Microphone stopped delivering audio.", error = true); return }
+                    try { Thread.sleep(20) } catch (_: InterruptedException) { return }
+                    continue
+                }
+                if (read == 0) continue
+                readErrors = 0
+                val norm = (calculatePcm16Peak(chunk, read) / 32_767f).coerceIn(0f, 1f)
+                if (norm >= USER_SPEECH_LEVEL) lastConversationActivityMs = SystemClock.uptimeMillis()
+                var suppressToServer = false
+                if (audioPlayer.isActivelySpeaking()) {
+                    val gate = BARGE_BASE_LEVEL + BARGE_ECHO_REJECT * audioPlayer.currentOutputLevel()
+                    val nowMs = SystemClock.uptimeMillis()
+                    if (nowMs - lastBargeDiagMs >= 500L) {
+                        lastBargeDiagMs = nowMs
+                        Log.d(TAG, "barge-watch mic=%.3f gate=%.3f".format(norm, gate))
+                    }
+                    if (norm >= gate) {
+                        userSpeakingUntilMs = nowMs + BARGE_HANGOVER_MS
+                        if (++bargeFrames >= BARGE_FRAMES) { bargeFrames = 0; onLocalBargeIn(norm, gate) }
+                    } else bargeFrames = 0
+                    suppressToServer = nowMs >= userSpeakingUntilMs
+                } else { bargeFrames = 0; userSpeakingUntilMs = 0L }
+                if (HudStateBridge.current().phase == VoicePhase.LISTENING && (norm > 0.04f || System.currentTimeMillis() % 8L == 0L)) {
+                    HudStateBridge.update { it.copy(level = norm, channel = Channel.USER) }
+                }
+                if (isSessionEpochCurrent(epoch)) {
+                    runCatching { liveSession?.sendAudioChunkPcm16(if (suppressToServer) silence else chunk, read, SAMPLE_RATE_HZ) }
+                }
+            }
+        } finally {
+            // If this thread outlived the session's ownership of the recorder,
+            // it is the last one holding it — release it here.
+            synchronized(sessionLock) {
+                if (audioRecord === recorder) { audioRecord = null; captureActive = false }
+            }
+            runCatching { recorder.stop() }; runCatching { recorder.release() }
+        }
+    }
+
+    /** MIC first: VOICE_COMMUNICATION is half-duplex on the X3 (mic mutes during playback). */
+    private fun createAudioRecord(bufferSize: Int): AudioRecord? {
+        for (source in intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_COMMUNICATION)) {
+            val rec = runCatching {
+                AudioRecord(source, SAMPLE_RATE_HZ, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
+            }.getOrNull() ?: continue
+            if (rec.state == AudioRecord.STATE_INITIALIZED) return rec
+            runCatching { rec.release() }
+        }
+        return null
+    }
+
+    private fun calculatePcm16Peak(data: ByteArray, size: Int): Int {
+        var peak = 0; var i = 0
+        while (i < size - 1) {
+            val s = ((data[i + 1].toInt() shl 8) or (data[i].toInt() and 0xFF)).toShort().toInt()
+            val a = if (s < 0) -s else s
+            if (a > peak) peak = a
+            i += 2
+        }
+        return peak
+    }
+
+    companion object {
+        private const val TAG = "TapGemVoice"
+        private const val SAMPLE_RATE_HZ = 16_000
+        /** Mutual silence that ends a session (double-tap ends it sooner). */
+        private const val SILENCE_END_MS = 20_000L
+        private const val SILENCE_WATCHDOG_TICK_MS = 250L
+        private const val LATE_OUTPUT_DROP_MS = 500L
+        private const val USER_SPEECH_LEVEL = 0.12f
+        private const val BARGE_BASE_LEVEL = 0.13f
+        private const val BARGE_ECHO_REJECT = 0.20f
+        private const val BARGE_FRAMES = 3
+        private const val BARGE_HANGOVER_MS = 900L
+        private const val LOCAL_BARGE_HOLD_MS = 1_200L
+        /** Screen frames for the model: cadence, post-tool delay, size. */
+        private const val FRAME_PERIOD_MS = 3_000L
+        private const val POST_TOOL_FRAME_DELAY_MS = 1_200L
+        private const val FRAME_WIDTH = 512
+        private const val FRAME_JPEG_QUALITY = 55
+    }
+}
