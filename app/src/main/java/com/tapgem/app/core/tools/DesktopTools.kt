@@ -48,6 +48,11 @@ object Layout {
         val k = sizeName?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "") ?: return base
         val (bw, bh) = base
         val area = Canvas.HEIGHT - Canvas.CONTENT_TOP
+        if (type == WidgetType.TICKER) return when (k) {
+            "tiny", "small", "smaller" -> (bw * 0.7).roundToInt() to bh
+            "large", "big", "bigger", "larger", "huge", "xl", "giant", "full", "fullscreen", "max", "maximize", "maximized", "wide", "banner" -> Canvas.WIDTH - 2 * MARGIN to bh
+            else -> base
+        }
         return when (k) {
             "tiny" -> (bw * 0.55).roundToInt() to (bh * 0.55).roundToInt()
             "small", "smaller" -> (bw * 0.72).roundToInt() to (bh * 0.72).roundToInt()
@@ -75,6 +80,14 @@ object Layout {
 
     fun clampSize(w: Int, h: Int): Pair<Int, Int> =
         w.coerceIn(Canvas.MIN_W, Canvas.WIDTH) to h.coerceIn(Canvas.MIN_H, Canvas.HEIGHT - Canvas.CONTENT_TOP)
+
+    /** A ticker is a strip: it can get wider, never tall. */
+    fun clampSize(type: WidgetType, w: Int, h: Int): Pair<Int, Int> {
+        val (cw, ch) = clampSize(w, h)
+        return if (type == WidgetType.TICKER) cw to ch.coerceIn(TICKER_MIN_H, TICKER_MAX_H) else cw to ch
+    }
+    const val TICKER_MIN_H = 40
+    const val TICKER_MAX_H = 72
 
     fun clampPos(x: Int, y: Int, w: Int, h: Int): Pair<Int, Int> =
         x.coerceIn(0, max(0, Canvas.WIDTH - w)) to y.coerceIn(Canvas.CONTENT_TOP, max(Canvas.CONTENT_TOP, Canvas.HEIGHT - h))
@@ -131,11 +144,23 @@ object Layout {
      * cascade staggers same-size windows; a focus window takes the left ~62%
      * with the others stacked beside it.
      */
-    fun arrange(all: List<Widget>, layout: String?, focusId: String?, gapIn: Int?): Arrangement {
-        if (all.isEmpty()) return Arrangement(all, "There are no windows to arrange.")
+    fun arrange(allIn: List<Widget>, layout: String?, focusId: String?, gapIn: Int?): Arrangement {
+        if (allIn.isEmpty()) return Arrangement(allIn, "There are no windows to arrange.")
         val gap = (gapIn ?: 8).coerceIn(0, 40)
+        // Tickers are strips, not windows: they line the bottom edge full-width and the
+        // windows share what is left above them.
+        val strips = allIn.filter { it.type == WidgetType.TICKER }.sortedBy { it.y }
+        val all = allIn.filter { it.type != WidgetType.TICKER }
+        val stripOut = ArrayList<Widget>()
+        var bottom = Canvas.HEIGHT - gap
+        for (t in strips.asReversed()) {
+            val h = t.h.coerceIn(TICKER_MIN_H, TICKER_MAX_H)
+            stripOut += t.copy(x = gap, y = bottom - h, w = Canvas.WIDTH - 2 * gap, h = h)
+            bottom -= h + gap
+        }
+        if (all.isEmpty()) return Arrangement(stripOut, "The ticker${if (strips.size > 1) "s" else ""} line${if (strips.size > 1) "" else "s"} the bottom of the desktop.")
         val left = gap; val top = Canvas.CONTENT_TOP + gap
-        val areaW = Canvas.WIDTH - 2 * gap; val areaH = Canvas.HEIGHT - Canvas.CONTENT_TOP - 2 * gap
+        val areaW = Canvas.WIDTH - 2 * gap; val areaH = bottom - top
         val ordered = all.sortedWith(compareBy({ it.y / 40 }, { it.x }))
         val k = layout?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "").orEmpty()
         val focus = focusId?.let { id -> ordered.firstOrNull { it.id == id } }
@@ -203,7 +228,8 @@ object Layout {
         // Preserve stacking order for non-cascade layouts.
         val zById = all.associate { it.id to it.z }
         val fixed = if (k == "cascade") out else out.map { it.copy(z = zById[it.id] ?: it.z) }
-        return Arrangement(fixed, desc.toString())
+        if (strips.isNotEmpty()) desc.append(" The ticker${if (strips.size > 1) "s stay" else " stays"} along the bottom.")
+        return Arrangement(fixed + stripOut, desc.toString())
     }
 }
 
@@ -429,7 +455,7 @@ object WidgetOps {
         // Geometry (computed against the live desktop inside mutate so two
         // quick adds never land on the same free slot).
         val (dw, dh) = Layout.sizeFor(type, args.str("size"))
-        val (w, h) = Layout.clampSize(args.int("w", "width") ?: dw, args.int("h", "height") ?: dh)
+        val (w, h) = Layout.clampSize(type, args.int("w", "width") ?: dw, args.int("h", "height") ?: dh)
         val anchor = args.str("anchor", "position", "place_at") ?: Layout.impliedAnchor(args.str("size"))
             ?: if (type == WidgetType.TICKER) "bottom" else null
         val refresh = refreshFrom(args, refreshDefault)
@@ -652,7 +678,7 @@ class WidgetTool(private val context: Context) : AiTool {
                 args.has("size") -> Layout.sizeFor(n.type, args.str("size"), n.w to n.h)
                 else -> (args.int("w", "width") ?: n.w) to (args.int("h", "height") ?: n.h)
             }
-            val (sw, sh) = Layout.clampSize(bw, bh)
+            val (sw, sh) = Layout.clampSize(n.type, bw, bh)
             val anchor = args.str("anchor", "position") ?: Layout.impliedAnchor(args.str("size"))
             val (ax, ay) = Layout.anchorPos(anchor, sw, sh)
                 ?: ((args.int("x") ?: (n.x + (args.int("dx") ?: 0))) to (args.int("y") ?: (n.y + (args.int("dy") ?: 0))))
@@ -698,7 +724,7 @@ class WidgetTool(private val context: Context) : AiTool {
                 args.has("size") -> Layout.sizeFor(f.type, args.str("size"), f.w to f.h)
                 else -> (args.int("w", "width") ?: f.w) to (args.int("h", "height") ?: f.h)
             }
-            val (nw, nh) = Layout.clampSize(bw, bh)
+            val (nw, nh) = Layout.clampSize(f.type, bw, bh)
             val anchor = args.str("anchor", "position") ?: Layout.impliedAnchor(args.str("size"))
             val (ax, ay) = Layout.anchorPos(anchor, nw, nh) ?: (f.x to f.y)
             val (x, y) = Layout.clampPos(ax, ay, nw, nh)

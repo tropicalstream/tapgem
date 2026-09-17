@@ -55,6 +55,10 @@ class GeminiLiveClient(
                 "- \"Organize / tile / arrange / clean up / line up my windows\" → desktop action=arrange " +
                 "(layout grid by default; columns, rows, cascade; focus=<widget> gives one window most of the " +
                 "space). This really re-lays every window out — use it instead of moving windows one by one.\n" +
+                "- \"Enlarge / make bigger / maximize / shrink / make it smaller\" (a window, this window, the " +
+                "YouTube window) → widget action=resize on THAT ONE window: size=large|full|small or " +
+                "scale=1.5|0.7. Unnamed 'it / this window' means the active window. Never use arrange for a " +
+                "single window's size — arrange moves every other window too.\n" +
                 "- ONE REQUEST = ONE WINDOW. Never add a second copy of a page, card or ticker the desktop " +
                 "already has (describe lists them): navigate the open web window with web action=url, " +
                 "bring a window forward with widget action=front, change a card with widget action=update. " +

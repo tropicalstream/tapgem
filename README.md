@@ -173,7 +173,9 @@ can then adjust ("a bit bigger", "move it down").
 
 **Windows**
 - "Organize and tile my windows." · "Line them up side by side." · "Stack them." · "Cascade them."
+  (tickers are strips: they stay along the bottom edge while the windows share the space above)
 - "Make the video the main window." (it takes the left two thirds, the rest stack beside it)
+- "Enlarge the YouTube window." · "Make this bigger." · "Shrink it." (resizes that one window only)
 - "Bring the clock to the front." · "Take a screenshot."
 
 **Maps & navigation**
