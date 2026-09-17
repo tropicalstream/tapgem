@@ -131,6 +131,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var host: DesktopHostView
     private lateinit var wave: SiriWaveView
+    private lateinit var edgeScroller: com.tapgem.app.ui.EdgeScroller
 
     /** 1dp == 1px for the 640×480 viewport. */
     override fun attachBaseContext(newBase: Context) {
@@ -146,6 +147,9 @@ class MainActivity : AppCompatActivity() {
         host = findViewById(R.id.desktopHost)
         wave = findViewById(R.id.siriWave)
         host.onNotice = { showNotice(it) }
+        edgeScroller = com.tapgem.app.ui.EdgeScroller(host, uiHandler,
+            busy = { host.interactionActive || holdDragging || twoFinger },
+            onActive = { active -> if (active) setCursorVisible(true) else if (cursorShown) setCursorVisible(true) })
         DesktopBridge.thumbnailRenderer = { host.renderThumbnail() }
         WebCommandBus.displayCapturer = { hideCursor, cb -> uiHandler.post { captureDisplay(cb, hideCursor) } }
 
@@ -265,6 +269,7 @@ class MainActivity : AppCompatActivity() {
             uiHandler.postDelayed({ ev(MotionEvent.ACTION_UP, x1, y1, t0) }, delay + 40L)
         }
         when (p.firstOrNull()?.lowercase()) {
+            "cursor" -> if (n.size >= 2) { cursorX = n[0]; cursorY = n[1]; setCursorVisible(true); updateCursorView(); edgeScroller.onCursor(cursorX, cursorY) }
             "swipe" -> if (n.size >= 4) stroke(n[0], n[1], n[2], n[3], 0L)
             "holddrag" -> if (n.size >= 4) stroke(n[0], n[1], n[2], n[3], LONG_PRESS_MS + 250L)
             "tap" -> if (n.size >= 2) { val t0 = SystemClock.uptimeMillis(); ev(MotionEvent.ACTION_DOWN, n[0], n[1], t0); uiHandler.postDelayed({ ev(MotionEvent.ACTION_UP, n[0], n[1], t0) }, 60L) }
@@ -722,6 +727,7 @@ class MainActivity : AppCompatActivity() {
      * or start dragging the content of a page, map, book or text panel.
      */
     private fun onLongPress() {
+        edgeScroller.stop()
         if (holdDragging || host.interactionActive || !rightArmTouchTracking) { Log.d(TAG, "hold: ignored (dragging=$holdDragging interaction=${host.interactionActive} tracking=$rightArmTouchTracking)"); return }
         if (findOverlayHit(cursorX, cursorY) != null) return
         val wv = host.widgetViewAt(cursorX, cursorY) ?: run { Log.d(TAG, "hold: no widget under cursor"); return }
@@ -756,6 +762,7 @@ class MainActivity : AppCompatActivity() {
         setCursorVisible(true)
         updateCursorView()
         if (host.interactionActive) host.updateInteraction(cursorX, cursorY)
+        else edgeScroller.onCursor(cursorX, cursorY)
     }
 
     private fun updateCursorView() {
@@ -765,6 +772,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun setCursorVisible(visible: Boolean) {
         val cursor = findViewById<ImageView>(R.id.cursorView)
+        if (!visible && ::edgeScroller.isInitialized && edgeScroller.isScrolling) {
+            // Parked at an edge to read: keep the cursor (and the scroll) alive.
+            uiHandler.removeCallbacks(hideCursorRunnable); uiHandler.postDelayed(hideCursorRunnable, CURSOR_IDLE_HIDE_MS); return
+        }
+        if (!visible && ::edgeScroller.isInitialized) edgeScroller.stop()
         cursorShown = visible
         cursor.visibility = if (visible) View.VISIBLE else View.GONE
         uiHandler.removeCallbacks(hideCursorRunnable)
@@ -821,6 +833,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Single tap: drop an interaction, else click whatever is under the cursor. */
     private fun onSingleTap() {
+        edgeScroller.stop()
         if (host.endInteraction()) { showNotice("Placed"); return }
         val overlayHit = findOverlayHit(cursorX, cursorY)
         if (overlayHit != null) {

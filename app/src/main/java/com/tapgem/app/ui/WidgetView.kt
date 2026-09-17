@@ -74,6 +74,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
         private const val TAG = "WidgetView"
         const val HANDLE = 18
         const val TITLE_H = 18
+        /** Edge auto-scroll bands (px inside the content area). */
+        const val EDGE_BAND_V = 30f
+        const val EDGE_BAND_H = 26f
         /** Sites that may read the glasses' location (for "your location" / directions from here). */
         private val GEO_ORIGINS = setOf("google.com", "maps.google.com", "radio.garden", "openstreetmap.org")
     }
@@ -104,6 +107,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private val handle = View(context)
     /** Battery: photos and video are dimmed a third — bright media is most of what lights the display. */
     private val dimOverlay = View(context).apply { setBackgroundColor(0x59000000); visibility = GONE }
+    /** Accent line along the edge that is auto-scrolling. */
+    private val edgeGlow = View(context).apply { visibility = GONE }
     private var contentKind: String? = null
     private var styleKey: String? = null
     private var contentGen = 0
@@ -134,6 +139,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         titleBar.addView(closeBtn, LinearLayout.LayoutParams(22, TITLE_H))
         addView(titleBar, LayoutParams(LayoutParams.MATCH_PARENT, TITLE_H, Gravity.TOP))
         addView(dimOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(edgeGlow, LayoutParams(LayoutParams.MATCH_PARENT, 3, Gravity.BOTTOM))
         addView(errorLabel, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         addView(handle, LayoutParams(HANDLE, HANDLE, Gravity.BOTTOM or Gravity.END))
         closeBtn.setOnClickListener { onClose?.invoke(widget.id) }
@@ -268,6 +274,97 @@ class WidgetView(context: Context) : FrameLayout(context) {
     }
 
     fun release() { pendingBuild?.let { main.removeCallbacks(it) }; pendingBuild = null; pendingSeq++; unbindContent(); contentKind = null }
+
+    // ── edge auto-scroll ───────────────────────────────────────────
+
+    class EdgeHit(val edge: EdgeScroller.Edge, val depth: Float)
+
+    /**
+     * Which edge band (if any) a body point is in. Bands are [EDGE_BAND_V] /
+     * [EDGE_BAND_H] px inside the content area; the title bar and the resize
+     * corner are excluded, as are widgets with nothing to scroll.
+     */
+    fun edgeAt(localX: Float, localY: Float): EdgeHit? {
+        if (!widget.type.isScrollable || widget.type == WidgetType.PDF) return null
+        if (isOnResizeHandle(localX, localY) || (chromeVisible() && localY < TITLE_H)) return null
+        val top = if (chromeVisible()) TITLE_H else 0
+        val h = height - top; val w = width
+        if (h < EDGE_BAND_V * 3 || w < EDGE_BAND_H * 3) return null
+        val ly = localY - top
+        val dTop = ly; val dBottom = h - ly; val dLeft = localX; val dRight = w - localX
+        val v = when { dTop < EDGE_BAND_V -> EdgeHit(EdgeScroller.Edge.TOP, 1f - dTop / EDGE_BAND_V); dBottom < EDGE_BAND_V -> EdgeHit(EdgeScroller.Edge.BOTTOM, 1f - dBottom / EDGE_BAND_V); else -> null }
+        val hz = if (widget.type == WidgetType.MAP || widget.type.isWebLike) when {
+            dLeft < EDGE_BAND_H -> EdgeHit(EdgeScroller.Edge.LEFT, 1f - dLeft / EDGE_BAND_H)
+            dRight < EDGE_BAND_H -> EdgeHit(EdgeScroller.Edge.RIGHT, 1f - dRight / EDGE_BAND_H)
+            else -> null } else null
+        // In a corner the deeper band wins.
+        return if (v != null && hz != null) (if (v.depth >= hz.depth) v else hz) else v ?: hz
+    }
+
+    private var jsScrollAccX = 0; private var jsScrollAccY = 0; private var jsScrollFlushMs = 0L
+
+    /** Scroll the content by a small step; false when there is nothing more in that direction. */
+    fun edgeScrollBy(dx: Int, dy: Int): Boolean {
+        when (widget.type) {
+            WidgetType.WEB, WidgetType.APP, WidgetType.EPUB -> {
+                val wv = webView ?: return false
+                val canV = dy != 0 && wv.canScrollVertically(if (dy > 0) 1 else -1)
+                val canH = dx != 0 && wv.canScrollHorizontally(if (dx > 0) 1 else -1)
+                if (canV || canH) { wv.scrollBy(if (canH) dx else 0, if (canV) dy else 0); return true }
+                // The document doesn't scroll — an inner scroller might (web apps); ask the page, throttled.
+                if (!wv.settings.javaScriptEnabled) return false
+                return jsScroll(wv, dx, dy)
+            }
+            WidgetType.MAP -> { val wv = webView ?: return false; return jsScroll(wv, dx, dy) }
+            WidgetType.TEXT, WidgetType.LIVE -> {
+                val sv = findScrollView(content) ?: return false
+                val can = dy != 0 && sv.canScrollVertically(if (dy > 0) 1 else -1)
+                if (can) sv.scrollBy(0, dy)
+                return can
+            }
+            else -> return false
+        }
+    }
+
+    private fun jsScroll(wv: WebView, dx: Int, dy: Int): Boolean {
+        jsScrollAccX += dx; jsScrollAccY += dy
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - jsScrollFlushMs < 100L) return true
+        jsScrollFlushMs = now
+        val ax = jsScrollAccX; val ay = jsScrollAccY; jsScrollAccX = 0; jsScrollAccY = 0
+        if (widget.type == WidgetType.MAP) {
+            val dir = when { kotlin.math.abs(ay) >= kotlin.math.abs(ax) -> if (ay > 0) "south" else "north"; else -> if (ax > 0) "east" else "west" }
+            wv.evaluateJavascript("window.panBy && panBy(${jsStr(dir)}, ${maxOf(kotlin.math.abs(ax), kotlin.math.abs(ay))})", null)
+        } else {
+            wv.evaluateJavascript(HELPER_JS, null)
+            val dir = when { kotlin.math.abs(ay) >= kotlin.math.abs(ax) -> if (ay > 0) "down" else "up"; else -> if (ax > 0) "right" else "left" }
+            wv.evaluateJavascript("window.__tg && __tg.scroll(${jsStr(dir)}, ${maxOf(kotlin.math.abs(ax), kotlin.math.abs(ay))})", null)
+        }
+        return true
+    }
+
+    private fun findScrollView(v: View): ScrollView? {
+        if (v is ScrollView) return v
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) findScrollView(v.getChildAt(i))?.let { return it }
+        return null
+    }
+
+    /** A thin accent line along the edge that is currently auto-scrolling. */
+    fun setEdgeGlow(edge: EdgeScroller.Edge?) {
+        if (edge == null) { edgeGlow.visibility = GONE; return }
+        val top = if (chromeVisible()) TITLE_H else 0
+        val lp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        when (edge) {
+            EdgeScroller.Edge.TOP -> { lp.height = 3; lp.gravity = Gravity.TOP; lp.topMargin = top }
+            EdgeScroller.Edge.BOTTOM -> { lp.height = 3; lp.gravity = Gravity.BOTTOM }
+            EdgeScroller.Edge.LEFT -> { lp.width = 3; lp.gravity = Gravity.START }
+            EdgeScroller.Edge.RIGHT -> { lp.width = 3; lp.gravity = Gravity.END }
+        }
+        edgeGlow.layoutParams = lp
+        edgeGlow.setBackgroundColor(ColorUtil.withAlpha(theme.accent, 0.9f))
+        edgeGlow.visibility = VISIBLE
+        bringChildToFront(edgeGlow)
+    }
 
     /** True when a press-and-hold on the body should scroll/pan the content rather than grab the window. */
     fun isScrollableBody(localX: Float, localY: Float): Boolean =

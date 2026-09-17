@@ -73,6 +73,7 @@ The key is never stored in this repo (`gemini_api_key.txt` is git-ignored).
 | **Single tap** | Click what's under the cursor. On a window's **title bar** → that window becomes **active** (brighter bar, accent border) and comes to the front. Inside a page or app → a real tap on that element (buttons, links, players). A desktop thumbnail → loads it. The camera icon → screenshot. Empty space while idle → starts the assistant |
 | **Hold, then slide** (one finger, still for ~¼ s) | On a **title bar** (or a clock / image / audio panel, or the top band of any window) → **drags the window**; the cursor follows. On the bottom-right corner → **resizes**. On the **body** of a page, app, map, book, PDF or text panel → **drags the content**: scrolls the page, pans the map, moves sliders — the cursor stays put |
 | **Two fingers slide** | **Scrolls** whatever is under the cursor, no hold needed (a full stroke ≈ 300 px; flick for momentum) |
+| **Park the cursor near an edge** | The content **auto-scrolls** that way: rest it in the band along a window's bottom/top (or left/right on pages and maps) and after a fifth of a second it scrolls, faster the closer to the rim, with a thin accent line marking the edge. Move the cursor away — or reach the end — and it stops. Title bars and the resize corner never scroll |
 | **Double tap** | Anywhere: **start** the assistant, or **exit** it if it's running |
 
 Every window keeps its **title bar** (drag handle, ✕ to close) and its **corner
@@ -255,6 +256,7 @@ adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.VOICE --es cmd stop"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TRACKPAD --es cmd 'swipe 300 190 300 20'"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TRACKPAD --es cmd 'holddrag 300 100 400 150'"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TRACKPAD --es cmd 'twofinger 300 150 300 60'"
+adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TRACKPAD --es cmd 'cursor 170 335'"   # place the cursor (e.g. in an edge band)
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TRACKPAD --es cmd 'doubletap 300 100'"
 # read a value out of the active page (debug builds only)
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name web --es args '{\"action\":\"eval\",\"js\":\"window.scrollY\"}'"
@@ -285,6 +287,7 @@ ui/WidgetView           one window: text · clock · live · ticker · image · 
 ui/TickerView           the scrolling crawl (30 fps, 20 on battery)
                         (WebViews never take input focus → no keyboard; per-type sandbox; web-tool JS helper)
 ui/SyntheticInput       cursor taps / tool key presses delivered as real-looking input
+ui/EdgeScroller         park-the-cursor-near-an-edge auto-scroll (dwell, eased speed, stops at the end)
 ui/SiriWaveView         the assistant avatar
 core/model              Desktop / Widget / Theme / Wallpaper (JSON)
 core/bridge/DesktopBridge   single source of truth: mutate → autosave → thumbnail; undo stack
