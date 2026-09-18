@@ -49,7 +49,6 @@ class DesktopHostView @JvmOverloads constructor(
     private var interaction: Interaction? = null
     private var renderQueued = false
     private var ecoMode = false
-    private var coldStart = true
     var onNotice: ((String) -> Unit)? = null
 
     /** Battery: hidden WebViews are paused (always) and heavy widgets load one at a time (eco). */
@@ -174,7 +173,6 @@ class DesktopHostView @JvmOverloads constructor(
             if (interaction?.id != w.id) place(v, w.x, w.y, w.w, w.h)
             bringChildToFront(v)
         }
-        coldStart = false
     }
 
     /** Windows entirely hidden behind a higher window: their WebViews get paused. */
@@ -324,5 +322,4 @@ class DesktopHostView @JvmOverloads constructor(
         return bmp
     }
 
-    fun widgetOf(v: WidgetView): Widget = v.widget
 }

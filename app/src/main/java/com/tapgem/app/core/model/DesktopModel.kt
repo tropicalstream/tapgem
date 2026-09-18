@@ -30,10 +30,10 @@ enum class WidgetType {
         AUDIO -> 230 to 84
         PDF -> 300 to 360
         EPUB -> 320 to 380
-        WEB -> 400 to 300
+        WEB -> 520 to 400   // mobile layouts hide players and menus below ~360 px of height
         APP -> 320 to 240
         MODEL3D -> 280 to 240
-        MAP -> 320 to 240
+        MAP -> 400 to 320
         TICKER -> 480 to 50
     }
 

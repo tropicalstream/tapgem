@@ -655,7 +655,7 @@ class WidgetTool(private val context: Context) : AiTool {
             }
         }
         val newSourceText = newSource?.takeIf { w.type == WidgetType.TEXT }?.let { WidgetOps.readTextFile(File(it.removePrefix("file:"))) }
-        val style0 = WidgetOps.styleFrom(args, WidgetStyle(), warnings) // only for colour validation messages
+        WidgetOps.styleFrom(args, WidgetStyle(), warnings) // only for the colour validation messages
 
         val after = DesktopBridge.mutateWidget(w.id) { f ->
             var n = f
@@ -1254,10 +1254,11 @@ class MediaTool(private val context: Context) : AiTool {
 class WebTool : AiTool {
     override val name = "web"
 
-    private val actions = setOf("inspect", "read", "click", "type", "press", "scroll", "play", "pause", "url", "back", "forward", "reload", "eval")
+    private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "play", "pause", "url", "back", "forward", "reload", "eval")
 
     override suspend fun execute(args: Args): Result<String> {
         val action = when (args.action) {
+            "find", "query", "lookup" -> "search"
             "tap", "press_button", "select" -> "click"
             "enter", "fill", "input", "write" -> "type"
             "key", "keypress" -> "press"
@@ -1269,7 +1270,7 @@ class WebTool : AiTool {
             "resume", "start" -> "play"
             else -> args.action
         }
-        if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
+        if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use search, inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
         val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
         if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click"))) {
             return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")

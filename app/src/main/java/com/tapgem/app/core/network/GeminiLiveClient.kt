@@ -78,25 +78,24 @@ class GeminiLiveClient(
                 "style=simple opens the tile map (zoom 1-18).\n" +
                 "- \"Stock ticker\", \"news crawl\", \"scores ticker\" → widget action=add type=ticker " +
                 "query=<what> — it scrolls along the bottom by default; refresh_seconds for how often.\n" +
-                "- Web pages and apps ARE interactive through the web tool: inspect lists what can be clicked " +
-                "and typed into; click by visible text; type into a field by its label or placeholder " +
-                "(submit=true presses enter); press keys; scroll; play/pause media; read the page. Try " +
-                "inspect before saying a page can't be used. Nothing on this device has a keyboard — typing " +
+                "- WEB PAGES are operated through the web tool. Every result tells you where the page is " +
+                "now, what is on it (numbered items — click by index or by visible text; items marked 'below' " +
+                "are scrolled to automatically) and whether the glasses are making sound. Act on that " +
+                "directly; inspect only when you need the full list. Procedure to find something on a site: " +
+                "web action=search text=<what> (finds the site's search box, opens it if it hides behind an " +
+                "icon, presses enter), then click the matching result, then action=play if the user wants " +
+                "it played (play verifies sound). 'Next / previous station, track, video' → click the page's " +
+                "next/previous control (never search for the word 'next'). Radio Garden: 'balloon ride' → " +
+                "click 'Balloon Ride Radio' then 'Take a ride'; 'exit the ride' → click 'Exit Balloon Mode'; " +
+                "a station or city by name → action=search. Spotify: these glasses have no Widevine DRM, so its " +
+                "web player streams only 30-second previews and only while signed out; signed in it shows " +
+                "'Playback disabled' — say so, offer to sign out (web action=url https://www.spotify.com/logout/) " +
+                "or to play the song on YouTube instead. Never guess deep links from memory; never repeat a call that just failed — change " +
+                "approach or say what is blocking (login wall, intro overlay, nothing found). Follow " +
+                "spelled-out steps literally. Sites the user names casually (YouTube, Spotify, Radio " +
+                "Garden, the Internet Archive) → widget action=add type=web with the obvious URL, or " +
+                "web action=url in the open web window. Nothing on this device has a keyboard — typing " +
                 "only happens through the web tool.\n" +
-                "- Web navigation habits: to find something on a site, use the site's own search — if no " +
-                "search field is listed, click the search icon/button first, inspect again, then type with " +
-                "submit=true. A field labelled 'Enter URL…' or 'web address' is NOT site search (on " +
-                "archive.org that box is the Wayback Machine). After a search or click, inspect again " +
-                "before the next step; results usually need scroll=down. 'Play it' on a page → web " +
-                "action=play; 'next / previous station, track, video' → click the page's next/previous " +
-                "control (never play); 'the first/second result' → click the corresponding link from inspect. " +
-                "Follow the user's step order literally when they spell out steps (back, click X, type Y). " +
-                "Never guess deep links to items (recordings, videos, tracks) from memory — search the site. " +
-                "If a tool result says a page doesn't exist or nothing was found, change approach; never " +
-                "repeat the same failing call. " +
-                "Pages the user names casually (YouTube, Spotify, Radio Garden, the Internet Archive) " +
-                "→ widget action=add type=web with the obvious URL, or reuse an open web widget with web " +
-                "action=url.\n" +
                 "- Media the user names (\"my vacation video\", \"the Tolkien ebook\"): media action=find, " +
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
                 "- Wallpaper/background requests: wallpaper action=set with a vivid visual description " +
@@ -105,15 +104,12 @@ class GeminiLiveClient(
                 "action=undo. \"Take a screenshot\" → desktop action=screenshot.\n" +
                 "- To change what a widget shows (page, chapter, play/pause, mute, reload, new URL) use " +
                 "widget action=navigate. To rename a widget pass new_title; 'id' or 'title' only identify it.\n" +
-                "- YOU CAN SEE THE DISPLAY: a screenshot of the glasses arrives as a video frame every few " +
-                "seconds, and a fresh one is sent immediately BEFORE each tool result that changed the " +
-                "screen. So when a result arrives, the latest frame already shows the outcome — check it " +
-                "and confirm right away (never stay silent waiting for another frame). Verify what matters: " +
-                "is the video actually showing and playing, did the page change, is the window where the " +
-                "user wanted it? If the screen shows something different from what the tool reported (an " +
-                "overlay, an intro screen, a login wall, 'station unresponsive', a blank window), say what " +
-                "you see and fix it (click the overlay's button, press next, scroll, retry) instead of " +
-                "claiming success. desktop action=describe gives exact widget ids when needed.\n" +
+                "- YOU CAN SEE THE DISPLAY: a frame of the glasses arrives every few seconds and a fresh one " +
+                "right before every tool result that changed the screen, so the latest frame already shows " +
+                "the outcome — check it and confirm at once; never wait silently for another frame. If the " +
+                "screen disagrees with a result (intro overlay, login wall, blank window, wrong page), say " +
+                "what you see and fix it instead of claiming success. desktop action=describe gives exact " +
+                "widget ids when needed.\n" +
                 "- After tools return, confirm in ONE short spoken sentence. Replies are read aloud on " +
                 "glasses: no lists, no markdown, never read URLs, ids or file paths aloud.\n" +
                 "- Answer in the language the user speaks."
@@ -161,18 +157,6 @@ class GeminiLiveClient(
                 .put("mimeType", "image/jpeg")
                 .put("data", Base64.getEncoder().encodeToString(jpeg))
             return socket.send(JSONObject().put("realtimeInput", JSONObject().put("video", frame)).toString())
-        }
-
-        fun sendClientText(text: String): Boolean {
-            if (text.isBlank()) return false
-            val payload = JSONObject().put(
-                "clientContent",
-                JSONObject()
-                    .put("turns", JSONArray().put(JSONObject().put("role", "user")
-                        .put("parts", JSONArray().put(JSONObject().put("text", text)))))
-                    .put("turnComplete", true)
-            )
-            return socket.send(payload.toString())
         }
 
         fun sendToolResponse(callId: String, functionName: String, result: String): Boolean {
@@ -434,19 +418,22 @@ class GeminiLiveClient(
                 "nav" to "navigate: next|prev|page|chapter|play|pause|mute|unmute|loop|reload|url|seek | navigation: start|next|prev|repeat|stop.",
                 "value" to "navigate: page/chapter number, seconds, or url.")))
         .put(decl("web",
-            "Operate a web page or app widget like a user would. inspect: numbered list of visible " +
-                "buttons, links, fields and media. read: page title and main text. click: press the " +
-                "element whose visible text/label matches target_text (or index from inspect). type: put " +
-                "text into the field matched by field_text (label, placeholder or name); submit=true " +
-                "presses enter afterwards. press: send a key (enter|escape|space|tab|arrow_down|arrow_up|" +
-                "backspace). scroll: direction up|down|left|right|top|bottom, amount px (default 300). " +
-                "play / pause: media on the page. url: open a URL in the same widget. back, forward, reload.",
-            mapOf("action" to "inspect|read|click|type|press|scroll|play|pause|url|back|forward|reload",
+            "Operate a web page or app widget like a user would. Every action's result reports the page " +
+                "it landed on, the items now on it (numbered; usable as index) and whether sound is playing. " +
+                "search: type text into the site's own search box and press enter (opens the box if it hides " +
+                "behind an icon). inspect: full numbered list of buttons, links, fields, rows and media, " +
+                "including ones below the fold. read: page title and main text. click: the item whose " +
+                "visible text/label matches target_text, or index from the last list. type: put text into " +
+                "the field matched by field_text (label/placeholder); submit=true presses enter. press: a " +
+                "key (enter|escape|space|tab|arrow_down|arrow_up|backspace). scroll: direction " +
+                "up|down|left|right|top|bottom, amount px (default 300). play / pause: the page's media, " +
+                "verified by sound. url: open a URL in the same widget. back, forward, reload.",
+            mapOf("action" to "search|inspect|read|click|type|press|scroll|play|pause|url|back|forward|reload",
                 "target" to "Widget id/title; defaults to the most recent web or app widget.",
                 "target_text" to "click: visible text, aria-label or placeholder of the element.",
                 "index" to "click: number from the last inspect.",
                 "field_text" to "type: label/placeholder/name of the field (omit = the focused field).",
-                "text" to "type: the text to enter.",
+                "text" to "search / type: the text to enter.",
                 "submit" to "type: true to press enter after typing.",
                 "key" to "press: enter|escape|space|tab|arrow_down|arrow_up|backspace.",
                 "direction" to "scroll: up|down|left|right|top|bottom.",

@@ -98,6 +98,7 @@ class GeminiVoicePipeline(context: Context) {
         if (ApiKeyStore.resolve(appContext).isNullOrBlank()) {
             fail("No Gemini API key — push it via adb (see README)."); return
         }
+        lastToolKey = null
         Log.i(TAG, "activate(): starting session")
         SessionStats.startSession()
         synchronized(caption) { caption.setLength(0); captionFresh = true }
@@ -295,10 +296,16 @@ class GeminiVoicePipeline(context: Context) {
                 if (!isSessionEpochCurrent(epoch)) return@launch
                 if (cancelledToolIds.remove(callId)) { Log.i(TAG, "skipping cancelled tool $callId"); return@launch }
                 val result = toolDispatcher.dispatch(toolName, args)
-                val resultText = result.getOrElse { err ->
+                var resultText = result.getOrElse { err ->
                     Log.w(TAG, "tool failed $toolName: ${err.message}")
                     err.message?.trim().takeUnless { it.isNullOrBlank() } ?: "Tool $toolName is unavailable right now."
                 }
+                // The model re-issuing the very same call is the "second-guessing" loop: name it, so it moves on.
+                val key = toolName + normalizeArgs(args)
+                if (key == lastToolKey && toolName == "web" && !key.contains("\"action\":\"inspect\"")) {
+                    resultText = "You already made this exact call and the result is the same — do something different or tell the user what is blocking. $resultText"
+                }
+                lastToolKey = key
                 Log.i(TAG, "tool result $toolName: '${resultText.take(200)}'")
                 if (!isSessionEpochCurrent(epoch)) return@launch
                 if (cancelledToolIds.remove(callId)) { Log.i(TAG, "result for cancelled tool $callId dropped"); return@launch }
@@ -316,7 +323,7 @@ class GeminiVoicePipeline(context: Context) {
                     }
                 }
                 if (!isSessionEpochCurrent(epoch)) return@launch
-                runCatching { liveSession?.sendToolResponse(callId, toolName, resultText + if (settle > 0) " (Screen frame just sent — what you see is the result.)" else "") }
+                runCatching { liveSession?.sendToolResponse(callId, toolName, resultText) }
             } finally {
                 toolCallsInFlight.decrementAndGet()
                 noteConversationActivity()
@@ -324,11 +331,19 @@ class GeminiVoicePipeline(context: Context) {
         }
     }
 
+    private var lastToolKey: String? = null
+
+    /** JSON args with keys sorted, so the same call in a different key order compares equal. */
+    private fun normalizeArgs(args: String): String = runCatching {
+        val o = org.json.JSONObject(args)
+        o.keys().asSequence().sorted().joinToString(",", "{", "}") { k -> "\"$k\":\"${o.opt(k)}\"" }
+    }.getOrDefault(args.trim())
+
     /** Read-only tools need no evidence; anything that changes the screen gets a settle + frame. */
     private fun settleMsFor(tool: String, args: String): Long {
         val action = Regex("\"action\"\\s*:\\s*\"([a-z_]+)\"").find(args)?.groupValues?.get(1) ?: ""
         return when (tool) {
-            "web" -> if (action in setOf("inspect", "read", "eval")) 0L else 1_100L
+            "web" -> if (action in setOf("inspect", "read", "eval")) 0L else 800L   // web actions already wait for the page themselves
             "desktop" -> if (action in setOf("describe", "list")) 0L else 500L
             "media" -> if (action == "find") 0L else 900L
             "theme", "wallpaper" -> 600L
@@ -501,9 +516,8 @@ class GeminiVoicePipeline(context: Context) {
         private const val BARGE_FRAMES = 3
         private const val BARGE_HANGOVER_MS = 900L
         private const val LOCAL_BARGE_HOLD_MS = 1_200L
-        /** Screen frames for the model: cadence, post-tool delay, size. */
+        /** Screen frames for the model: cadence and size. */
         private const val FRAME_PERIOD_MS = 3_000L
-        private const val POST_TOOL_FRAME_DELAY_MS = 1_200L
         private const val FRAME_WIDTH = 512
         private const val FRAME_JPEG_QUALITY = 55
     }

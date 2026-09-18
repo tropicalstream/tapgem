@@ -873,6 +873,17 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 val allow = GEO_ORIGINS.any { host == it || host.endsWith(".$it") }
                 callback?.invoke(origin, allow, false)
             }
+            /**
+             * DRM (EME) needs the protected-media-id permission or every key system is
+             * refused. Grant just that for https pages; never camera or microphone. The
+             * X3 Pro ships only the ClearKey plugin — Widevine sites (Spotify full tracks,
+             * Netflix) still fail, but this stops us being the reason.
+             */
+            override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                val https = request.origin?.scheme?.equals("https", ignoreCase = true) == true
+                val drm = request.resources.filter { it == android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID }
+                if (kind == Kind.WEB && https && drm.isNotEmpty()) request.grant(drm.toTypedArray()) else request.deny()
+            }
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
                 HudStateBridge.notice(message?.take(80) ?: ""); result?.confirm(); return true
             }
@@ -992,18 +1003,20 @@ class WidgetView(context: Context) : FrameLayout(context) {
         val jsOn = wv.settings.javaScriptEnabled
         val title = widget.title
         when (cmd.action) {
-            "back" -> if (wv.canGoBack()) { wv.goBack(); done("Went back in \"$title\".") } else done("There's no earlier page in \"$title\".")
-            "forward" -> if (wv.canGoForward()) { wv.goForward(); done("Went forward in \"$title\".") } else done("There's no later page in \"$title\".")
-            "reload" -> { wv.reload(); done("Reloading \"$title\".") }
+            "back" -> if (wv.canGoBack()) { pageLoading = true; wv.goBack(); awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Went back.", done) }, 400L) } } else done("There's no earlier page in \"$title\".")
+            "forward" -> if (wv.canGoForward()) { pageLoading = true; wv.goForward(); awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Went forward.", done) }, 400L) } } else done("There's no later page in \"$title\".")
+            "reload" -> { pageLoading = true; wv.reload(); awaitLoad(12_000L) { main.postDelayed({ finish(wv, "Reloaded.", done) }, 400L) } }
             "url" -> {
                 val u = cmd.arg("url") ?: return done("No URL given.")
                 pageLoading = true; lastHttpStatus = 0
                 wv.loadUrl(u)
-                awaitLoad(12_000L) { main.postDelayed({ done("Opened ${runCatching { java.net.URL(u).host }.getOrDefault(u)} in \"$title\".${pageSummary(wv)}") }, 400L) }
+                awaitLoad(12_000L) { main.postDelayed({ finish(wv, "Opened ${runCatching { java.net.URL(u).host }.getOrDefault(u)}.${httpHint()}", done) }, 400L) }
             }
             "press" -> {
                 val key = cmd.arg("key", "text", "value") ?: "enter"
-                done(if (SyntheticInput.key(wv, key)) "Pressed $key in \"$title\"." else "I can't press \"$key\" — try enter, escape, space, tab, arrow keys, backspace, page_down.")
+                if (!SyntheticInput.key(wv, key)) return done("I can't press \"$key\" — try enter, escape, space, tab, arrow keys, backspace, page_down.")
+                val seq0 = navSeq
+                main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Pressed $key.", done, changed = navSeq != seq0) }, 300L) } }, 500L)
             }
             "scroll" -> {
                 val dir = (cmd.arg("direction", "value") ?: "down").lowercase(Locale.US)
@@ -1015,49 +1028,54 @@ class WidgetView(context: Context) : FrameLayout(context) {
                         "left" -> wv.scrollBy(-amount, 0); "right" -> wv.scrollBy(amount, 0)
                     }
                     done("Scrolled $dir in \"$title\".")
-                } else js(wv, "__tg.scroll(${jsStr(dir)}, $amount)") { done(it ?: "Scrolled $dir.") }
+                } else js(wv, "__tg.scroll(${jsStr(dir)}, $amount)") { r -> main.postDelayed({ finish(wv, r ?: "Scrolled $dir.", done) }, 250L) }
             }
             "eval" -> if (!com.tapgem.app.BuildConfig.DEBUG || !jsOn) done("Not available.") else js(wv, "(function(){ return ${cmd.arg("js") ?: "null"}; })()") { done(it ?: "null") }
-            "inspect" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.") else js(wv, "__tg.inspect()") { done(it ?: "Nothing to inspect.") }
+            "inspect" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.") else js(wv, "__tg.inspect()") { done((it ?: "Nothing to inspect.") + "\n" + soundLine()) }
             "read" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.") else js(wv, "__tg.read()") { done(it ?: "Nothing to read.") }
             "click" -> {
                 val target = cmd.arg("target_text", "text", "label", "target") ?: ""
                 val index = cmd.arg("index")?.toDoubleOrNull()?.toInt() ?: 0
                 if (!jsOn) return done("\"$title\" has nothing to click.")
-                jsObj(wv, "__tg.click(${jsStr(target)}, $index)") { o -> completeWithTap(wv, o, done) }
+                runStep(wv, "__tg.click(${jsStr(target)}, $index)", 3, "", done)
             }
-            "type" -> {
-                val text = cmd.arg("text", "value") ?: return done("Nothing to type.")
+            "type", "search" -> {
+                val text = cmd.arg("text", "value", "query") ?: return done("Nothing to type.")
                 val field = cmd.arg("field_text", "field", "target_text") ?: ""
                 val submit = cmd.arg("submit")?.lowercase(Locale.US) in setOf("true", "yes", "1", "on")
                 if (!jsOn) return done("\"$title\" has no fields to type into.")
-                jsObj(wv, "__tg.type(${jsStr(field)}, ${jsStr(text)}, $submit)") { o ->
-                    runCatching { hideIme() }
-                    completeWithTap(wv, o, done)
-                }
+                val typeJs = if (cmd.action == "search") "__tg.search(${jsStr(text)})" else "__tg.type(${jsStr(field)}, ${jsStr(text)}, $submit)"
+                runStep(wv, typeJs, 4, "", done)
             }
             "play", "pause" -> {
                 if (!jsOn) return done("\"$title\" has no media.")
                 val wantPlay = cmd.action == "play"
                 jsObj(wv, "__tg.media($wantPlay)") { o ->
-                    completeWithTap(wv, o) { msg ->
-                        if (!wantPlay) { done(msg); return@completeWithTap }
-                        // Verify the page really started; a second nudge via the media API if not.
-                        main.postDelayed({
+                    if (o?.optBoolean("none") == true) {
+                        val on = soundActive()
+                        return@jsObj done(if (wantPlay) (if (on) "Nothing to press — sound is already playing." else o.optString("msg") + " Sound: none.")
+                            else (if (on) o.optString("msg") + " Sound is still playing — click its stop or pause control by text." else "Nothing is playing."))
+                    }
+                    completeWithTap(wv, o, digest = false, done = { msg ->
+                        if (!wantPlay) { main.postDelayed({ done("$msg ${soundLine()}") }, 600L); return@completeWithTap }
+                        // Verify the page really started: page media state or sound on the glasses,
+                        // polled for a few seconds (streams buffer), with one nudge via the media API.
+                        fun verify(left: Int) {
                             jsObj(wv, "__tg.isPlaying()") { st ->
                                 val has = st?.optBoolean("has") == true
-                                val playing = st?.optBoolean("playing") == true
-                                if (!has || playing) done(msg)
-                                else jsObj(wv, "({ok:__tg.forcePlay()})") { _ ->
-                                    main.postDelayed({
-                                        jsObj(wv, "__tg.isPlaying()") { st2 ->
-                                            done(if (st2?.optBoolean("playing") == true) msg else "$msg The page's player hasn't started yet — it may need a tap on its own play control, try click with its text.")
-                                        }
-                                    }, 900L)
+                                val playing = st?.optBoolean("playing") == true || soundActive()
+                                when {
+                                    playing -> done("$msg Sound: playing.")
+                                    left == 0 -> done("$msg Sound: none — the player hasn't started; click its own play control by text or index.")
+                                    else -> {
+                                        if (has && left == 3) jsObj(wv, "({ok:__tg.forcePlay()})") {}
+                                        main.postDelayed({ verify(left - 1) }, 900L)
+                                    }
                                 }
                             }
-                        }, 900L)
-                    }
+                        }
+                        main.postDelayed({ verify(5) }, 900L)
+                    })
                 }
             }
             else -> done("Unknown web action ${cmd.action}.")
@@ -1073,32 +1091,95 @@ class WidgetView(context: Context) : FrameLayout(context) {
         main.postDelayed({ if (!fired) { loadWaiters.remove(once); once() } }, timeoutMs)
     }
 
-    /** "Now on: <title>" plus an HTTP error hint the model can act on. */
-    private fun pageSummary(wv: WebView): String {
-        val t = wv.title?.trim().takeUnless { it.isNullOrBlank() } ?: runCatching { java.net.URL(wv.url ?: "").host }.getOrDefault("")
-        val err = when {
-            lastHttpStatus == 404 -> " That address doesn't exist (404) — search the site instead of guessing links."
-            lastHttpStatus >= 400 -> " The page returned HTTP $lastHttpStatus."
-            else -> ""
-        }
-        return (if (t.isNotBlank()) " Now on: $t." else "") + err
+    /**
+     * Runs a page step (click / type / search) whose JS may first need a preparatory
+     * tap — dismissing a dialog that covers the target, or opening the control that
+     * reveals a hidden search field (Spotify: Search tab, then the search bar;
+     * archive.org: the search icon). Such results carry retry=true: tap, wait, re-run
+     * the same step, at most [left] times. async=true means the site answered
+     * through its own API and the text arrives in __tg.asyncOut.
+     */
+    private fun runStep(wv: WebView, stepJs: String, left: Int, prefix: String, done: (String) -> Unit) {
+        // Steps issued right after add/url arrive while the page is still loading: wait for it.
+        awaitLoad(10_000L) { main.postDelayed({ runStepNow(wv, stepJs, left, prefix, done) }, if (prefix.isEmpty()) 300L else 0L) }
     }
 
+    private fun runStepNow(wv: WebView, stepJs: String, left: Int, prefix: String, done: (String) -> Unit) {
+        js(wv, "__tg.mark()") { sig0 ->
+            jsObj(wv, stepJs) { o ->
+                runCatching { hideIme() }
+                when {
+                    o?.optBoolean("async") == true -> main.postDelayed({ awaitAsync(wv, 15, done) }, 600L)
+                    o?.optBoolean("retry") != true -> completeWithTap(wv, o, done, prefix = prefix, sig0 = sig0)
+                    left == 0 -> finish(wv, prefix + o.optString("msg") + " I couldn't get past that.", done)
+                    else -> completeWithTap(wv, o, { first -> main.postDelayed({ runStep(wv, stepJs, left - 1, "$prefix$first ", done) }, 700L) }, digest = false)
+                }
+            }
+        }
+    }
+
+    private fun awaitAsync(wv: WebView, left: Int, done: (String) -> Unit) {
+        js(wv, "__tg.asyncOut") { r ->
+            if (r != null) done("$r ${soundLine()}")
+            else if (left == 0) done("The site's search didn't answer in time.")
+            else main.postDelayed({ awaitAsync(wv, left - 1, done) }, 400L)
+        }
+    }
+
+    /** An HTTP error hint the model can act on (empty when the page loaded fine). */
+    private fun httpHint(): String = when {
+        lastHttpStatus == 404 -> " That address doesn't exist (404) — search the site instead of guessing links."
+        lastHttpStatus >= 400 -> " The page returned HTTP $lastHttpStatus."
+        else -> ""
+    }
+
+    /**
+     * Every screen-changing web action ends here: the action's own message, then
+     * where the page is now and what is on it (so the next step needs no inspect),
+     * then whether the glasses are actually making sound.
+     */
+    private fun finish(wv: WebView, msg: String, done: (String) -> Unit, changed: Boolean = true, sig0: String? = null) {
+        if (!wv.settings.javaScriptEnabled || !changed) { done(msg); return }
+        val seq0 = navSeq
+        // Single-page sites render results a beat after the URL settles: wait until the DOM stops changing.
+        fun settled(left: Int, prev: String?) {
+            js(wv, "__tg.sig()") { sig ->
+                if (left == 0 || (sig != null && sig == prev)) {
+                    js(wv, "__tg.digest(14)") { d ->
+                        val digest = d?.takeIf { it.isNotBlank() && !it.startsWith("Page error") }
+                        // Same DOM signature as before the step and no navigation: the page ignored it — say so
+                        // rather than let a plausible-looking digest read as success.
+                        val unchanged = sig0 != null && sig == sig0 && navSeq == seq0
+                        done(listOfNotNull(msg, if (unchanged) "Nothing on the page changed." else null, digest, soundLine()).joinToString(" "))
+                    }
+                } else main.postDelayed({ settled(left - 1, sig) }, 450L)
+            }
+        }
+        settled(7, null)
+    }
+
+    /** Anything on the glasses' media stream except our own speech (the page's audio, video, radio). */
+    private fun soundActive(): Boolean = runCatching {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        am.activePlaybackConfigurations.any { it.audioAttributes.contentType != android.media.AudioAttributes.CONTENT_TYPE_SPEECH }
+    }.getOrDefault(false)
+
+    private fun soundLine(): String = if (soundActive()) "Sound: playing." else "Sound: none."
+
     /** JS results of the form {tap:[x,y], msg, innerWidth} get a real native tap at that CSS point. */
-    private fun completeWithTap(wv: WebView, o: JSONObject?, done: (String) -> Unit) {
+    private fun completeWithTap(wv: WebView, o: JSONObject?, done: (String) -> Unit, digest: Boolean = true, prefix: String = "", sig0: String? = null) {
         if (o == null) { done("The page didn't respond."); return }
-        val msg = o.optString("msg").ifBlank { "Done." }
+        val msg = prefix + o.optString("msg").ifBlank { "Done." }
         val tap = o.optJSONArray("tap")
+        val end: (String) -> Unit = { m -> if (digest) finish(wv, m + httpHint(), done, sig0 = sig0) else done(m) }
         if (tap == null || tap.length() < 2) {
             // e.g. type+submit: the page may be navigating — report where it landed.
-            val seq0 = navSeq
-            main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ done(msg + if (navSeq != seq0) pageSummary(wv) else "") }, 300L) } }, 600L)
+            main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ end(msg) }, 300L) } }, 600L)
             return
         }
         val innerW = o.optDouble("innerWidth", 0.0)
         val scale = if (innerW > 1.0) wv.width / innerW else 1.0
         onFocus?.invoke(widget.id)
-        val seqBefore = navSeq
         // Smooth-scrolling pages move the target after scrollIntoView: re-measure once settled.
         main.postDelayed({
             wv.evaluateJavascript("(function(){try{return JSON.stringify(__tg.pendingPoint())}catch(e){return null}})()") { raw ->
@@ -1107,19 +1188,13 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 val pt = fresh?.optJSONArray("tap")?.takeIf { it.length() >= 2 } ?: tap
                 val x = (pt.getDouble(0) * scale).toFloat().coerceIn(1f, (wv.width - 2).toFloat())
                 val y = (pt.getDouble(1) * scale).toFloat().coerceIn(1f, (wv.height - 2).toFloat())
-                tapAndReport(wv, x, y, msg, seqBefore, done)
+                SyntheticInput.tap(wv, x, y) {
+                    runCatching { hideIme() }
+                    // Give the page a beat to react; if the tap started a navigation, wait for it.
+                    main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ end(msg) }, 300L) } }, 600L)
+                }
             }
         }, 450L)
-    }
-
-    private fun tapAndReport(wv: WebView, x: Float, y: Float, msg: String, seqBefore: Int, done: (String) -> Unit) {
-        SyntheticInput.tap(wv, x, y) {
-            runCatching { hideIme() }
-            // Give the page a beat to react; if the tap started a navigation, wait for it.
-            main.postDelayed({
-                awaitLoad(10_000L) { main.postDelayed({ done(msg + if (navSeq != seqBefore) pageSummary(wv) else "") }, 300L) }
-            }, 600L)
-        }
     }
 
     private fun js(wv: WebView, expr: String, cb: (String?) -> Unit) {
@@ -1160,26 +1235,58 @@ class WidgetView(context: Context) : FrameLayout(context) {
  function chain(el){ var out=[]; var n=el; while(n){ out.push(n); n=n.parentNode||n.host||null; if(n&&n.nodeType===11&&n.host){ n=n.host; } } return out; }
  function txt(el){ var t=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim(); if(!t){ var a=attr(el,'aria-label')||attr(el,'title')||attr(el,'placeholder')||attr(el,'alt')||labelFor(el); if(!a&&el.querySelector){ var i=el.querySelector('img[alt],[aria-label],svg title'); if(i) a=attr(i,'alt')||attr(i,'aria-label')||i.textContent; } t=a||''; } return String(t).slice(0,80); }
  var SEL='a[href],button,input,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[role=textbox],[role=searchbox],[role=combobox],[onclick],[contenteditable=true],video,audio,summary';
- function walk(root,out,depth){ if(depth>25) return; var els; try{ els=root.querySelectorAll('*'); }catch(e){ return; } for(var i=0;i<els.length&&out.length<4000;i++){ var el=els[i]; try{ if(el.matches(SEL)) out.push(el); }catch(e){} if(el.shadowRoot) walk(el.shadowRoot,out,depth+1); } }
+ function parentEl(n){ return n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; }
+ function pointer(el){ try{ return getComputedStyle(el).cursor==='pointer'; }catch(e){ return false; } }
+ /* Clickable rows/cards that are plain divs with cursor:pointer (Spotify results, station cards): the outermost such element, not one already inside a link/button. */
+ function clickableRow(el){ if(el===document.body||el.children.length>40||!pointer(el)) return false; var p=parentEl(el); if(p&&p!==document.body&&pointer(p)) return false; try{ if(el.closest&&el.closest(SEL)!==el&&el.closest(SEL)) return false; }catch(e){} return true; }
+ function walk(root,out,depth){ if(depth>25) return; var els; try{ els=root.querySelectorAll('*'); }catch(e){ return; } for(var i=0;i<els.length&&out.length<4000;i++){ var el=els[i]; try{ if(el.matches(SEL)) out.push(el); else if(clickableRow(el)) out.push(el); }catch(e){} if(el.shadowRoot) walk(el.shadowRoot,out,depth+1); } }
  function all(){ var out=[]; walk(document,out,0); return out; }
- T.collect=function(){ var els=all(); var out=[]; els.forEach(function(el){ if(!vis(el)) return; if(el.type==='hidden') return; var kind=el.tagName.toLowerCase(); if(el.type&&kind==='input') kind+=':'+el.type; var label=txt(el); if(!label&&kind!=='video'&&kind!=='audio') return; out.push({el:el,kind:kind,label:label}); }); T.last=out.map(function(o){return o.el;}); return out; };
- T.inspect=function(){ var o=T.collect(); var lines=o.slice(0,45).map(function(x,i){ return (i+1)+'. ['+x.kind+'] '+x.label; }); return 'Page: '+document.title+' ('+location.host+')\n'+(o.length?('Elements ('+o.length+'):\n'+lines.join('\n')):'No interactive elements are visible; try scrolling.'); };
+ function inView(el){ var r=el.getBoundingClientRect(); return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth; }
+ /* Everything rendered on the page (not just the viewport): click scrolls to it, so the model need not scroll-and-inspect to find results below the fold. */
+ T.collect=function(){ var els=all(); var out=[]; els.forEach(function(el){ if(!laidOut(el)) return; if(el.type==='hidden') return; var kind=el.tagName.toLowerCase(); if(el.type&&kind==='input') kind+=':'+el.type; var label=txt(el); if(!label&&kind!=='video'&&kind!=='audio') return; var r=el.getBoundingClientRect(); out.push({el:el,kind:kind,label:label.slice(0,60),where:r.bottom<=0?'above':(r.top>=innerHeight?'below':'')}); }); return out; };
+ T.sig=function(){ var n=0; try{ n=all().length; }catch(e){} return n+'|'+((document.body&&document.body.innerText)||'').length; };
+ /* Called before a step: remember what was on the page so the digest can point out what appeared (a popover, a menu, an error). */
+ T.mark=function(){ try{ var b={}; T.collect().forEach(function(x){ b[x.kind+'|'+x.label]=1; }); T.before=b; }catch(e){ T.before=null; } return T.sig(); };
+ function fresh(o){ var b=T.before; T.before=null; if(!b) return []; return o.filter(function(x){ return !b[x.kind+'|'+x.label]; }); }
+ T.mediaLine=function(){ var st=T.isPlaying(); return st.has?('Media: '+(st.playing?'playing':'paused — not started yet, use action=play')):''; };
+ /* Site chrome (header, nav, footer — also inside custom elements like archive.org's ia-topnav) ranks after content so a short list shows results, not menus. */
+ function inNav(el){ var n=el; for(var k=0;k<30&&n;k++){ if(n.nodeType===1){ var tg=n.tagName; var role=attr(n,'role'); if(tg==='HEADER'||tg==='NAV'||tg==='FOOTER'||role==='banner'||role==='navigation'||role==='contentinfo'||/NAV|HEADER|FOOTER|BAR|MENU/.test(tg)) return true; } n=n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; } return false; }
+ /* Links and rows (results) before fields before toolbar buttons; on-screen before below; site chrome last. */
+ function rank(x){ if(x.dlg) return -1; var k=x.kind; var kp=(k==='a'||k==='div'||k==='li'||k==='video'||k==='audio')?0:(k.indexOf('input')===0?1:2); if(k==='a'&&x.label.length<16) kp=1; return (x.nav?8:0)+kp*2+(x.where===''?0:(x.where==='below'?1:5)); }
+ function lines(o,max,prioritize){ var d=T.dialog(); o.forEach(function(x){ x.nav=inNav(x.el); x.dlg=!!(d&&chain(x.el).indexOf(d)>=0); }); if(prioritize||o.length>max){ var seen={}; o=o.slice().sort(function(a,b){ return rank(a)-rank(b); }).filter(function(x){ if(x.kind==='a'||x.kind==='div'||x.kind==='li') return true; var key=x.kind+'|'+x.label; if(seen[key]) return false; seen[key]=1; return true; }).slice(0,max); } T.last=o.map(function(x){return x.el;}); T.virtual=null; return o.map(function(x,i){ return (i+1)+'. ['+x.kind+'] '+x.label+(x.where?' ('+x.where+')':''); }); }
+ T.inspect=function(){ var o=T.collect(); var ls=lines(o,45,false); var head='Page: '+document.title+' ('+location.host+')'; var dl=T.dialogLine(); if(dl) head+='\n'+dl; var m=T.mediaLine(); if(m) head+='\n'+m; return head+'\n'+(o.length?('Elements ('+o.length+'):\n'+ls.join('\n')):'No interactive elements found; the page may still be loading.'); };
+ /* Short "what's here now" appended to action results so the model can go straight to the next step. */
+ T.digest=function(n){ var o=T.collect(); var nw=fresh(o); var ls=lines(o,n||12,true); var s='Now on: '+(document.title||location.host)+'.'; var dl=T.dialogLine(); if(dl) s+=' '+dl; else if(nw.length&&nw.length<=6&&nw.length<o.length/2) s+=' New: '+nw.map(function(x){ return x.label; }).join(' | ')+'.'; var m=T.mediaLine(); if(m) s+=' '+m+'.'; if(ls.length) s+=' Items: '+ls.join(' | ')+(o.length>ls.length?(' | +'+(o.length-ls.length)+' more (inspect)'):''); return s; };
  function deepText(node,acc,depth){ if(acc.n>6000||depth>40) return; if(node.nodeType===3){ var s=node.nodeValue.replace(/\s+/g,' ').trim(); if(s){ acc.parts.push(s); acc.n+=s.length; } return; } if(node.nodeType!==1&&node.nodeType!==11&&node.nodeType!==9) return; if(node.nodeType===1){ var tg=node.tagName; if(tg==='SCRIPT'||tg==='STYLE'||tg==='NOSCRIPT'||tg==='TEMPLATE') return; try{ var cs=getComputedStyle(node); if(cs.display==='none'||cs.visibility==='hidden') return; }catch(e){} if(node.shadowRoot) deepText(node.shadowRoot,acc,depth+1); } var c=node.childNodes; for(var i=0;i<c.length;i++) deepText(c[i],acc,depth+1); }
  T.read=function(){ var m=document.querySelector('main,article,[role=main]')||document.body; var t=(m&&m.innerText||'').replace(/\n{3,}/g,'\n\n').trim(); if(t.length<200){ var acc={parts:[],n:0}; deepText(document.body,acc,0); t=acc.parts.join(' · '); } return 'Title: '+document.title+'\nURL: '+location.href+'\n\n'+t.slice(0,2500)+(t.length>2500?'…':''); };
  T.tapPoint=function(el){ var r=el.getBoundingClientRect(); var cx=r.left+r.width/2, cy=r.top+r.height/2; var cands=[[cx,cy],[cx,r.top+r.height*0.25],[cx,r.top+r.height*0.75],[r.left+r.width*0.25,cy],[r.left+r.width*0.75,cy],[r.left+r.width*0.25,r.top+r.height*0.25],[r.left+r.width*0.75,r.top+r.height*0.25]]; var best=null; for(var i=0;i<cands.length;i++){ var p=[Math.round(cands[i][0]),Math.round(cands[i][1])]; if(p[0]<1||p[1]<1||p[0]>=innerWidth-1||p[1]>=innerHeight-1) continue; if(!best) best=p; if(!T.covered(el,p)) return p; } return best||[Math.round(cx),Math.round(cy)]; };
  T.center=function(el){ T.pending=el; try{ el.scrollIntoView({block:'center',inline:'center',behavior:'instant'}); }catch(e){ el.scrollIntoView({block:'center',inline:'center'}); } return T.tapPoint(el); };
  T.pendingPoint=function(){ var el=T.pending; if(!el) return null; var p=T.tapPoint(el); return {tap:p, settled:!T.covered(el,p)}; };
  T.covered=function(el,pt){ var h=document.elementFromPoint(pt[0],pt[1]); if(!h) return true; while(h&&h.shadowRoot&&h.shadowRoot.elementFromPoint){ var inner=h.shadowRoot.elementFromPoint(pt[0],pt[1]); if(!inner||inner===h) break; h=inner; } return !(h===el||chain(h).indexOf(el)>=0||chain(el).indexOf(h)>=0); };
- T.findByText=function(q,pool){ q=norm(q); if(!q) return null; var c=pool||all().filter(vis); var qw=q.split(' ').filter(function(w){return w.length>1;}); var best=null,bs=0; c.forEach(function(el){ var l=norm(txt(el)); if(!l) return; var s=0; if(l===q) s=100; else if(l.indexOf(q)===0) s=90; else if(l.indexOf(q)>=0) s=80; else { var hit=qw.filter(function(w){return l.indexOf(w)>=0;}).length; if(qw.length&&hit===qw.length) s=70; else if(qw.length>=3&&hit>=qw.length-1) s=40; if(q.indexOf(l)>=0&&l.length>2) s=Math.max(s,Math.round(50*l.length/q.length)); } if(s>bs){bs=s;best=el;} }); return bs>=25?best:null; };
+ T.findByText=function(q,pool){ q=norm(q); if(!q) return null; var c=pool||all().filter(laidOut); var qw=q.split(' ').filter(function(w){return w.length>1;}); var best=null,bs=0; c.forEach(function(el){ var l=norm(txt(el)); if(!l) return; var s=0; if(l===q) s=100; else if(l.indexOf(q)===0) s=90; else if(l.indexOf(q)>=0) s=80; else { var hit=qw.filter(function(w){return l.indexOf(w)>=0;}).length; if(qw.length&&hit===qw.length) s=70; else if(qw.length>=3&&hit>=qw.length-1) s=40; if(q.indexOf(l)>=0&&l.length>2) s=Math.max(s,Math.round(50*l.length/q.length)); } if(s<60){ var h=norm(attr(el,'aria-label')+' '+attr(el,'title')+' '+attr(el,'data-testid')); if(h&&h.indexOf(q)>=0) s=60; } if(s&&inView(el)) s+=5; if(s>bs){bs=s;best=el;} }); return bs>=25?best:null; };
  function walkAll(root,out,depth){ if(depth>25||out.length>6000) return; var els; try{ els=root.querySelectorAll('*'); }catch(e){ return; } for(var i=0;i<els.length&&out.length<6000;i++){ out.push(els[i]); if(els[i].shadowRoot) walkAll(els[i].shadowRoot,out,depth+1); } }
  T.findAnyText=function(q){ q=norm(q); if(!q) return null; var out=[]; walkAll(document,out,0); var best=null,ba=1e12; out.forEach(function(el){ if(el.children&&el.children.length>6) return; if(!vis(el)) return; var t=norm(el.innerText||el.textContent); if(!t||t.length>200||t.indexOf(q)<0) return; var r=el.getBoundingClientRect(); var a=r.width*r.height; if(a<ba){ba=a;best=el;} }); if(!best) return null; var n=best; for(var k=0;k<8&&n&&n!==document.body;k++){ try{ if(n.matches&&n.matches('a[href],button,[role=button],[role=link],[onclick],[tabindex]')) return n; if(getComputedStyle(n).cursor==='pointer') return n; }catch(e){} n=n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; } return best; };
- T.click=function(q,idx){ var el=null; if(idx&&T.last&&T.last[idx-1]) el=T.last[idx-1]; if(!el&&q) el=T.findByText(q); if(!el&&q) el=T.findAnyText(q); if(!el) return {msg:'I couldn\'t find anything to click matching "'+q+'". Try inspect to see what\'s on the page.'}; var label=txt(el)||el.tagName.toLowerCase(); var pt=T.center(el); var onScreen=pt[0]>0&&pt[1]>0&&pt[0]<innerWidth&&pt[1]<innerHeight; if(!onScreen){ try{ el.click(); }catch(e){} return {msg:'Clicked "'+label+'".'}; } return {tap:pt,msg:'Clicked "'+label+'".'}; };
+ /* A dialog / consent sheet / app-nag covering the page: role=dialog, aria-modal, or a fixed box over most of the viewport at its centre. */
+ T.dialog=function(){ var c=null; try{ c=Array.prototype.filter.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],dialog[open]'),laidOut).pop()||null; }catch(e){} if(c) return c; try{ var els=document.elementsFromPoint(innerWidth/2,innerHeight/2); for(var i=0;i<els.length;i++){ var n=els[i]; for(var k=0;k<8&&n&&n!==document.body;k++){ var cs=getComputedStyle(n); if(cs.position==='fixed'||cs.position==='absolute'){ var r=n.getBoundingClientRect(); if(r.width*r.height>=0.45*innerWidth*innerHeight&&(parseInt(cs.zIndex,10)||0)>0&&n!==T.scroller()&&(n.innerText||'').trim().length>=20) return n; } n=n.parentElement; } } }catch(e){} return null; };
+ T.dialogButtons=function(d){ var out=[]; walk(d,out,0); return out.filter(function(el){ return laidOut(el)&&txt(el)&&!/^(input|textarea|select)$/i.test(el.tagName); }); };
+ T.dismisser=function(d){ var re=/^(not now|no thanks|no, thanks|maybe later|later|skip|dismiss|close|cancel|got it|ok|okay|continue|i agree|agree|accept|accept all|allow all|reject all|x|×|✕)$/i; var bs=T.dialogButtons(d); if(bs.length===1) return bs[0]; /* a single-button gate: 'Press play to start', 'Enter' */ return bs.filter(function(b){ return re.test(norm(txt(b))); })[0]||bs.filter(function(b){ return /close|dismiss/i.test(attr(b,'aria-label')+' '+attr(b,'title')+' '+(attr(b,'data-testid'))); })[0]||null; };
+ T.dialogLine=function(){ var d=T.dialog(); if(!d) return ''; var t=(d.innerText||'').replace(/\s+/g,' ').trim().slice(0,70); var bs=T.dialogButtons(d).slice(0,5).map(function(b){ return txt(b); }); return 'A dialog covers the page: "'+t+'"'+(bs.length?(' — buttons: '+bs.join(' | ')):'')+'.'; };
+ /* Before tapping something a dialog covers: tap the dialog's dismiss button and ask for a retry; if there is none, say what the dialog offers. */
+ T.unblock=function(el,pt,label){ if(!T.covered(el,pt)) return null; var d=T.dialog(); if(!d||chain(el).indexOf(d)>=0) return null; var b=T.dismisser(d); if(b){ var bp=T.center(b); return {tap:bp,retry:true,msg:'Closed the "'+(txt(b)||'dialog')+'" dialog.'}; } return {msg:'"'+label+'" is covered. '+T.dialogLine()+' Click one of its buttons first.'}; };
+ T.click=function(q,idx){ if(T.virtual){ var it=null; if(idx&&T.virtual[idx-1]) it=T.virtual[idx-1]; else if(q){ var nq=norm(q); it=T.virtual.filter(function(v){ var l=norm(v.label); return l.indexOf(nq)>=0||nq.indexOf(l.split(' (')[0])>=0; })[0]; } if(it){ T.virtual=null; location.assign(it.url); return {msg:'Opening '+it.label+'.'}; } } var el=null; if(idx&&T.last&&T.last[idx-1]) el=T.last[idx-1]; if(!el&&q) el=T.findByText(q); if(!el&&q) el=T.findAnyText(q); if(!el) return {msg:'I couldn\'t find anything to click matching "'+q+'". Try inspect to see what\'s on the page.'}; var label=txt(el)||el.tagName.toLowerCase(); var pt=T.center(el); var onScreen=pt[0]>0&&pt[1]>0&&pt[0]<innerWidth&&pt[1]<innerHeight; if(!onScreen){ try{ el.click(); }catch(e){} return {msg:'Clicked "'+label+'".'}; } var u=T.unblock(el,pt,label); if(u) return u; return {tap:pt,msg:'Clicked "'+label+'".'}; };
  T.fields=function(){ return all().filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input') return vis(el)&&!/^(hidden|submit|button|checkbox|radio|file|image|range|color)$/.test(el.type||'text'); return vis(el)&&(k==='textarea'||el.isContentEditable||/^(textbox|searchbox|combobox)$/.test(attr(el,'role'))); }); };
- T.findField=function(q){ var f=T.fields(); if(!f.length) return null; if(!q){ var a=document.activeElement; if(a&&f.indexOf(a)>=0) return a; return f[0]; } q=norm(q); var best=null,bs=0; f.forEach(function(el){ var l=norm([attr(el,'placeholder'),attr(el,'aria-label'),attr(el,'name'),attr(el,'id'),attr(el,'title'),labelFor(el),el.value].join(' ')); var s=0; if(l===q) s=5; else if(l.indexOf(q)>=0) s=3; else { var qw=q.split(' '); var hit=qw.filter(function(w){return w.length>1&&l.indexOf(w)>=0;}).length; if(hit) s=hit; } if(s>bs){bs=s;best=el;} }); return best||( /search|find|query/.test(q)?f[0]:null ); };
+ T.findField=function(q){ var f=T.fields(); if(!f.length) return null; if(!q){ var a=document.activeElement; if(a&&f.indexOf(a)>=0) return a; return f[0]; } q=norm(q); var best=null,bs=0; f.forEach(function(el){ var l=norm([attr(el,'placeholder'),attr(el,'aria-label'),attr(el,'name'),attr(el,'id'),attr(el,'title'),labelFor(el),el.value].join(' ')); var s=0; if(l===q) s=5; else if(l.indexOf(q)>=0) s=3; else { var qw=q.split(' '); var hit=qw.filter(function(w){return w.length>1&&l.indexOf(w)>=0;}).length; if(hit) s=hit; } if(s>bs){bs=s;best=el;} }); if(!best){ var unl=f.filter(function(el){ return !norm([attr(el,'placeholder'),attr(el,'aria-label'),attr(el,'name'),labelFor(el)].join('')); }); if(unl.length===1) best=unl[0]; } return best; };
  T.setValue=function(el,text){ if(el.isContentEditable){ el.focus(); el.textContent=text; el.dispatchEvent(new Event('input',{bubbles:true})); return; } var proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; var d=Object.getOwnPropertyDescriptor(proto,'value'); el.focus(); if(d&&d.set) d.set.call(el,text); else el.value=text; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); };
  T.enter=function(el){ var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}; var kd=new KeyboardEvent('keydown',o); var prevented=!el.dispatchEvent(kd); el.dispatchEvent(new KeyboardEvent('keypress',o)); el.dispatchEvent(new KeyboardEvent('keyup',o)); if(!prevented&&el.form){ try{ if(el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }catch(e){} } };
- T.type=function(field,text,submit){ var el=T.findField(field); if(!el) return {msg:field?('I couldn\'t find a field matching "'+field+'".'):'There\'s no text field on this page.'}; var label=attr(el,'placeholder')||attr(el,'aria-label')||attr(el,'name')||labelFor(el)||'the field'; T.setValue(el,text); if(submit){ T.enter(el); return {msg:'Typed "'+text+'" into '+label+' and pressed enter.'}; } return {msg:'Typed "'+text+'" into '+label+'.'}; };
- T.media=function(play){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0]; if(el){ try{ if(play){ var p=el.play(); if(p&&p.catch) p.catch(function(){}); el.muted=false; } else el.pause(); return {msg:(play?'Playing ':'Paused ')+(document.title||el.tagName.toLowerCase())+'.'}; }catch(e){} } var re=play?/(^|\s)(play|resume|listen now)(\s|$|\b)/i:/(^|\s)(pause|stop)(\s|$|\b)/i; var pool=all().filter(laidOut); var cand=pool.filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return false; return re.test(txt(el)); }); var visc=cand.filter(vis); if(visc.length) cand=visc; if(!cand.length&&play) cand=pool.filter(vis).filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea') return false; return /(^|[\s_-])play([\s_-]|$)/i.test(attr(el,'aria-label')+' '+attr(el,'title')+' '+(typeof el.className==='string'?el.className:'')); }); cand.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var btn=cand[0]||null; if(!btn) return {msg:play?'I couldn\'t find anything to play here — try inspect or click a specific item.':'I couldn\'t find a pause control.'}; var pt=T.center(btn); return {tap:pt,msg:(play?'Pressed play':'Pressed pause')+' on "'+(txt(btn)||document.title)+'".'}; };
+ function hint(el){ return norm([attr(el,'type'),attr(el,'role'),attr(el,'placeholder'),attr(el,'aria-label'),attr(el,'name'),attr(el,'id'),attr(el,'data-testid'),labelFor(el),typeof el.className==='string'?el.className:''].join(' ')); }
+ T.searchField=function(){ var f=T.fields(); var best=null,bs=0; f.forEach(function(el){ var h=hint(el); var s=0; if(attr(el,'type')==='search'||attr(el,'role')==='searchbox') s=10; if(/search|find/.test(h)) s+=5; if(/what do you want|looking for|type here/.test(norm(attr(el,'placeholder')))) s+=3; if(/url|address|wayback/.test(h)) s-=8; if(s>bs){bs=s;best=el;} }); if(!best&&f.length===1&&!/url|address|wayback/.test(hint(f[0]))) best=f[0]; return best; };
+ T.searchOpener=function(){ var c=all().filter(laidOut); var best=null,bs=0; c.forEach(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return; var l=norm(txt(el)); var h=norm([attr(el,'aria-label'),attr(el,'title'),attr(el,'data-testid'),el.id||''].join(' ')); var s=0; if(l==='search') s=9; else if(/(^|\s)search(\s|$)/.test(l)) s=8; else if(/search/.test(h)) s=6; if(/what do you want|looking for/.test(l)) s=Math.max(s,7); if(!s) return; if(k==='button'||attr(el,'role')==='button') s+=4; if(inView(el)) s+=1; if(s>bs){bs=s;best=el;} }); return best; };
+ T.virtual=null; T.asyncOut=null;
+ /* Sites whose layout at this width hides search but expose a same-origin API: results become numbered items the model clicks like any other. */
+ T.siteSearch=function(text){ if(/(^|\.)radio\.garden$/.test(location.host)){ T.asyncOut=null; fetch('/api/search?q='+encodeURIComponent(text)).then(function(r){ return r.json(); }).then(function(j){ var hits=(j.hits&&j.hits.hits)||[]; var items=[]; hits.forEach(function(h){ var p=h._source&&h._source.page; if(!p||!p.url) return; items.push({label:p.title+(p.subtitle?' – '+p.subtitle:'')+(p.type==='channel'?' (station)':' (place)'),url:p.url}); }); T.virtual=items.slice(0,12); T.asyncOut=items.length?('Radio Garden found: '+T.virtual.map(function(it,i){ return (i+1)+'. '+it.label; }).join(' | ')+'. Click one by index or name, then play.'):('Nothing on Radio Garden matches "'+text+'".'); }).catch(function(e){ T.asyncOut='Radio Garden search failed: '+e; }); return {async:true,msg:'Searching Radio Garden…'}; } return null; };
+ T.search=function(text){ var v=T.siteSearch(text); if(v) return v; var el=T.searchField(); if(el){ var u=T.unblock(el,T.center(el),'the search box'); if(u) return u; T.setValue(el,text); T.enter(el); return {msg:'Searched for "'+text+'".'}; } var b=T.searchOpener(); if(b){ var pt=T.center(b); var u=T.unblock(b,pt,'search'); if(u) return u; return {tap:pt,retry:true,msg:'Opened search.'}; } return {msg:'I can\'t find a search box on this page — try clicking a Search link or menu first.'}; };
+ T.type=function(field,text,submit){ var el=T.findField(field); if(!el&&field){ var b=T.findByText(field); if(b&&b!==document.body){ var pt=T.center(b); var u=T.unblock(b,pt,field); if(u) return u; return {tap:pt,retry:true,msg:'Opened "'+(txt(b)||'the control')+'".'}; } } if(!el) return {msg:field?('I couldn\'t find a field matching "'+field+'".'):'There\'s no text field on this page.'}; var label=attr(el,'placeholder')||attr(el,'aria-label')||attr(el,'name')||labelFor(el)||'the field'; var u=T.unblock(el,T.center(el),label); if(u) return u; T.setValue(el,text); if(submit){ T.enter(el); return {msg:'Typed "'+text+'" into '+label+' and pressed enter.'}; } return {msg:'Typed "'+text+'" into '+label+'.'}; };
+ T.media=function(play){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0]; if(el){ try{ if(play){ var p=el.play(); if(p&&p.catch) p.catch(function(){}); el.muted=false; } else el.pause(); return {msg:(play?'Playing ':'Paused ')+(document.title||el.tagName.toLowerCase())+'.'}; }catch(e){} } var re=play?/(^|\s)(play|resume|listen now)(\s|$|\b)/i:/(^|\s)(pause|stop)(\s|$|\b)/i; var pool=all().filter(laidOut); var cand=pool.filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return false; return re.test(txt(el)); }); var visc=cand.filter(vis); if(visc.length) cand=visc; if(!cand.length&&play) cand=pool.filter(vis).filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea') return false; return /(^|[\s_-])play([\s_-]|$)/i.test(attr(el,'aria-label')+' '+attr(el,'title')+' '+(typeof el.className==='string'?el.className:'')); }); cand.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var btn=cand[0]||null; if(!btn) return {none:true,msg:play?'I couldn\'t find anything to play here — try inspect or click a specific item.':'I couldn\'t find a pause control.'}; var pt=T.center(btn); return {tap:pt,msg:(play?'Pressed play':'Pressed pause')+' on "'+(txt(btn)||document.title)+'".'}; };
  T.isPlaying=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } if(!m.length) return {has:false}; var p=m.some(function(e){ return !e.paused&&!e.ended&&e.readyState>0||(!e.paused&&e.currentTime>0); }); var playing=m.some(function(e){ return !e.paused; }); return {has:true,playing:playing,ready:p}; };
  T.forcePlay=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } var ok=false; m.forEach(function(e){ try{ var pr=e.play(); if(pr&&pr.catch) pr.catch(function(){}); ok=true; }catch(err){} }); return ok; };
  T.scroller=function(){ var d=document.scrollingElement||document.documentElement; if(d.scrollHeight>d.clientHeight+10) return d; var best=d,ba=0; try{ Array.prototype.forEach.call(document.querySelectorAll('div,main,section,ul,ol'),function(el){ var s=getComputedStyle(el); if(!/(auto|scroll)/.test(s.overflowY+' '+s.overflowX)) return; if(el.scrollHeight<=el.clientHeight+10&&el.scrollWidth<=el.clientWidth+10) return; var r=el.getBoundingClientRect(); var a=Math.min(r.width,innerWidth)*Math.min(r.height,innerHeight); if(a>ba){ba=a;best=el;} }); }catch(e){} return best; };

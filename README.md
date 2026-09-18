@@ -204,9 +204,34 @@ can then adjust ("a bit bigger", "move it down").
 Archive, YouTube, Spotify and Radio Garden; no keyboard ever pops up)
 - "Search the Internet Archive for the Grateful Dead Cornell 77 show and play it."
 - "Open YouTube and play lo-fi hip hop radio." · "Skip the ad." · "Pause it."
-- "Open Spotify and play So What by Miles Davis." (30-second previews unless you're signed in)
-- "Open Radio Garden and start playing some radio." · "Take a balloon ride." · "Next station."
+- "Open Spotify and play So What by Miles Davis." (30-second previews, **signed out only** — see below)
+- "Open Radio Garden and start playing some radio." · "Take a balloon ride." · "Next station." · "Play a station from Tokyo."
 - "Scroll down." · "Click on the second result." · "Type Paris into the search box." · "Go back." · "What's on this page?"
+
+A typical request is three tool calls — *search → click → play* — because every
+web action reports back **where the page is now, what is on it** (numbered
+items, results ranked before site chrome, things that just appeared flagged as
+*New*), **whether a dialog is covering it** and **whether the glasses are
+actually making sound** (measured natively, not trusted from the page). `search`
+finds the site's own search box, opens it when it hides behind an icon or a tab,
+never types into archive.org's Wayback URL box, and on Radio Garden — whose
+compact layout has no search field — asks the site's own API and lists the
+places and stations it returns. Dialogs that block a click (Spotify's "Get the
+app", Radio Garden's "Press play to start", cookie sheets) are dismissed
+automatically before the click is retried; a click that changes nothing says so
+("Nothing on the page changed"), and the same call issued twice in a row is
+called out, so the assistant stops second-guessing itself and either moves on or
+tells you what is blocking.
+
+**Spotify and DRM.** The X3 Pro firmware ships only the ClearKey DRM plugin — there is no
+Widevine CDM on the device (`/vendor/lib/mediadrm/` holds `libdrmclearkeyplugin.so` alone, and
+`navigator.requestMediaKeySystemAccess('com.widevine.alpha')` rejects with *NotSupportedError*).
+Spotify's web player needs Widevine for every full track, so once you sign in it shows
+*"Playback disabled"* and nothing else; signed out it plays 30-second previews. TapGem does its
+part (it grants the WebView's protected-media permission, which is what most WebView apps miss), so
+if a future RayNeo firmware adds Widevine, full playback will simply start working. Until then:
+sign out for previews ("sign me out of Spotify"), or ask for the song on YouTube, SoundCloud,
+Bandcamp or the Internet Archive — none of them use DRM.
 
 **Media** (files on the glasses, found by name)
 - "Open my vacation video, bottom right." · "Play the fanfare mp3." · "Pause it." · "Mute it."
@@ -266,6 +291,7 @@ which only the adb shell holds):
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name widget --es args '{\"action\":\"add\",\"type\":\"clock\",\"anchor\":\"top_right\"}'"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name desktop --es args '{\"action\":\"arrange\",\"layout\":\"grid\"}'"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name web --es args '{\"action\":\"inspect\"}'"
+adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name web --es args '{\"action\":\"search\",\"text\":\"So What Miles Davis\"}'"
 # start / stop the Live voice session without tapping
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.VOICE --es cmd start"
 adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.VOICE --es cmd stop"
@@ -288,7 +314,7 @@ macOS voice you can run the whole loop hands-free: start the session, then
 
 Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/undo/clear/screenshot),
 `widget` (add/update/remove/move/resize/front/list/navigate/refresh),
-`web` (inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
+`web` (search/inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
 `theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update),
 `media` (find/open).
 

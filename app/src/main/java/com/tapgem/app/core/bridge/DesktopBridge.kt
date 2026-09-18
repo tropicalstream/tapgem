@@ -136,8 +136,6 @@ object DesktopBridge {
         return true
     }
 
-    fun canUndo(): Boolean = undoStack.isNotEmpty()
-
     fun setActive(id: String?) {
         activeWidgetId = id?.takeIf { current().widget(it) != null }
         fire(current())

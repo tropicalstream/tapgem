@@ -109,7 +109,6 @@ class MainActivity : AppCompatActivity() {
     private var twoFingerLastX = 0f
     private var twoFingerLastY = 0f
     private var lastTouchActivityMs = 0L
-    private var lastTouchTapMs = 0L
     private val longPressRunnable = Runnable { onLongPress() }
 
     // left arm
@@ -705,7 +704,7 @@ class MainActivity : AppCompatActivity() {
                 rightArmTouchTracking = false
                 if (twoFinger) { twoFinger = false; if (host.contentDragActive) host.endInteraction(); return }
                 if (holdDragging) { finishHoldDrag(); return }
-                if (ok && SystemClock.uptimeMillis() - rightArmTouchDownMs < TAP_MAX_MS) { lastTouchTapMs = SystemClock.uptimeMillis(); onRightArmTapUp() }
+                if (ok && SystemClock.uptimeMillis() - rightArmTouchDownMs < TAP_MAX_MS) onRightArmTapUp()
             }
             MotionEvent.ACTION_CANCEL -> {
                 uiHandler.removeCallbacks(longPressRunnable); rightArmTouchTracking = false; twoFinger = false
