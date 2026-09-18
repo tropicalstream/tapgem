@@ -99,6 +99,7 @@ class GeminiVoicePipeline(context: Context) {
             fail("No Gemini API key — push it via adb (see README)."); return
         }
         lastToolKey = null
+        ConversationContext.reset()
         Log.i(TAG, "activate(): starting session")
         SessionStats.startSession()
         synchronized(caption) { caption.setLength(0); captionFresh = true }
@@ -193,6 +194,7 @@ class GeminiVoicePipeline(context: Context) {
         override fun onInputTranscription(text: String) {
             if (!isSessionEpochCurrent(epoch) || text.isBlank()) return
             noteConversationActivity()
+            ConversationContext.noteUser(text)
             HudStateBridge.update { it.copy(transcript = text) }
         }
 

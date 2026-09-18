@@ -28,6 +28,7 @@ class BookmarkPanel(context: Context) : FrameLayout(context) {
     var onOpen: ((Bookmarks.Bookmark) -> Unit)? = null
     var onDelete: ((Bookmarks.Bookmark) -> Unit)? = null
     var onSaveActive: (() -> Unit)? = null
+    var onSaveWallpaper: (() -> Unit)? = null
     var onClose: (() -> Unit)? = null
 
     private var accent = 0xFF64D2FF.toInt()
@@ -60,14 +61,18 @@ class BookmarkPanel(context: Context) : FrameLayout(context) {
 
     fun setAccent(color: Int) { accent = color }
 
-    /** Rebuild from the store. [active] = the window a "+" tile would save (null = none). */
-    fun refresh(list: List<Bookmarks.Bookmark>, active: Widget?) {
+    /**
+     * Rebuild from the store. [active] = the window a "+" tile would save (null = none);
+     * [wallpaperThumb] = the current desktop's wallpaper for a "keep wallpaper" tile (null = none / already kept).
+     */
+    fun refresh(list: List<Bookmarks.Bookmark>, active: Widget?, wallpaperThumb: android.graphics.Bitmap? = null) {
         header.text = if (list.isEmpty()) "Bookmarks" else "Bookmarks · ${list.size}"
         grid.removeAllViews()
         if (active != null) grid.addView(saveTile(active), cell())
+        if (wallpaperThumb != null) grid.addView(saveWallpaperTile(wallpaperThumb), cell())
         list.take(MAX_TILES).forEach { b -> grid.addView(tile(b), cell()) }
         empty.visibility = if (list.isEmpty()) VISIBLE else GONE
-        empty.text = if (active != null) "Nothing saved yet. Tap + to keep “${active.title}” for later, or say “bookmark this window”."
+        empty.text = if (active != null) "Nothing saved yet. Tap + to keep “${active.title}” — or this wallpaper — for later, or say “bookmark this window”."
             else "Nothing saved yet. Focus a window and tap + here, or say “bookmark this window”. Bookmarks open on any desktop."
         if (list.size > MAX_TILES) {
             column.findViewWithTag<TextView>("more")?.let { column.removeView(it) }
@@ -92,12 +97,12 @@ class BookmarkPanel(context: Context) : FrameLayout(context) {
         }
         f.addView(img, LayoutParams(LayoutParams.MATCH_PARENT, THUMB_H))
         if (b.thumb == null) f.addView(TextView(context).apply {
-            text = glyph(b.type); textSize = 22f; setTextColor(accent); gravity = Gravity.CENTER
+            text = glyph(b); textSize = 22f; setTextColor(accent); gravity = Gravity.CENTER
         }, LayoutParams(LayoutParams.MATCH_PARENT, THUMB_H))
         // Type glyph badge + title strip along the bottom.
         f.addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(6, 0, 4, 0)
-            addView(TextView(context).apply { text = glyph(b.type); textSize = 10f; setTextColor(accent) })
+            addView(TextView(context).apply { text = glyph(b); textSize = 10f; setTextColor(accent) })
             addView(TextView(context).apply {
                 text = b.title; textSize = 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); setPadding(4, 0, 0, 0)
@@ -126,6 +131,21 @@ class BookmarkPanel(context: Context) : FrameLayout(context) {
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         setOnClickListener { onSaveActive?.invoke() }
     }
+
+    private fun saveWallpaperTile(thumb: android.graphics.Bitmap): View = FrameLayout(context).apply {
+        isClickable = true; isFocusable = true; contentDescription = "Keep this wallpaper"
+        background = GradientDrawable().apply { cornerRadius = 8f; setColor(0xFF161E27.toInt()); setStroke(1, accent, 6f, 4f) }
+        addView(ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(thumb); alpha = 0.55f; clipToOutline = true
+            background = GradientDrawable().apply { cornerRadius = 8f; setColor(0xFF0B1016.toInt()) } }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            addView(TextView(context).apply { text = "+"; textSize = 24f; setTextColor(accent); gravity = Gravity.CENTER; includeFontPadding = false; setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()) })
+            addView(TextView(context).apply { text = "Keep wallpaper"; textSize = 10f; setTextColor(0xFFE0F4FF.toInt()); gravity = Gravity.CENTER; setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt()) })
+        }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        setOnClickListener { onSaveWallpaper?.invoke() }
+    }
+
+    private fun glyph(b: Bookmarks.Bookmark): String = if (b.isWallpaper) "▦" else glyph(b.type!!)
 
     private fun glyph(t: WidgetType): String = when (t) {
         WidgetType.APP -> "◈"; WidgetType.WEB -> "◎"; WidgetType.MAP -> "⌖"; WidgetType.VIDEO -> "▶"; WidgetType.AUDIO -> "♪"

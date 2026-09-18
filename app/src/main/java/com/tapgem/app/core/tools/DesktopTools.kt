@@ -1205,11 +1205,58 @@ class WallpaperTool(private val context: Context) : AiTool {
 class AppBuilderTool(private val context: Context) : AiTool {
     override val name = "app_builder"
 
+    /** `smart_aquarium__v2_1789…html` / `pomodoro_1789…html` / `bm_5cf76cb6_checkers__v1_….html` → "smart_aquarium" / "pomodoro" / "checkers". */
+    private fun appBase(f: File): String = f.nameWithoutExtension.replace(Regex("^(bm_[0-9a-f]{8}_)+"), "").substringBefore("__v").replace(Regex("_\\d{10,}$"), "")
+
+    /** Saved app files by display name (newest version of each). Apps no desktop or bookmark holds are garbage-collected, so this is "apps in use". */
+    private fun savedApps(): List<Pair<String, File>> = (DesktopStore.appsDir.listFiles { f -> f.extension == "html" } ?: emptyArray())
+        .groupBy { appBase(it) }
+        .map { (base, files) -> base.split('_').filter { it.isNotBlank() }.joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } } to files.maxByOrNull { it.lastModified() }!! }
+        .sortedByDescending { it.second.lastModified() }
+
+    private fun findSavedApp(name: String): Pair<String, File>? {
+        val q = name.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").trim()
+        val qw = q.split(Regex("\\s+")).filter { it.length > 2 && it !in setOf("app", "game", "the") }.toSet()
+        return savedApps().map { it to it.first.lowercase(Locale.US) }
+            .filter { (_, n) -> n == q || n.contains(q) || q.contains(n) || qw.isNotEmpty() && n.split(' ').count { it in qw } >= maxOf(1, qw.size - 1) }
+            .maxByOrNull { it.first.second.lastModified() }?.first
+    }
+
     override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
+        when (args.action) {
+            "list", "saved" -> return@withContext Result.success(savedApps().takeIf { it.isNotEmpty() }
+                ?.joinToString(", ", prefix = "Saved apps: ") { it.first } ?: "No saved apps yet.")
+            "open", "load", "restore" -> {
+                val want = args.str("name", "title", "app") ?: return@withContext Result.failure(IllegalArgumentException("open needs 'name'."))
+                val (title, file) = findSavedApp(want) ?: return@withContext Result.failure(IllegalStateException(
+                    "No saved app matches \"$want\"." + (savedApps().takeIf { it.isNotEmpty() }?.let { " Saved apps: ${it.joinToString { a -> a.first }}." } ?: "") +
+                        " Ask the user whether to build it before calling app_builder create."))
+                return@withContext WidgetOps.add(context, args, forcedType = WidgetType.APP, forcedSource = file.absolutePath, forcedTitle = title)
+                    .map { "Opened the saved app \"$title\"." }
+            }
+        }
         val appName = args.str("name", "title", "app") ?: return@withContext Result.failure(IllegalArgumentException("app_builder needs 'name'."))
         val desc = args.str("description", "prompt", "text", "change") ?: return@withContext Result.failure(IllegalArgumentException("app_builder needs 'description'."))
         when (args.action) {
             "create", "build", "make", "new" -> {
+                // "Open the golf game" is not "build me a golf game": something that already exists is
+                // opened, and when nothing does the user is asked first. Judged from what the user
+                // actually said, not from how the model read it.
+                val rebuild = args.bool("rebuild", "force") == true
+                if (!rebuild) {
+                    findSavedApp(appName)?.let { (title, file) ->
+                        return@withContext WidgetOps.add(context, args, forcedType = WidgetType.APP, forcedSource = file.absolutePath, forcedTitle = title)
+                            .map { "There is already a saved app \"$title\" — opened that instead of building a new one. Say 'rebuild it' for a fresh version." }
+                    }
+                    com.tapgem.app.core.store.Bookmarks.find(appName)?.takeIf { it.type == WidgetType.APP }?.let { b ->
+                        val placed = BookmarkTool.place(b)
+                        return@withContext Result.success("\"${placed.title}\" was bookmarked — opened the bookmark instead of building a new app.")
+                    }
+                    if (!com.tapgem.app.core.session.ConversationContext.wantsCreation()) {
+                        return@withContext Result.success("Nothing called \"$appName\" exists yet — no window, bookmark or saved app. Do NOT build it now: " +
+                            "tell the user it doesn't exist and ask whether they'd like it created as a new app. Call app_builder create again only after they say yes.")
+                    }
+                }
                 HudStateBridge.notice("Building $appName…")
                 val html = GeminiRest.generateText(context, "App name: $appName\nWhat it should do: $desc", system = APP_SYSTEM)
                     .map(::cleanHtml).getOrElse { HudStateBridge.notice(null); return@withContext Result.failure(IllegalStateException("Couldn't generate the app: ${it.message}")) }

@@ -15,7 +15,7 @@ import kotlin.math.max
 /**
  * Streams Gemini Live PCM chunks straight to an AudioTrack. Proven X3Gemini
  * port: non-blocking sliced writes so stopAndFlush() (barge-in) cuts within
- * ~200 ms, DEAD_OBJECT recovery, transient-focus ducking instead of pausing.
+ * ~200 ms, DEAD_OBJECT recovery, and speech that never ducks or pauses for page audio.
  * A chunk that cannot make progress for [STALL_ABORT_MS] (paused track,
  * focus lost) is dropped rather than blocking the caller forever.
  */
@@ -39,17 +39,21 @@ class GeminiAudioPlayer(context: Context) {
     @Volatile private var lastOutputAtMs = 0L
     @Volatile private var writeGeneration = 0L
 
+    /**
+     * The assistant's voice never yields to a page: a radio stream (re)starting, a
+     * game's sound effect or a video grabbing focus used to duck or pause the
+     * reply mid-sentence ("the voice mutes out"). Focus is only tracked so the
+     * next chunk takes it back — which is what makes the page duck for us.
+     */
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
         synchronized(lock) {
             when (change) {
-                AudioManager.AUDIOFOCUS_GAIN -> {
-                    hasAudioFocus = true
-                    runCatching { audioTrack?.setVolume(1f) }
-                    runCatching { if (audioTrack?.playState == AudioTrack.PLAYSTATE_PAUSED) audioTrack?.play() }
-                }
-                AudioManager.AUDIOFOCUS_LOSS -> { hasAudioFocus = false; runCatching { audioTrack?.pause() } }
-                else -> runCatching { audioTrack?.setVolume(0.4f) }
+                AudioManager.AUDIOFOCUS_GAIN -> hasAudioFocus = true
+                AudioManager.AUDIOFOCUS_LOSS -> hasAudioFocus = false
+                else -> { /* transient loss / duck request: keep speaking at full volume */ }
             }
+            runCatching { audioTrack?.setVolume(1f) }
+            runCatching { if (audioTrack?.playState == AudioTrack.PLAYSTATE_PAUSED) audioTrack?.play() }
         }
     }
 

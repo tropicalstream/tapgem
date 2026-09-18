@@ -503,9 +503,15 @@ class MainActivity : AppCompatActivity() {
         btn.setOnClickListener { showBookmarkPanel(!bookmarkPanel.isVisible) }
         bookmarkPanel.onClose = { showBookmarkPanel(false) }
         bookmarkPanel.onOpen = { b ->
-            val placed = BookmarkTool.place(b)
             showBookmarkPanel(false)
-            showNotice("Opened \"${placed.title}\"")
+            if (b.isWallpaper) { BookmarkTool.applyWallpaper(b); showNotice("Wallpaper \"${b.title}\"") }
+            else { val placed = BookmarkTool.place(b); showNotice("Opened \"${placed.title}\"") }
+        }
+        bookmarkPanel.onSaveWallpaper = {
+            val wp = DesktopBridge.current().wallpaper
+            val b = Bookmarks.saveWallpaper(wp, BookmarkTool.wallpaperThumb(wp))
+            showNotice(if (b != null) "Kept wallpaper \"${b.title}\"" else "No wallpaper to keep")
+            refreshBookmarkPanel()
         }
         bookmarkPanel.onDelete = { b -> Bookmarks.delete(b.id); showNotice("Forgot \"${b.title}\"") }
         bookmarkPanel.onSaveActive = { activeWidget()?.let { w -> bookmarkWidget(w) } }
@@ -541,8 +547,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshBookmarkPanel() {
-        bookmarkPanel.setAccent(DesktopBridge.current().theme.accent)
-        bookmarkPanel.refresh(Bookmarks.list(), activeWidget())
+        val d = DesktopBridge.current()
+        bookmarkPanel.setAccent(d.theme.accent)
+        val list = Bookmarks.list()
+        // Offer to keep the wallpaper unless it's none or already in the list.
+        val key = Bookmarks.wallpaperKey(d.wallpaper)
+        val keepable = d.wallpaper.kind != com.tapgem.app.core.model.WallpaperKind.NONE && list.none { it.isWallpaper && it.origin == key }
+        bookmarkPanel.refresh(list, activeWidget(), if (keepable) BookmarkTool.wallpaperThumb(d.wallpaper, 116, 96) else null)
     }
 
     // ── screenshot ─────────────────────────────────────────────────

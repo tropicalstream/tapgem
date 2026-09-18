@@ -104,10 +104,19 @@ class GeminiLiveClient(
                 "Garden, the Internet Archive) → widget action=add type=web with the obvious URL, or " +
                 "web action=url in the open web window. Nothing on this device has a keyboard — typing " +
                 "only happens through the web tool.\n" +
+                "- \"Open / show / bring up / launch X\" means something that EXISTS: a window on this desktop " +
+                "(widget action=front), a bookmark (bookmark action=open), a saved app (app_builder action=open), a " +
+                "media file (media action=find), or a website. Try those. Only the thing NAMED counts — a different " +
+                "saved app or game is not a match (asked for golf, don't open checkers). If nothing matches, say so " +
+                "and ASK whether to build it — e.g. \"There's no golf game yet; want me to make one?\" — then " +
+                "call app_builder create only after the user says yes, or when they explicitly asked to " +
+                "make/build/create it. Never build or substitute something the user only asked to open.\n" +
                 "- \"Bookmark this / save the checkers game for later / keep this window\" → bookmark action=save " +
                 "(the active window unless one is named). \"Open my checkers bookmark / bring back the radio\" → " +
-                "bookmark action=open name=<it>. \"Show / hide my bookmarks\" → action=show|hide; \"forget the … " +
-                "bookmark\" → action=delete. Bookmarks are not desktops: a desktop is the whole layout (save/load), " +
+                "bookmark action=open name=<it>. \"Keep / bookmark / save this wallpaper (background)\" → bookmark " +
+                "action=save target=wallpaper; \"use my reef wallpaper / put the coral background back\" → " +
+                "bookmark action=open name=<it> (applies it to this desktop). \"Show / hide my bookmarks\" → " +
+                "action=show|hide; \"forget the … bookmark\" → action=delete. Bookmarks are not desktops: a desktop is the whole layout (save/load), " +
                 "a bookmark is one window you can drop onto any desktop.\n" +
                 "- Media the user names (\"my vacation video\", \"the Tolkien ebook\"): media action=find, " +
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
@@ -457,13 +466,14 @@ class GeminiLiveClient(
                 "amount" to "scroll: pixels (default 300).",
                 "url" to "url: address to open.")))
         .put(decl("bookmark",
-            "Windows saved for later, shared by every desktop, shown in the bookmarks panel (the ribbon " +
-                "next to the camera). save: snapshot a window with its current state (an app mid-game, a " +
-                "page, a PDF at its page); open: put a saved window on this desktop; list; delete; show/hide " +
-                "the panel.",
+            "Windows and wallpapers saved for later, shared by every desktop, shown in the bookmarks panel " +
+                "(the ribbon next to the camera). save: snapshot a window with its current state (an app " +
+                "mid-game, a page, a PDF at its page), or target=wallpaper to keep this desktop's wallpaper; " +
+                "open: put a saved window on this desktop, or apply a saved wallpaper to it; list; delete; " +
+                "show/hide the panel.",
             mapOf("action" to "save|open|list|delete|show|hide",
-                "target" to "save: the window to save (id/title; defaults to the active window).",
-                "name" to "save: a name for it (defaults to the window title). open/delete: which bookmark.")))
+                "target" to "save: the window to save (id/title; defaults to the active window), or 'wallpaper'.",
+                "name" to "save: a name for it (defaults to the window title / wallpaper description). open/delete: which bookmark.")))
         .put(decl("theme",
             "Set the look of all widgets. Presets: midnight, neon, paper, forest, sunset, mono, ocean, wood (dark " +
                 "walnut grain with brass accents); " +
@@ -477,11 +487,14 @@ class GeminiLiveClient(
             mapOf("action" to "set|clear", "description" to "Vivid visual description to paint.",
                 "kind" to "image|gradient|color|none.", "colors" to "Comma-separated colors for gradient/color.")))
         .put(decl("app_builder",
-            "Vibe-code a mini web app as a widget from a plain-language description (calculator, timer, " +
-                "pomodoro, notes, dice, breathing guide, unit converter, tiny game...). create builds and " +
-                "places it; update changes an existing app by name.",
-            mapOf("action" to "create|update", "name" to "App name (also the widget title).",
-                "description" to "What it should do and look like; for update, what to change.") + geometryProps))
+            "Mini web apps as widgets. open: put a previously built app back on the desktop by name; list: " +
+                "the saved apps. create: vibe-code a NEW app from a plain-language description (calculator, " +
+                "timer, notes, dice, tiny game...) — only when the user asked to make/build one or said yes to " +
+                "your offer; if a saved app or bookmark with that name exists it is opened instead. update " +
+                "changes an existing app by name.",
+            mapOf("action" to "open|list|create|update", "name" to "App name (also the widget title).",
+                "description" to "create: what it should do and look like; update: what to change.",
+                "rebuild" to "create: true to build a fresh version even though one is saved.") + geometryProps))
         .put(decl("media",
             "Find media files on the glasses by name/type ('vacation', 'tolkien', 'podcast'). find returns " +
                 "matches with paths; open finds and adds the best match as a widget in one step.",

@@ -131,6 +131,10 @@ two-eye layout, Chromium saw the second draw as damage and re-rendered every
 frame — a static page cost ~100 % of a core. At rest the app now renders
 0 fps.)
 
+The assistant's voice never ducks or pauses for a page's audio: a radio stream restarting, a game's sound
+effect or a video taking audio focus used to mute the reply mid-sentence. TapGem keeps speaking at full
+volume and takes focus back on the next chunk, which is what makes the page duck instead.
+
 ### The wave
 
 The tiny bar wave at the top-right is the assistant. Its colours follow the
@@ -250,13 +254,24 @@ if a future RayNeo firmware adds Widevine, full playback will simply start worki
 sign out for previews ("sign me out of Spotify"), or ask for the song on YouTube, SoundCloud,
 Bandcamp or the Internet Archive — none of them use DRM.
 
+**Opening things** — "open / show / bring up X" means something that exists: a window on this desktop,
+a bookmark, an app still on some desktop, a media file, or a website. If nothing matches, the assistant
+says so and **asks before building anything** ("There's no golf game yet — want me to make one?"); it
+builds only after a yes, or when you said make/build/create yourself. The check is made against your
+actual words (the session's speech transcript), not the model's reading of them — so a misheard request
+can't quietly turn into a new app, and a different saved app is never substituted for the one you named.
+
 **Bookmarks** (one window kept for later — on every desktop)
 - "Bookmark this." · "Save the checkers game for later." · "Bookmark the groceries note as shopping list."
 - "Open my checkers bookmark." · "Show my bookmarks." · "Forget the radio bookmark."
-- The ribbon next to the camera opens the drawer: thumbnails of saved windows, a **+** tile that saves the
-  active window, a ✕ on each to forget it. Tap a tile and a copy lands on the current desktop at its saved
-  size, with its state — an app mid-game, a page, a PDF at its page. A bookmark is not a desktop: desktops
-  are whole layouts (save/load from the strip), bookmarks are single windows you drop anywhere.
+- "Keep this wallpaper." · "Use my coral reef wallpaper on this desktop." — wallpapers are bookmarks too:
+  the image (or gradient) is kept with the bookmarks and applied to whichever desktop you're on.
+- The ribbon next to the camera opens the drawer: thumbnails of saved windows and wallpapers, a **+** tile
+  that saves the active window, a **Keep wallpaper** tile for the current backdrop, a ✕ on each to forget it.
+  Tap a window tile and a copy lands on the current desktop at its saved size, with its state — an app
+  mid-game, a page, a PDF at its page; tap a wallpaper tile and it becomes this desktop's backdrop. A
+  bookmark is not a desktop: desktops are whole layouts (save/load from the strip), bookmarks are single
+  windows and wallpapers you drop anywhere.
 - **Apps freeze and thaw by themselves.** A vibe-coded app keeps its state in `let`/`const` variables the
   page can't reach from outside, so TapGem rewrites each app as it loads: the inline scripts are scanned
   (even inside an IIFE / `DOMContentLoaded` wrapper) and a registration is appended that exposes every
