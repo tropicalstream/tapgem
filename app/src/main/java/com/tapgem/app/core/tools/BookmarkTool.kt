@@ -30,7 +30,7 @@ class BookmarkTool : AiTool {
                     val wp = DesktopBridge.current().wallpaper
                     val b = Bookmarks.saveWallpaper(wp, wallpaperThumb(wp), args.str("name", "as"))
                         ?: return Result.failure(IllegalStateException("This desktop has no wallpaper to keep — paint one first (wallpaper action=set)."))
-                    return Result.success("Kept the wallpaper as \"${b.title}\" — it's in the bookmarks panel on every desktop; say 'use my ${b.title} wallpaper' to put it on any desktop.")
+                    return Result.success("Kept the wallpaper as \"${b.title}\" — it's in the wallpapers drawer on every desktop; say 'use my ${b.title} wallpaper' to put it on any desktop.")
                 }
                 // A named window that isn't here must not silently become "whatever is on top".
                 val w = if (ref != null) DesktopBridge.resolveWidget(ref)
@@ -41,7 +41,9 @@ class BookmarkTool : AiTool {
                 BookmarksBridge.freeze(w.id)   // app state as of this very moment, not the last tick
                 val fresh = DesktopBridge.current().widget(w.id) ?: w
                 val b = Bookmarks.save(fresh, BookmarksBridge.thumbnail(w.id), args.str("name", "as"))
-                Result.success("Bookmarked \"${b.title}\" — it's in the bookmarks panel (the ribbon next to the camera) on every desktop; say 'open my ${b.title} bookmark' to bring it back.")
+                Result.success(if (fresh.type == com.tapgem.app.core.model.WidgetType.APP)
+                    "Saved \"${b.title}\" with its current state — it's in the apps drawer on every desktop; say 'open ${b.title}' to bring it back."
+                    else "Bookmarked \"${b.title}\" — it's in the bookmarks drawer on every desktop; say 'open my ${b.title} bookmark' to bring it back.")
             }
             "open" -> {
                 val b = Bookmarks.find(args.str("name", "target", "title", "id", "query"))

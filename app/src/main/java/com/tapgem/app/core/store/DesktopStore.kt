@@ -39,7 +39,6 @@ object DesktopStore {
     val appsDir: File get() = File(app.filesDir, "apps").apply { mkdirs() }
     /** Downloaded web media lives in filesDir (cacheDir can be purged under a saved desktop). */
     val downloadsDir: File get() = File(app.filesDir, "downloads").apply { mkdirs() }
-    val screenshotsDir: File get() = File(app.filesDir, "screenshots").apply { mkdirs() }
     /** `adb push book.epub /sdcard/Android/data/com.tapgem.app/files/media/` */
     val mediaDropDir: File? get() = app.getExternalFilesDir(null)?.let { File(it, "media").apply { mkdirs() } }
 

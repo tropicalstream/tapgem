@@ -10,8 +10,6 @@ import java.util.concurrent.TimeUnit
 object BookmarksBridge {
     private val main = Handler(Looper.getMainLooper())
 
-    /** Installed by MainActivity: show (true) or hide (false) the bookmarks panel. */
-    @Volatile var panel: ((Boolean) -> Unit)? = null
     /** Installed by MainActivity: widget id → small bitmap of that window as it looks now (main thread). */
     @Volatile var thumbnailer: ((String) -> Bitmap?)? = null
     /** Installed by MainActivity: freeze a window's live app state into the model, then call back (main thread). */
@@ -25,7 +23,7 @@ object BookmarksBridge {
         latch.await(1_500, TimeUnit.MILLISECONDS)
     }
 
-    fun showPanel(show: Boolean) { main.post { panel?.invoke(show) } }
+    fun showPanel(show: Boolean) = LibraryBridge.show(LibraryBridge.Drawer.BOOKMARKS, show)
 
     /** Blocking (≤ 1.5 s) thumbnail for the tool thread; null if the UI isn't up. */
     fun thumbnail(widgetId: String): Bitmap? {

@@ -22,6 +22,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -124,6 +125,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private var videoSurface: Surface? = null
     private var textureView: TextureView? = null
     private var webView: WebView? = null
+    private var fullscreenView: View? = null                                  // a page's fullscreen element, shown inside the window
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private var pdfRenderer: PdfRenderer? = null
     private var pdfFd: ParcelFileDescriptor? = null
     private var clockRunnable: Runnable? = null
@@ -171,7 +174,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     fun forwardKey(event: android.view.KeyEvent): Boolean {
         val wv = webView ?: return false
         if (!wv.settings.javaScriptEnabled && widget.type != WidgetType.EPUB) return false
-        return runCatching { wv.dispatchKeyEvent(event) }.getOrDefault(false)
+        return runCatching { keyTarget(wv).dispatchKeyEvent(event) }.getOrDefault(false)
     }
 
     val acceptsKeys: Boolean get() = webView != null && widget.type.isWebLike
@@ -486,11 +489,32 @@ class WidgetView(context: Context) : FrameLayout(context) {
         audioProgress?.let { main.removeCallbacks(it) }; audioProgress = null
         runCatching { mediaPlayer?.stop() }; runCatching { mediaPlayer?.release() }; mediaPlayer = null; mediaPrepared = false
         runCatching { videoSurface?.release() }; videoSurface = null; textureView = null
+        exitFullscreen()
         runCatching { webView?.stopLoading(); webView?.loadUrl("about:blank"); webView?.destroy() }; webView = null
         synchronized(this) { runCatching { pdfRenderer?.close() }; pdfRenderer = null }
         runCatching { pdfFd?.close() }; pdfFd = null
         epubChapters = emptyList()
         content.removeAllViews()
+    }
+
+    /**
+     * Where keys go while a page is full screen: Chromium moves input handling from the
+     * WebView (which then drops every event) into the fullscreen view it handed us — a
+     * FrameLayout around the real view, and only that child takes key events.
+     */
+    private fun keyTarget(wv: WebView): View = (fullscreenView as? ViewGroup)?.getChildAt(0) ?: fullscreenView ?: wv
+
+    /** The page left fullscreen on its own: take its view down. */
+    private fun dropFullscreenView() {
+        fullscreenView?.let { v -> runCatching { content.removeView(v) } }
+        fullscreenView = null; fullscreenCallback = null
+    }
+
+    /** We are ending fullscreen (window closing, content rebuilt): tell Chromium, then take the view down. */
+    private fun exitFullscreen() {
+        val cb = fullscreenCallback ?: run { dropFullscreenView(); return }
+        dropFullscreenView()
+        runCatching { cb.onCustomViewHidden() }
     }
 
     private fun textView(size: Float): TextView = TextView(context).apply {
@@ -778,7 +802,11 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun buildApp() {
         val wv = newWebView(Kind.APP)
         content.addView(wv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        // Served through the instrumenter so the app's state can be frozen and thawed (see AppInstrumenter).
+        loadApp(wv)
+    }
+
+    /** (Re)read the app file and serve it through the instrumenter so its state can be frozen and thawed (see AppInstrumenter). */
+    private fun loadApp(wv: WebView) {
         val f = java.io.File(widget.source)
         val html = runCatching { f.readText() }.getOrNull()
         if (html == null) { wv.loadUrl("file://" + widget.source); return }
@@ -892,7 +920,22 @@ class WidgetView(context: Context) : FrameLayout(context) {
         wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         wv.isVerticalScrollBarEnabled = false; wv.isHorizontalScrollBarEnabled = false
         wv.webChromeClient = object : WebChromeClient() {
-            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) { callback?.onCustomViewHidden() }
+            /**
+             * A page's fullscreen request (YouTube's ⛶, a video's own control) fills the
+             * window, not the display: Chromium hands us the fullscreen view and we lay it
+             * over the page. Only web pages get it — apps never go fullscreen.
+             */
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (kind != Kind.WEB || view == null || webView !== wv) { callback?.onCustomViewHidden(); return }
+                exitFullscreen()
+                fullscreenView = view; fullscreenCallback = callback
+                view.setBackgroundColor(Color.BLACK)
+                view.setLayerType(View.LAYER_TYPE_HARDWARE, null)   // drawn twice per frame like the WebView (see above)
+                content.addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            }
+            override fun onHideCustomView() { dropFullscreenView() }
+            /** "Leave this page?" — a HUD has nobody to ask; navigation always proceeds. */
+            override fun onJsBeforeUnload(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean { result?.confirm(); return true }
             override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: android.webkit.GeolocationPermissions.Callback?) {
                 val host = runCatching { java.net.URL(origin ?: "").host.lowercase(Locale.US) }.getOrDefault("")
                 val allow = GEO_ORIGINS.any { host == it || host.endsWith(".$it") }
@@ -937,6 +980,10 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 // Google Maps: force-dark leaves the (blob-image) tiles white; invert them into a dark map.
                 if (kind == Kind.WEB && url != null && url.contains("google.") && url.contains("/maps")) {
                     view.evaluateJavascript(GOOGLE_MAPS_DARK_JS, null)
+                }
+                // YouTube Music: its phone layout leaves the video 10px tall in a window this short.
+                if (kind == Kind.WEB && url != null && url.contains("://music.youtube.com")) {
+                    view.evaluateJavascript(YT_MUSIC_LAYOUT_JS, null)
                 }
                 if (kind == Kind.MAP) applyMapRoute(force = true)
                 val waiters = ArrayList(loadWaiters); loadWaiters.clear()
@@ -1025,6 +1072,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
             val k = "app." + key.take(32).replace(Regex("[^A-Za-z0-9_.-]"), "_")
             main.post { onStateChange?.invoke(widget.id, mapOf(k to value.take(4000))) }
         }
+        /** True on battery: apps should animate slower (or not at all). */
+        @JavascriptInterface fun eco(): Boolean = eco
         @JavascriptInterface fun load(key: String): String {
             val k = "app." + key.take(32).replace(Regex("[^A-Za-z0-9_.-]"), "_")
             return widget.state[k].orEmpty()
@@ -1046,7 +1095,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 (content.getChildAt(0) as? ImageView)?.let { iv -> (content.tag as? TextView)?.let { renderPdfPage(iv, it) } }
             }
             WidgetType.EPUB -> if (old["chapter"] != new["chapter"]) loadEpubChapter()
-            WidgetType.WEB, WidgetType.APP, WidgetType.MODEL3D -> if (old["reload"] != new["reload"]) webView?.reload()
+            WidgetType.WEB, WidgetType.MODEL3D -> if (old["reload"] != new["reload"]) webView?.reload()
+            // An app reload re-reads its file (the page was served as data, so WebView.reload() would replay the old bytes).
+            WidgetType.APP -> if (old["reload"] != new["reload"]) webView?.let { loadApp(it) }
             WidgetType.MAP -> {
                 val wv = webView ?: return
                 if (old["reload"] != new["reload"]) { wv.loadUrl(mapUrl()); return }
@@ -1079,9 +1130,14 @@ class WidgetView(context: Context) : FrameLayout(context) {
         val jsOn = wv.settings.javaScriptEnabled
         val title = widget.title
         when (cmd.action) {
-            "back" -> if (wv.canGoBack()) { pageLoading = true; wv.goBack(); awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Went back.", done) }, 400L) } } else done("There's no earlier page in \"$title\".")
+            "back" -> if (fullscreenView != null) { exitFullscreen(); main.postDelayed({ finish(wv, "Left full screen.", done) }, 400L) }
+                else if (wv.canGoBack()) { pageLoading = true; wv.goBack(); awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Went back.", done) }, 400L) } } else done("There's no earlier page in \"$title\".")
             "forward" -> if (wv.canGoForward()) { pageLoading = true; wv.goForward(); awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Went forward.", done) }, 400L) } } else done("There's no later page in \"$title\".")
-            "reload" -> { pageLoading = true; wv.reload(); awaitLoad(12_000L) { main.postDelayed({ finish(wv, "Reloaded.", done) }, 400L) } }
+            "reload" -> {
+                pageLoading = true
+                if (widget.type == WidgetType.APP) loadApp(wv) else wv.reload()   // apps re-read their file
+                awaitLoad(12_000L) { main.postDelayed({ finish(wv, "Reloaded.", done) }, 400L) }
+            }
             "url" -> {
                 val u = cmd.arg("url") ?: return done("No URL given.")
                 pageLoading = true; lastHttpStatus = 0
@@ -1090,7 +1146,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             "press" -> {
                 val key = cmd.arg("key", "text", "value") ?: "enter"
-                if (!SyntheticInput.key(wv, key)) return done("I can't press \"$key\" — try enter, escape, space, tab, arrow keys, backspace, page_down.")
+                if (!SyntheticInput.key(keyTarget(wv), key)) return done("I can't press \"$key\" — try enter, escape, space, tab, arrow keys, backspace, page_down.")
                 val seq0 = navSeq
                 main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Pressed $key.", done, changed = navSeq != seq0) }, 300L) } }, 500L)
             }
@@ -1285,7 +1341,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 val pt = fresh?.optJSONArray("tap")?.takeIf { it.length() >= 2 } ?: tap
                 val x = (pt.getDouble(0) * scale).toFloat().coerceIn(1f, (wv.width - 2).toFloat())
                 val y = (pt.getDouble(1) * scale).toFloat().coerceIn(1f, (wv.height - 2).toFloat())
-                SyntheticInput.tap(wv, x, y) {
+                // While the page is full screen Chromium's fullscreen view sits over the WebView
+                // (same size, same origin) and is the one that takes input.
+                SyntheticInput.tap(fullscreenView ?: wv, x, y) {
                     runCatching { hideIme() }
                     // Give the page a beat to react; if the tap started a navigation, wait for it.
                     main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ end(msg) }, 300L) } }, 600L)
@@ -1318,6 +1376,82 @@ class WidgetView(context: Context) : FrameLayout(context) {
 (function(){ if(document.getElementById('tg-mapdark')) return; var s=document.createElement('style'); s.id='tg-mapdark';
  s.textContent='img[src^="blob:"]{filter:invert(1) hue-rotate(180deg) brightness(0.8) contrast(1.1)!important}';
  (document.head||document.documentElement).appendChild(s); })();
+""".trimIndent()
+
+    /**
+     * music.youtube.com's player page is laid out for a phone held upright: 408px of
+     * controls and tab strip are reserved under the media, so in a 640×418 window the
+     * video (or album art) gets 10px. This reflows the player page for short viewports —
+     * art above a compact control block, a video filling the width with the controls
+     * floating over its foot, the Song/Video switch over the top — and nudges YouTube's
+     * player, which only re-measures its <video> on a window resize, whenever the box changes.
+     */
+    private val YT_MUSIC_CSS = """
+@media (max-height: 700px) {
+  /* Every rule stands down in full screen ([player-fullscreened]): YouTube's own scrim, centred buttons and exit control take over there. */
+  ytmusic-player-page[is-mweb-modernization-enabled] { --tg-ctl: 124px; --tg-tabs: 68px; }   /* compact controls; the Up next/Lyrics tab strip peeking at the foot */
+  /* Media box: album art sits above the controls; a video takes the whole height and the controls float over its foot. */
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #music-player-wrapper.ytmusic-player-page {
+    top: 0 !important; height: calc(var(--ytmusic-player-page-inner-height) - var(--tg-tabs) - var(--tg-ctl)) !important; justify-content: center; }
+  ytmusic-player-page[is-mweb-modernization-enabled][video-mode]:not([player-fullscreened]) #music-player-wrapper.ytmusic-player-page {
+    height: calc(var(--ytmusic-player-page-inner-height) - var(--tg-tabs)) !important; }
+  /* The player's size is width-driven (its inline margins centre it): a square for art, 16:9 for a video. */
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player.ytmusic-player-page {
+    --tg-art: min(100vw - 64px, var(--ytmusic-player-page-inner-height) - var(--tg-tabs) - var(--tg-ctl));
+    max-height: var(--tg-art) !important; width: var(--tg-art) !important; margin: auto !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled][video-mode]:not([player-fullscreened]) #player.ytmusic-player-page {
+    --tg-vid: min(100vw, (var(--ytmusic-player-page-inner-height) - var(--tg-tabs)) * 1.7778);
+    max-height: calc(var(--tg-vid) * 0.5625) !important; width: var(--tg-vid) !important; }
+  /* Song/Video switch, the ▾ that closes the player page and the ⋮ menu float over the top edge. */
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #av-id.ytmusic-player-page { position: absolute; top: 4px; left: 0; right: 0; z-index: 3; height: 32px; pointer-events: none; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) .collapse-button.ytmusic-player-page,
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) .context-menu-button.ytmusic-player-page { z-index: 4; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #av-id.ytmusic-player-page > * { pointer-events: auto; }
+  /* Controls: one line of title · artist, the seek bar, the buttons — anchored just above the tab strip. */
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page {
+    top: auto !important; bottom: var(--tg-tabs) !important; height: auto !important; padding: 6px 0 0 !important; z-index: 3; }
+  ytmusic-player-page[is-mweb-modernization-enabled][video-mode]:not([player-fullscreened]) #player-controls.ytmusic-player-page {
+    width: 100% !important; margin: 0 !important; padding: 6px 32px 0 !important; box-sizing: border-box;
+    background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,.65) 30%, rgba(0,0,0,.85)) !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .content-info-wrapper {
+    display: flex !important; align-items: baseline; gap: 10px; min-width: 0; height: 22px; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .title {
+    font-size: 16px !important; line-height: 22px !important; white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis;
+    flex: 0 1 auto; min-width: 0; display: block !important; -webkit-line-clamp: 1 !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .byline-wrapper { padding: 0 !important; flex: 1 1 auto; min-width: 0; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .byline {
+    font-size: 13px !important; line-height: 22px !important; white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .progress-bar-container { height: 40px !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page #progress-bar { margin: 0 !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .controls { height: 56px !important; }
+  ytmusic-player-page[is-mweb-modernization-enabled]:not([player-fullscreened]) #player-controls.ytmusic-player-page .play-pause-button-wrapper { width: 56px !important; height: 56px !important; }
+}
+""".trimIndent()
+
+    private val YT_MUSIC_LAYOUT_JS = """
+(function(){ if(document.getElementById('tg-ytm')) return; var s=document.createElement('style'); s.id='tg-ytm';
+ s.textContent=${org.json.JSONObject.quote(YT_MUSIC_CSS)};
+ (document.head||document.documentElement).appendChild(s);
+ var t=0; function kick(){ clearTimeout(t); t=setTimeout(function(){ window.dispatchEvent(new Event('resize')); }, 60); }
+ function watch(){ var p=document.querySelector('ytmusic-player'); if(!p) return false; try{ new ResizeObserver(kick).observe(p); }catch(e){} return true; }
+ if(!watch()){ var mo=new MutationObserver(function(){ if(watch()) mo.disconnect(); }); mo.observe(document.documentElement,{childList:true,subtree:true}); }
+ /* The Up next / Lyrics sheet only closes with a finger dragged down its header. With a cursor that is a
+    hold-and-drag nobody finds, so a tap on the sheet's own selected tab, or on the media peeking
+    above it (not the toggle, ▾ or ⋮ floating over it), plays that drag for them. Touch events, not click: the header swallows taps before they click. */
+ function page(){ return document.querySelector('ytmusic-player-page'); }
+ function collapseTabs(){ var pp=page(); var h=pp&&pp.querySelector('.tab-header-container'); if(!h) return; var r=h.getBoundingClientRect(); var x=r.x+r.width/2;
+   function t(type,y){ var touch=new Touch({identifier:1,target:h,clientX:x,clientY:y,pageX:x,pageY:y}); var end=type==='touchend';
+     h.dispatchEvent(new TouchEvent(type,{touches:end?[]:[touch],targetTouches:end?[]:[touch],changedTouches:[touch],bubbles:true,cancelable:true})); }
+   var y0=r.y+20; t('touchstart',y0); [40,90,150,220].forEach(function(dy){ t('touchmove',y0+dy); }); t('touchend',y0+220); }
+ var down=null;
+ document.addEventListener('touchstart', function(e){ if(!e.isTrusted) return; var t=e.touches[0]; down=t?{x:t.clientX,y:t.clientY,path:e.composedPath?e.composedPath():[]}:null; }, true);
+ document.addEventListener('touchend', function(e){ if(!e.isTrusted||!down) return; var d=down; down=null; var pp=page(); if(!pp||pp.getAttribute('player-page-ui-state')!=='TABS_VIEW') return;
+   var t=e.changedTouches[0]; if(!t||Math.abs(t.clientX-d.x)>12||Math.abs(t.clientY-d.y)>12) return;
+   var media=pp.querySelector('#music-player-wrapper'), header=pp.querySelector('.tab-header-container'), hit=false;
+   if(media&&d.path.indexOf(media)>=0) hit=true;
+   else if(header&&d.path.indexOf(header)>=0){ for(var i=0;i<d.path.length;i++){ var n=d.path[i]; if(n.classList&&n.classList.contains('iron-selected')){ hit=true; break; } } }
+   if(!hit) return; e.stopPropagation(); e.preventDefault(); setTimeout(collapseTabs,0);
+ }, true); })();
 """.trimIndent()
 
     private val HELPER_JS = """
@@ -1365,12 +1499,12 @@ class WidgetView(context: Context) : FrameLayout(context) {
  function walkAll(root,out,depth){ if(depth>25||out.length>6000) return; var els; try{ els=root.querySelectorAll('*'); }catch(e){ return; } for(var i=0;i<els.length&&out.length<6000;i++){ out.push(els[i]); if(els[i].shadowRoot) walkAll(els[i].shadowRoot,out,depth+1); } }
  T.findAnyText=function(q){ q=norm(q); if(!q) return null; var out=[]; walkAll(document,out,0); var best=null,ba=1e12; out.forEach(function(el){ if(el.children&&el.children.length>6) return; if(!vis(el)) return; var t=norm(el.innerText||el.textContent); if(!t||t.length>200||t.indexOf(q)<0) return; var r=el.getBoundingClientRect(); var a=r.width*r.height; if(a<ba){ba=a;best=el;} }); if(!best) return null; var n=best; for(var k=0;k<8&&n&&n!==document.body;k++){ try{ if(n.matches&&n.matches('a[href],button,[role=button],[role=link],[onclick],[tabindex]')) return n; if(getComputedStyle(n).cursor==='pointer') return n; }catch(e){} n=n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; } return best; };
  /* A dialog / consent sheet / app-nag covering the page: role=dialog, aria-modal, or a fixed box over most of the viewport at its centre. */
- T.dialog=function(){ var c=null; try{ c=Array.prototype.filter.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],dialog[open]'),laidOut).pop()||null; }catch(e){} if(c) return c; try{ var els=document.elementsFromPoint(innerWidth/2,innerHeight/2); for(var i=0;i<els.length;i++){ var n=els[i]; for(var k=0;k<8&&n&&n!==document.body;k++){ var cs=getComputedStyle(n); if(cs.position==='fixed'||cs.position==='absolute'){ var r=n.getBoundingClientRect(); if(r.width*r.height>=0.45*innerWidth*innerHeight&&(parseInt(cs.zIndex,10)||0)>0&&n!==T.scroller()&&(n.innerText||'').trim().length>=20&&!sheetLike(n)) return n; } n=n.parentElement; } } }catch(e){} return null; };
+ T.dialog=function(){ if(document.fullscreenElement) return null; var c=null; try{ c=Array.prototype.filter.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],dialog[open]'),laidOut).pop()||null; }catch(e){} if(c) return c; try{ var els=document.elementsFromPoint(innerWidth/2,innerHeight/2); for(var i=0;i<els.length;i++){ var n=els[i]; for(var k=0;k<8&&n&&n!==document.body;k++){ var cs=getComputedStyle(n); if(cs.position==='fixed'||cs.position==='absolute'){ var r=n.getBoundingClientRect(); if(r.width*r.height>=0.45*innerWidth*innerHeight&&(parseInt(cs.zIndex,10)||0)>0&&n!==T.scroller()&&(n.innerText||'').trim().length>=20&&!sheetLike(n)) return n; } n=n.parentElement; } } }catch(e){} return null; };
  /* Bottom sheets and side panels (Google Maps results, players) are content, not dialogs: they scroll or hold many controls. */
  function sheetLike(n){ try{ if(n.scrollHeight>n.clientHeight+50) return true; var inner=n.querySelector('[style*="overflow"],[class*="scroll"]'); var ctl=n.querySelectorAll('a[href],button,[role=button],input').length; if(ctl>8) return true; var sc=Array.prototype.slice.call(n.querySelectorAll('div')).some(function(e){ var s=getComputedStyle(e); return /(auto|scroll)/.test(s.overflowY)&&e.scrollHeight>e.clientHeight+50; }); return sc; }catch(e){ return false; } }
  T.dialogButtons=function(d){ var out=[]; walk(d,out,0); return out.filter(function(el){ return laidOut(el)&&txt(el)&&!/^(input|textarea|select)$/i.test(el.tagName); }); };
  T.dismisser=function(d){ var re=/^(not now|no thanks|no, thanks|maybe later|later|skip|dismiss|close|cancel|got it|ok|okay|continue|i agree|agree|accept|accept all|allow all|reject all|x|×|✕)$/i; var bs=T.dialogButtons(d); if(bs.length===1) return bs[0]; /* a single-button gate: 'Press play to start', 'Enter' */ return bs.filter(function(b){ return re.test(norm(txt(b))); })[0]||bs.filter(function(b){ return /close|dismiss/i.test(attr(b,'aria-label')+' '+attr(b,'title')+' '+(attr(b,'data-testid'))); })[0]||null; };
- T.dialogLine=function(){ var d=T.dialog(); if(!d) return ''; var t=(d.innerText||'').replace(/\s+/g,' ').trim().slice(0,70); var bs=T.dialogButtons(d).slice(0,5).map(function(b){ return txt(b); }); return 'A dialog covers the page: "'+t+'"'+(bs.length?(' — buttons: '+bs.join(' | ')):'')+'.'; };
+ T.dialogLine=function(){ var fs=document.fullscreenElement; if(fs) return 'The page is full screen ('+(fs.querySelector&&fs.querySelector('video')||fs.tagName==='VIDEO'?'video':fs.tagName.toLowerCase())+') — web action=back leaves it.'; var d=T.dialog(); if(!d) return ''; var t=(d.innerText||'').replace(/\s+/g,' ').trim().slice(0,70); var bs=T.dialogButtons(d).slice(0,5).map(function(b){ return txt(b); }); return 'A dialog covers the page: "'+t+'"'+(bs.length?(' — buttons: '+bs.join(' | ')):'')+'.'; };
  /* Before tapping something a dialog covers: tap the dialog's dismiss button and ask for a retry; if there is none, say what the dialog offers. */
  T.unblock=function(el,pt,label){ if(!T.covered(el,pt)) return null; var d=T.dialog(); if(!d||chain(el).indexOf(d)>=0) return null; var b=T.dismisser(d); if(b){ var bp=T.center(b); return {tap:bp,retry:true,msg:'Closed the "'+(txt(b)||'dialog')+'" dialog.'}; } return {msg:'"'+label+'" is covered. '+T.dialogLine()+' Click one of its buttons first.'}; };
  T.click=function(q,idx){ if(T.virtual){ var it=null; if(idx&&T.virtual[idx-1]) it=T.virtual[idx-1]; else if(q){ var nq=norm(q); it=T.virtual.filter(function(v){ var l=norm(v.label); return l.indexOf(nq)>=0||nq.indexOf(l.split(' (')[0])>=0; })[0]; } if(it){ T.virtual=null; location.assign(it.url); return {msg:'Opening '+it.label+'.'}; } } var el=null; if(idx&&T.last&&T.last[idx-1]) el=T.last[idx-1]; if(!el&&q) el=T.findByText(q); if(!el&&q) el=T.findAnyText(q); if(!el) return {msg:'I couldn\'t find anything to click matching "'+q+'". Try inspect to see what\'s on the page.'}; var label=txt(el)||el.tagName.toLowerCase(); var pt=T.center(el); var onScreen=pt[0]>0&&pt[1]>0&&pt[0]<innerWidth&&pt[1]<innerHeight; if(!onScreen){ try{ el.click(); }catch(e){} return {msg:'Clicked "'+label+'".'}; } var u=T.unblock(el,pt,label); if(u) return u; return {tap:pt,msg:'Clicked "'+label+'".'}; };

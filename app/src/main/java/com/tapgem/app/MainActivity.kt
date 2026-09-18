@@ -40,7 +40,15 @@ import com.tapgem.app.core.bridge.BookmarksBridge
 import com.tapgem.app.core.model.Widget
 import com.tapgem.app.core.store.Bookmarks
 import com.tapgem.app.core.tools.BookmarkTool
-import com.tapgem.app.ui.BookmarkPanel
+import com.tapgem.app.ui.LibraryPanel
+import com.tapgem.app.core.bridge.LibraryBridge
+import com.tapgem.app.core.library.Library
+import com.tapgem.app.core.model.WidgetType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.tapgem.app.ui.WidgetSettingsPanel
 import com.tapgem.app.core.bridge.SettingsBridge
 import android.widget.LinearLayout
@@ -52,7 +60,6 @@ import com.tapgem.app.core.bridge.DesktopBridge
 import com.tapgem.app.core.bridge.HudStateBridge
 import com.tapgem.app.core.bridge.VoiceServiceApi
 import com.tapgem.app.core.bridge.WebCommandBus
-import com.tapgem.app.core.media.Screenshots
 import com.tapgem.app.core.model.DesktopMode
 import com.tapgem.app.core.store.DesktopStore
 import com.tapgem.app.ui.DesktopHostView
@@ -170,8 +177,8 @@ class MainActivity : AppCompatActivity() {
         startHudStateObserver()
         startCatalogObserver()
         wave.setOnClickListener { if (HudStateBridge.current().phase == HudStateBridge.VoicePhase.IDLE) activateAssistant() }
-        findViewById<View>(R.id.screenshotBtn).setOnClickListener { takeScreenshot() }
-        setupBookmarks()
+        setupDrawers()
+        setupSettingsSheet()
         bindVoiceService()
         if (BuildConfig.DEBUG) registerVoiceReceiver()
     }
@@ -185,7 +192,7 @@ class MainActivity : AppCompatActivity() {
         hudSub?.runCatching { close() }; catalogSub?.runCatching { close() }
         DesktopBridge.thumbnailRenderer = null
         WebCommandBus.displayCapturer = null
-        BookmarksBridge.panel = null; BookmarksBridge.thumbnailer = null; BookmarksBridge.freezer = null
+        LibraryBridge.opener = null; BookmarksBridge.thumbnailer = null; BookmarksBridge.freezer = null
         bookmarkSub?.runCatching { close() }; desktopSub?.runCatching { close() }
         SettingsBridge.opener = null; host.onSettings = null
         DesktopBridge.saveNow()
@@ -486,43 +493,142 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── bookmarks ──────────────────────────────────────────────────
+    // ── the three drawers: apps & widgets · bookmarks · wallpapers & themes ──
 
-    private lateinit var bookmarkPanel: BookmarkPanel
+    private lateinit var appsPanel: LibraryPanel
+    private lateinit var bookmarkPanel: LibraryPanel
+    private lateinit var wallpaperPanel: LibraryPanel
     private var bookmarkSub: AutoCloseable? = null
+    private val drawerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val drawers: List<LibraryPanel> get() = listOf(appsPanel, bookmarkPanel, wallpaperPanel)
 
     /**
-     * The ribbon next to the camera opens a drawer of windows saved for later;
-     * the same drawer on every desktop. Tiles open a copy on this desktop; the
-     * "+" tile saves the active window; ✕ forgets one. Tools drive it too.
+     * Three buttons on the left of the strip, one drawer each, one look (LibraryPanel):
+     * apps & widgets — everything that can be dropped on the desktop; bookmarks — windows
+     * saved with their state; wallpapers & themes — every wallpaper on the glasses plus
+     * the theme presets. A tap outside any of them closes it. Voice opens them too.
      */
-    private fun setupBookmarks() {
+    private fun setupDrawers() {
         val overlay = findViewById<ViewGroup>(R.id.overlay)
-        bookmarkPanel = BookmarkPanel(this)
-        overlay.addView(bookmarkPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
-            leftMargin = 6; topMargin = 70   // below the notice line, so "Bookmarked …" never covers the header
-        })
-        val btn = findViewById<ImageView>(R.id.bookmarkBtn)
-        btn.setOnClickListener { showBookmarkPanel(!bookmarkPanel.isVisible) }
-        bookmarkPanel.onClose = { showBookmarkPanel(false) }
-        bookmarkPanel.onOpen = { b ->
-            showBookmarkPanel(false)
-            if (b.isWallpaper) { BookmarkTool.applyWallpaper(b); showNotice("Wallpaper \"${b.title}\"") }
-            else { val placed = BookmarkTool.place(b); showNotice("Opened \"${placed.title}\"") }
+        fun panel(): LibraryPanel = LibraryPanel(this).also {
+            overlay.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
+                leftMargin = 6; topMargin = 70   // below the notice line, so a notice never covers the header
+            })
+            it.onClose = { closeDrawers() }
         }
-        bookmarkPanel.onSaveWallpaper = {
-            val wp = DesktopBridge.current().wallpaper
-            val b = Bookmarks.saveWallpaper(wp, BookmarkTool.wallpaperThumb(wp))
-            showNotice(if (b != null) "Kept wallpaper \"${b.title}\"" else "No wallpaper to keep")
-            refreshBookmarkPanel()
+        appsPanel = panel(); bookmarkPanel = panel(); wallpaperPanel = panel()
+        findViewById<ImageView>(R.id.appsBtn).setOnClickListener { toggleDrawer(LibraryBridge.Drawer.APPS) }
+        findViewById<ImageView>(R.id.bookmarkBtn).setOnClickListener { toggleDrawer(LibraryBridge.Drawer.BOOKMARKS) }
+        findViewById<ImageView>(R.id.wallpaperBtn).setOnClickListener { toggleDrawer(LibraryBridge.Drawer.WALLPAPERS) }
+
+        appsPanel.onTap = { t ->
+            closeDrawers()
+            drawerScope.launch {
+                when {
+                    t.key.startsWith("bm:") || t.key.startsWith("file:") -> Library.apps().firstOrNull { it.key == t.key }?.let { e ->
+                        val title = withContext(Dispatchers.IO) { Library.openApp(this@MainActivity, e) }; showNotice("Opened \"$title\"")
+                    }
+                    t.key.startsWith("kind:") -> Library.KINDS.firstOrNull { "kind:" + it.key == t.key }?.let { k ->
+                        Library.addKind(this@MainActivity, k).onFailure { showNotice(it.message ?: "Couldn't add ${k.label}") }
+                    }
+                    t.key.startsWith("site:") -> Library.SITES.firstOrNull { "site:" + it.key == t.key }?.let { site ->
+                        Library.openSite(this@MainActivity, site); showNotice(site.label)
+                    }
+                }
+            }
         }
-        bookmarkPanel.onDelete = { b -> Bookmarks.delete(b.id); showNotice("Forgot \"${b.title}\"") }
-        bookmarkPanel.onSaveActive = { activeWidget()?.let { w -> bookmarkWidget(w) } }
-        bookmarkSub = Bookmarks.observe { uiHandler.post { if (bookmarkPanel.isVisible) refreshBookmarkPanel() } }
-        BookmarksBridge.panel = { show -> showBookmarkPanel(show) }
+        bookmarkPanel.onTap = { t ->
+            if (t.key == "save") activeWidget()?.let { w -> bookmarkWidget(w) }
+            else Bookmarks.list().firstOrNull { "bm:" + it.id == t.key }?.let { b -> closeDrawers(); val placed = BookmarkTool.place(b); showNotice("Opened \"${placed.title}\"") }
+        }
+        bookmarkPanel.onDelete = { t -> Bookmarks.list().firstOrNull { "bm:" + it.id == t.key }?.let { b -> Bookmarks.delete(b.id); showNotice("Forgot \"${b.title}\"") } }
+        wallpaperPanel.onTap = { t ->
+            when {
+                t.key == "keep" -> { val wp = DesktopBridge.current().wallpaper; val b = Bookmarks.saveWallpaper(wp, BookmarkTool.wallpaperThumb(wp)); showNotice(if (b != null) "Kept wallpaper \"${b.title}\"" else "No wallpaper to keep"); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) }
+                t.key == "none" -> { Library.clearWallpaper(); showNotice("Wallpaper cleared"); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) }
+                t.key.startsWith("theme:") -> { Library.applyTheme(t.key.removePrefix("theme:")); showNotice("Theme ${t.label}"); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) }
+                t.key.startsWith("wp:") -> Library.wallpapers().firstOrNull { "wp:" + it.key == t.key }?.let { e -> Library.applyWallpaper(e); showNotice("Wallpaper \"${e.title}\""); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) }
+            }
+        }
+        wallpaperPanel.onDelete = { t -> Library.wallpapers().firstOrNull { "wp:" + it.key == t.key }?.let { e ->
+            showNotice(if (Library.deleteWallpaper(e)) "Removed \"${e.title}\"" else "\"${e.title}\" is in use on ${e.inUseBy.joinToString()}"); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) } }
+
+        bookmarkSub = Bookmarks.observe { uiHandler.post { if (bookmarkPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.BOOKMARKS); if (appsPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.APPS) } }
+        LibraryBridge.opener = { d, show -> if (show) openDrawer(d) else closeDrawers() }
         BookmarksBridge.thumbnailer = { id -> host.renderWidgetThumbnail(id) }
         BookmarksBridge.freezer = { id, done -> host.snapshotAppState(id, done) }
-        setupSettingsSheet()
+    }
+
+    private fun panelFor(d: LibraryBridge.Drawer) = when (d) { LibraryBridge.Drawer.APPS -> appsPanel; LibraryBridge.Drawer.BOOKMARKS -> bookmarkPanel; LibraryBridge.Drawer.WALLPAPERS -> wallpaperPanel }
+    private fun buttonFor(d: LibraryBridge.Drawer): ImageView = findViewById(when (d) { LibraryBridge.Drawer.APPS -> R.id.appsBtn; LibraryBridge.Drawer.BOOKMARKS -> R.id.bookmarkBtn; LibraryBridge.Drawer.WALLPAPERS -> R.id.wallpaperBtn })
+
+    private fun toggleDrawer(d: LibraryBridge.Drawer) { if (panelFor(d).isVisible) closeDrawers() else openDrawer(d) }
+
+    private fun openDrawer(d: LibraryBridge.Drawer) {
+        closeDrawers(); settingsPanel.visibility = View.GONE
+        refreshDrawer(d)
+        buttonFor(d).background = GradientDrawable().apply { cornerRadius = 6f; setColor((DesktopBridge.current().theme.accent and 0x00FFFFFF) or 0x33000000) }
+    }
+
+    private fun closeDrawers() {
+        for (d in LibraryBridge.Drawer.values()) { panelFor(d).visibility = View.GONE; buttonFor(d).background = null }
+    }
+
+    /** Rebuild one drawer's tiles from the live stores. */
+    private fun refreshDrawer(d: LibraryBridge.Drawer) {
+        val cur = DesktopBridge.current(); val accent = cur.theme.accent
+        val panel = panelFor(d)
+        when (d) {
+            LibraryBridge.Drawer.APPS -> {
+                val apps = Library.apps().map { LibraryPanel.Tile(it.key, it.title, "◈", it.thumb) }
+                val kinds = Library.KINDS.map { LibraryPanel.Tile("kind:" + it.key, it.label, it.glyph) }
+                val sites = Library.SITES.map { LibraryPanel.Tile("site:" + it.key, it.label, "◎") }
+                // Sized to fit under the strip: two rows of apps, one of widgets, one of sites.
+                panel.show("Apps & widgets", listOf(
+                    LibraryPanel.Section("Apps", apps, tileW = 100, tileH = 84, cols = 5, maxRows = 2),
+                    LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 52, cols = 6, maxRows = 1),
+                    LibraryPanel.Section("Sites", sites, tileW = 62, tileH = 44, cols = 8, maxRows = 1)
+                ), accent, if (apps.isEmpty()) "No apps yet — say “make me a …” and it appears here." else "Apps open where you left them. Tap anything to put it on this desktop.")
+            }
+            LibraryBridge.Drawer.BOOKMARKS -> {
+                val active = activeWidget()
+                val tiles = ArrayList<LibraryPanel.Tile>()
+                if (active != null) tiles += LibraryPanel.Tile("save", if (active.type == WidgetType.APP) "Save “${active.title}” → apps" else "Save “${active.title}”", "+", dashed = true)
+                // Apps live in the apps drawer, wallpapers in the wallpapers drawer: this one is pages and windows.
+                tiles += Bookmarks.list().filter { !it.isWallpaper && it.type != WidgetType.APP }.map { b ->
+                    LibraryPanel.Tile("bm:" + b.id, b.title, glyphFor(b.type), b.thumb?.let { runCatching { android.graphics.BitmapFactory.decodeFile(it.absolutePath) }.getOrNull() }, deletable = true,
+                        badge = b.type?.name?.lowercase(java.util.Locale.US))
+                }
+                panel.show("Bookmarks", listOf(LibraryPanel.Section("Saved pages & windows", tiles, maxRows = 3)), accent,
+                    if (tiles.size <= 1) "Saved pages and windows appear here — a video, a PDF at its page, a map. Focus one and tap +, or say “bookmark this”. Apps are in the apps drawer."
+                    else "A copy lands on this desktop as you left it. Apps are in the apps drawer, wallpapers in the next one.")
+            }
+            LibraryBridge.Drawer.WALLPAPERS -> {
+                val curKey = Bookmarks.wallpaperKey(cur.wallpaper)
+                val all = Library.wallpapers()
+                val tiles = ArrayList<LibraryPanel.Tile>()
+                if (cur.wallpaper.kind != com.tapgem.app.core.model.WallpaperKind.NONE && all.none { it.key == curKey && it.bookmark != null })
+                    tiles += LibraryPanel.Tile("keep", "Keep this", "+", Library.thumbFor(cur.wallpaper), dashed = true)
+                tiles += all.map { e -> LibraryPanel.Tile("wp:" + e.key, e.title, "▦", e.thumb, e.wallpaper.colors.takeIf { it.isNotEmpty() && e.thumb == null }?.toIntArray(),
+                    selected = e.key == curKey, deletable = e.inUseBy.isEmpty(), badge = if (e.bookmark != null) "kept" else null) }
+                tiles += LibraryPanel.Tile("none", "None", "∅", dashed = true, selected = cur.wallpaper.kind == com.tapgem.app.core.model.WallpaperKind.NONE)
+                val themes = com.tapgem.app.core.model.Themes.ALL.map { t ->
+                    LibraryPanel.Tile("theme:" + t.name, t.name.replaceFirstChar { it.uppercase() }, "", swatch = intArrayOf(t.panel or 0xFF000000.toInt(), t.accent), selected = t.name == cur.theme.name)
+                }
+                panel.show("Wallpapers & themes", listOf(
+                    LibraryPanel.Section("Wallpapers", tiles, maxRows = 2),
+                    LibraryPanel.Section("Themes", themes, tileW = 58, tileH = 44, cols = 8, maxRows = 1)
+                ), accent, "Tap a wallpaper or theme to use it here. ✕ removes a wallpaper no desktop uses.")
+            }
+        }
+        // Keep the drawer inside the canvas.
+        panel.measure(View.MeasureSpec.makeMeasureSpec(628, View.MeasureSpec.AT_MOST), View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.AT_MOST))
+    }
+
+    private fun glyphFor(t: WidgetType?): String = when (t) {
+        WidgetType.APP -> "◈"; WidgetType.WEB -> "◎"; WidgetType.MAP -> "⌖"; WidgetType.VIDEO -> "▶"; WidgetType.AUDIO -> "♪"
+        WidgetType.PDF, WidgetType.EPUB -> "❡"; WidgetType.IMAGE -> "▣"; WidgetType.TICKER -> "≋"; WidgetType.LIVE -> "◉"
+        WidgetType.CLOCK -> "◷"; WidgetType.TEXT -> "¶"; WidgetType.MODEL3D -> "◆"; null -> "▦"
     }
 
     // ── per-window settings (the ⚙ in a title bar / "open the clock settings") ──
@@ -550,7 +656,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSettings(id: String?) {
         val w = id?.let { DesktopBridge.current().widget(it) }
         if (w == null) { settingsPanel.visibility = View.GONE; return }
-        showBookmarkPanel(false)
+        closeDrawers()
         settingsPanel.show(w, DesktopBridge.current().theme)
         // Under the window's title bar, kept inside the canvas.
         settingsPanel.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.AT_MOST), View.MeasureSpec.makeMeasureSpec(430, View.MeasureSpec.AT_MOST))
@@ -568,35 +674,12 @@ class MainActivity : AppCompatActivity() {
         host.snapshotAppState(w.id) {
             val fresh = DesktopBridge.current().widget(w.id) ?: w
             val b = Bookmarks.save(fresh, host.renderWidgetThumbnail(w.id))
-            showNotice("Bookmarked \"${b.title}\"")
-            refreshBookmarkPanel()
+            if (w.type == WidgetType.APP) { showNotice("Saved \"${b.title}\" to the apps drawer"); refreshDrawer(LibraryBridge.Drawer.APPS) }
+            else { showNotice("Bookmarked \"${b.title}\""); refreshDrawer(LibraryBridge.Drawer.BOOKMARKS) }
         }
     }
 
-    private fun showBookmarkPanel(show: Boolean) {
-        val btn = findViewById<ImageView>(R.id.bookmarkBtn)
-        if (show) {
-            refreshBookmarkPanel()
-            bookmarkPanel.visibility = View.VISIBLE
-            btn.imageTintList = null
-            btn.background = GradientDrawable().apply { cornerRadius = 6f; setColor((DesktopBridge.current().theme.accent and 0x00FFFFFF) or 0x33000000) }
-        } else {
-            bookmarkPanel.visibility = View.GONE
-            btn.background = null
-        }
-    }
-
-    private fun refreshBookmarkPanel() {
-        val d = DesktopBridge.current()
-        bookmarkPanel.setAccent(d.theme.accent)
-        val list = Bookmarks.list()
-        // Offer to keep the wallpaper unless it's none or already in the list.
-        val key = Bookmarks.wallpaperKey(d.wallpaper)
-        val keepable = d.wallpaper.kind != com.tapgem.app.core.model.WallpaperKind.NONE && list.none { it.isWallpaper && it.origin == key }
-        bookmarkPanel.refresh(list, activeWidget(), if (keepable) BookmarkTool.wallpaperThumb(d.wallpaper, 116, 96) else null)
-    }
-
-    // ── screenshot ─────────────────────────────────────────────────
+    // ── display capture (the model's frames, thumbnails) ──────────
 
     /** Real pixels of the left-eye viewport (video and web content included); cursor optionally hidden. */
     private fun captureDisplay(cb: (Bitmap?) -> Unit, hideCursor: Boolean = true) {
@@ -620,24 +703,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (hideCursor) container.postOnAnimation { container.postOnAnimation { doCopy() } } else doCopy()
-    }
-
-    private fun takeScreenshot() {
-        captureDisplay(hideCursor = true, cb = { bmp ->
-            if (bmp == null) { showNotice("Screenshot failed"); return@captureDisplay }
-            flash()
-            Thread({
-                val saved = Screenshots.save(this, bmp)
-                uiHandler.post { showNotice(if (saved == null) "Screenshot failed" else if (saved.inGallery) "Screenshot saved to Pictures/TapGem" else "Screenshot saved") }
-            }, "tapgem-shot").start()
-        })
-    }
-
-    private fun flash() {
-        if (onBattery) return   // never light the whole panel on battery
-        val v = findViewById<View>(R.id.flash)
-        v.alpha = 0.6f; v.visibility = View.VISIBLE
-        v.animate().alpha(0f).setDuration(220L).withEndAction { v.visibility = View.GONE }.start()
     }
 
     // ── assistant state → wave / notice / caption ──────────────────
@@ -959,9 +1024,11 @@ class MainActivity : AppCompatActivity() {
         edgeScroller.stop()
         if (host.endInteraction()) { showNotice("Placed"); return }
         val overlayHit = findOverlayHit(cursorX, cursorY)
-        // A tap anywhere outside the open bookmarks drawer / settings sheet closes it (and does nothing else).
-        if (bookmarkPanel.isVisible && (overlayHit == null || !isInside(overlayHit.view, bookmarkPanel)) && overlayHit?.view?.id != R.id.bookmarkBtn) {
-            showBookmarkPanel(false); return
+        // A tap anywhere outside an open drawer / settings sheet closes it (and does nothing else) —
+        // except on the strip buttons, which switch drawers.
+        val openDrawer = drawers.firstOrNull { it.isVisible }
+        if (openDrawer != null && (overlayHit == null || !isInside(overlayHit.view, openDrawer)) && overlayHit?.view?.id !in setOf(R.id.appsBtn, R.id.bookmarkBtn, R.id.wallpaperBtn)) {
+            closeDrawers(); return
         }
         if (settingsPanel.isVisible && (overlayHit == null || !isInside(overlayHit.view, settingsPanel))) {
             showSettings(null); return

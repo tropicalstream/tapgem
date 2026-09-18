@@ -34,7 +34,7 @@
             android:clickable="false"
             android:focusable="false">
 
-            <!-- Status strip: screenshot button on the left; on the right the
+            <!-- Status strip: the three drawer buttons on the left; on the right the
                  saved-desktop thumbnails sit right next to time · date · battery
                  · net, then the Siri-style wave in the corner. -->
             <LinearLayout
@@ -53,18 +53,18 @@
                 android:clickable="false"
                 android:focusable="false">
 
-                <!-- Tap = capture the display to Pictures/TapGem. -->
+                <!-- Left cluster: three drawers — apps & widgets, bookmarks (saved windows),
+                     wallpapers & themes. Same size, same glyph language. -->
                 <ImageView
-                    android:id="@+id/screenshotBtn"
+                    android:id="@+id/appsBtn"
                     android:layout_width="30dp"
                     android:layout_height="30dp"
                     android:padding="4dp"
-                    android:src="@drawable/ic_screenshot"
+                    android:src="@drawable/ic_apps"
                     android:clickable="true"
                     android:focusable="true"
-                    android:contentDescription="Screenshot" />
+                    android:contentDescription="Apps and widgets" />
 
-                <!-- Tap = open the bookmarks panel (windows saved for later, shared by every desktop). -->
                 <ImageView
                     android:id="@+id/bookmarkBtn"
                     android:layout_width="30dp"
@@ -75,6 +75,17 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:contentDescription="Bookmarks" />
+
+                <ImageView
+                    android:id="@+id/wallpaperBtn"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:layout_marginStart="4dp"
+                    android:padding="4dp"
+                    android:src="@drawable/ic_wallpaper"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Wallpapers and themes" />
 
                 <Space
                     android:layout_width="0dp"
@@ -192,17 +203,6 @@
                 android:textSize="12.5sp"
                 android:visibility="gone"
                 tools:ignore="UnusedAttribute" />
-
-            <!-- Brief white flash when a screenshot is taken. -->
-            <View
-                android:id="@+id/flash"
-                android:tag="passthrough"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="#FFFFFFFF"
-                android:elevation="14dp"
-                android:alpha="0"
-                android:visibility="gone" />
 
         </FrameLayout>
 

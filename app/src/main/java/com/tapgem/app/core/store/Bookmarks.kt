@@ -100,7 +100,7 @@ object Bookmarks {
     } ?: (wp.kind.name + ":" + wp.colors.joinToString(","))
 
     /** "a serene nature landscape with a gentle river at dusk" → "Serene Nature Landscape". */
-    private fun wallpaperTitle(desc: String): String {
+    fun wallpaperTitle(desc: String): String {
         val stop = setOf("a", "an", "the", "of", "with", "and", "in", "on", "at", "very", "some", "wallpaper", "background", "image", "picture", "photo")
         val words = desc.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").split(Regex("\\s+")).filter { it.isNotBlank() && it !in stop }
         return words.take(3).joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }.ifBlank { "Wallpaper" }

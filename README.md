@@ -70,7 +70,7 @@ The key is never stored in this repo (`gemini_api_key.txt` is git-ignored).
 | Input | Does |
 |---|---|
 | Right trackpad slide | Moves the cursor |
-| **Single tap** | Click what's under the cursor. On a window's **title bar** → that window becomes **active** (brighter bar, accent border) and comes to the front. Inside a page or app → a real tap on that element (buttons, links, players). A desktop thumbnail → loads it. The camera icon → screenshot. Empty space while idle → starts the assistant |
+| **Single tap** | Click what's under the cursor. On a window's **title bar** → that window becomes **active** (brighter bar, accent border) and comes to the front. Inside a page or app → a real tap on that element (buttons, links, players). A desktop thumbnail → loads it. A strip icon → opens that drawer (tap outside to close). Empty space while idle → starts the assistant |
 | **Hold, then slide** (one finger, still for ~¼ s) | On a **title bar** (or a clock / image / audio panel, or the top band of any window) → **drags the window**; the cursor follows. On the bottom-right corner → **resizes**. On the **body** of a page, app, map, book, PDF or text panel → **drags the content**: scrolls the page, pans the map, moves sliders — the cursor stays put |
 | **Two fingers slide** | **Scrolls** whatever is under the cursor, no hold needed (a full stroke ≈ 300 px; flick for momentum) |
 | **Park the cursor near an edge** | The content **auto-scrolls** that way: rest it in the band along a window's bottom/top (or left/right on pages and maps) and after a fifth of a second it scrolls, faster the closer to the rim, with a thin accent line marking the edge. Move the cursor away — or reach the end — and it stops. Title bars and the resize corner never scroll |
@@ -93,10 +93,25 @@ search box"), then type.
 
 ### The strip
 
-Left: **camera** — one tap saves a screenshot of what you see (both video and
-web content) to the photo gallery under `Pictures/TapGem`; next to it the
-**bookmark ribbon** opens the drawer of windows saved for later (see
-*Bookmarks* below). Right: the saved
+Left: three **drawers**, one icon each, one look — dark glass, titled sections
+of tiles, a ✕, tap outside to close:
+
+- **Apps & widgets** (tiles) — every app the glasses hold, each opening where you
+  left it (saving an app window files it here), the built-in widget kinds (clock,
+  note, live card, ticker, map, weather) and launchers for the sites TapGem
+  drives well (YouTube, Radio Garden, Internet Archive, Wikipedia, Google Maps,
+  SoundCloud, Bandcamp). Tap anything and it lands on the current desktop.
+  *"Show my apps"*.
+- **Bookmarks** (ribbon) — saved pages and windows that aren't apps: a video, a
+  PDF at its page, a map, a note; see *Bookmarks* below. The three drawers never
+  show the same thing twice.
+- **Wallpapers & themes** (picture) — every wallpaper on the glasses, titled by
+  the words it was painted from, the current one ringed, *kept* ones marked;
+  **Keep this** saves the current backdrop, **None** clears it, ✕ removes a
+  wallpaper no desktop uses; below, the eight **theme** presets as colour
+  swatches — tap to restyle the desktop. *"Show wallpapers"*, *"show themes"*.
+
+Right: the saved
 desktops as **thumbnails** (newest first, the current one ringed) right next
 to the **time · date · battery · network**, then the assistant's **wave**.
 
@@ -121,7 +136,7 @@ brighter it is on average (down to ~27 % on a mostly-white screen); photos,
 video and painted wallpapers are dimmed a third; the wave stops animating
 when idle (the app renders at 0 fps at rest); windows fully hidden behind
 others have their web content paused; heavy windows come up one at a time on
-start; pages may not autoplay media; the screenshot flash is skipped. Plug in
+start; pages may not autoplay media. Plug in
 and everything returns to normal. Generated apps are asked to avoid
 always-on animations, and inactive apps have their CSS animations frozen
 while on battery.
@@ -195,7 +210,7 @@ can then adjust ("a bit bigger", "move it down").
 - "Enlarge the YouTube window." · "Make this bigger." · "Shrink it." (resizes that one window only)
 - "Keep the ticker on top." · "Pin this window." · "Toggle stay on top." · "Unpin it." (a lasting setting —
   a pinned window sits above every other, marked ⬆ in its title bar; "bring it to the front" only raises once)
-- "Bring the clock to the front." · "Take a screenshot."
+- "Bring the clock to the front."
 
 **Maps & navigation**
 - "Show me a map of downtown Oakland." · "Coffee near Lake Merritt." · "Map of where I am." (Google Maps in a
@@ -236,7 +251,6 @@ can then adjust ("a bit bigger", "move it down").
 Archive, YouTube, Spotify and Radio Garden; no keyboard ever pops up)
 - "Search the Internet Archive for the Grateful Dead Cornell 77 show and play it."
 - "Open YouTube and play lo-fi hip hop radio." · "Skip the ad." · "Pause it."
-- "Open Spotify and play So What by Miles Davis." (30-second previews, **signed out only** — see below)
 - "Open Radio Garden and start playing some radio." · "Take a balloon ride." · "Next station." · "Play a station from Tokyo."
 - "Scroll down." · "Click on the second result." · "Type Paris into the search box." · "Go back." · "What's on this page?"
 
@@ -254,6 +268,19 @@ automatically before the click is retried; a click that changes nothing says so
 ("Nothing on the page changed"), and the same call issued twice in a row is
 called out, so the assistant stops second-guessing itself and either moves on or
 tells you what is blocking.
+
+**YouTube Music and video in a window.** music.youtube.com's player page is laid out for a
+phone held upright — it reserves 408 px under the media for the controls and the Up next / Lyrics
+strip — so in a 640×418 window the music video (or the album art) came out 10 px tall. TapGem
+reflows that page in short viewports: the video fills the window's width with a compact
+title · seek bar · buttons block floating over its foot, the album art sits above the same
+block in Song mode, and the Song / Video switch stays at the top; YouTube's player only
+re-measures its `<video>` on a window resize, so one is dispatched whenever the box changes
+size. The Up next / Lyrics sheet, which the site closes only with a finger dragged down its
+header, also closes on a tap of its selected tab or of the media strip peeking above it. A
+page's own **full screen** button (YouTube's ⛶, a video's control) now fills the *window*, not
+the display — "go back" leaves it, and closing the window ends it. A site's "Leave this page?"
+prompt is answered automatically; a HUD has nobody to ask.
 
 **Spotify and DRM.** The X3 Pro firmware ships only the ClearKey DRM plugin — there is no
 Widevine CDM on the device (`/vendor/lib/mediadrm/` holds `libdrmclearkeyplugin.so` alone, and
@@ -275,14 +302,12 @@ can't quietly turn into a new app, and a different saved app is never substitute
 **Bookmarks** (one window kept for later — on every desktop)
 - "Bookmark this." · "Save the checkers game for later." · "Bookmark the groceries note as shopping list."
 - "Open my checkers bookmark." · "Show my bookmarks." · "Forget the radio bookmark."
-- "Keep this wallpaper." · "Use my coral reef wallpaper on this desktop." — wallpapers are bookmarks too:
-  the image (or gradient) is kept with the bookmarks and applied to whichever desktop you're on.
-- The ribbon next to the camera opens the drawer: thumbnails of saved windows and wallpapers, a **+** tile
-  that saves the active window, a **Keep wallpaper** tile for the current backdrop, a ✕ on each to forget it.
-  Tap a window tile and a copy lands on the current desktop at its saved size, with its state — an app
-  mid-game, a page, a PDF at its page; tap a wallpaper tile and it becomes this desktop's backdrop. A
-  bookmark is not a desktop: desktops are whole layouts (save/load from the strip), bookmarks are single
-  windows and wallpapers you drop anywhere.
+- "Keep this wallpaper." · "Use my coral reef wallpaper on this desktop." — kept wallpapers are bookmarks
+  too; they show in the wallpapers drawer marked *kept*, and apply to whichever desktop you're on.
+- The ribbon opens the bookmarks drawer: thumbnails of saved windows, a **+** tile that saves the active
+  window, a ✕ on each to forget it. Tap a tile and a copy lands on the current desktop at its saved size,
+  with its state — an app mid-game, a page, a PDF at its page. A bookmark is not a desktop: desktops are
+  whole layouts (save/load from the strip), bookmarks are single windows you drop anywhere.
 - **Apps freeze and thaw by themselves.** A vibe-coded app keeps its state in `let`/`const` variables the
   page can't reach from outside, so TapGem rewrites each app as it loads: the inline scripts are scanned
   (even inside an IIFE / `DOMContentLoaded` wrapper) and a registration is appended that exposes every
@@ -371,7 +396,7 @@ Results are logged under the `TapGemApp` tag and flashed as a notice. With a
 macOS voice you can run the whole loop hands-free: start the session, then
 `say -v Samantha "Organize and tile my windows"` next to the glasses.
 
-Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/undo/clear/screenshot),
+Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/undo/clear/apps/wallpapers),
 `widget` (add/update/remove/move/resize/front/list/navigate/refresh),
 `web` (search/inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
 `theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update),

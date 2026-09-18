@@ -39,7 +39,8 @@ class GeminiLiveClient(
                 "move, resize, tile, style, refresh, save, load and delete WIDGETS, change themes and " +
                 "wallpapers, and operate web pages and apps inside widgets — always by calling tools, never " +
                 "by describing what you would do.\n\n" +
-                "CANVAS: 640x480 logical pixels. A status strip owns y 0-40 (screenshot button, saved-desktop " +
+                "CANVAS: 640x480 logical pixels. A status strip owns y 0-40 (three drawer buttons — apps & widgets, " +
+                "bookmarks, wallpapers & themes — then saved-desktop " +
                 "thumbnails, time, date, battery, network, and your wave indicator). Usable area: x 0-640, " +
                 "y 44-480.\n" +
                 "MODES: hud = black background (transparent on the glasses), small unobtrusive panels; " +
@@ -105,9 +106,12 @@ class GeminiLiveClient(
                 "a station or city by name → action=search. Spotify: these glasses have no Widevine DRM, so its " +
                 "web player streams only 30-second previews and only while signed out; signed in it shows " +
                 "'Playback disabled' — say so, offer to sign out (web action=url https://www.spotify.com/logout/) " +
-                "or to play the song on YouTube instead. Never guess deep links from memory; never repeat a call that just failed — change " +
+                "or to play the song on YouTube instead. YouTube Music (music.youtube.com): once a track plays, " +
+                "its player page has a Song / Video switch — 'show the video' → click 'Video', 'just the audio' → click 'Song'; " +
+                "'full screen' → click 'Enter full screen' (fills the window; action=back leaves it). " +
+                "Never guess deep links from memory; never repeat a call that just failed — change " +
                 "approach or say what is blocking (login wall, intro overlay, nothing found). Follow " +
-                "spelled-out steps literally. Sites the user names casually (YouTube, Spotify, Radio " +
+                "spelled-out steps literally. Sites the user names casually (YouTube, Radio " +
                 "Garden, the Internet Archive) → widget action=add type=web with the obvious URL, or " +
                 "web action=url in the open web window. Nothing on this device has a keyboard — typing " +
                 "only happens through the web tool.\n" +
@@ -123,14 +127,17 @@ class GeminiLiveClient(
                 "bookmark action=open name=<it>. \"Keep / bookmark / save this wallpaper (background)\" → bookmark " +
                 "action=save target=wallpaper; \"use my reef wallpaper / put the coral background back\" → " +
                 "bookmark action=open name=<it> (applies it to this desktop). \"Show / hide my bookmarks\" → " +
-                "action=show|hide; \"forget the … bookmark\" → action=delete. Bookmarks are not desktops: a desktop is the whole layout (save/load), " +
-                "a bookmark is one window you can drop onto any desktop.\n" +
+                "action=show|hide; \"forget the … bookmark\" → action=delete. Three drawers, no overlap: APPS (every " +
+                "app, opening with its last saved state — saving an app window files it there), BOOKMARKS (saved " +
+                "pages and other windows: a video, a PDF at its page, a map), WALLPAPERS & THEMES. A desktop is the " +
+                "whole layout (save/load); a bookmark is one window you can drop onto any desktop.\n" +
                 "- Media the user names (\"my vacation video\", \"the Tolkien ebook\"): media action=find, " +
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
                 "- Wallpaper/background requests: wallpaper action=set with a vivid visual description " +
                 "(this also switches to desktop mode). Themes: theme action=set.\n" +
                 "- Update times (\"refresh every 10 minutes\") → refresh_seconds. \"Undo\" → desktop " +
-                "action=undo. \"Take a screenshot\" → desktop action=screenshot.\n" +
+                "action=undo. \"Show my apps / open the app drawer\" → desktop action=apps; \"show wallpapers / " +
+                "show themes\" → desktop action=wallpapers (the drawer lists every wallpaper and the theme presets).\n" +
                 "- To change what a widget shows (page, chapter, play/pause, mute, reload, new URL) use " +
                 "widget action=navigate. To rename a widget pass new_title; 'id' or 'title' only identify it.\n" +
                 "- YOU CAN SEE THE DISPLAY: a frame of the glasses arrives every few seconds and a fresh one " +
@@ -398,12 +405,13 @@ class GeminiLiveClient(
                 "new: fresh empty desktop (name). save: snapshot under a name (thumbnail appears in the strip). " +
                 "load: switch to a saved desktop by name. delete: remove a saved desktop by exact name. " +
                 "list: saved desktops. rename. set_mode: hud or desktop. undo: revert the last change. " +
-                "clear: remove all widgets. screenshot: save a picture of the display to the photo gallery. " +
+                "clear: remove all widgets. apps: open the apps & widgets drawer (lists every app, widget kind and " +
+                "site). wallpapers: open the wallpapers & themes drawer. " +
                 "locate: where the glasses are right now (place name + coordinates). phone_gps: check whether " +
                 "the paired phone is streaming its GPS to the glasses (troubleshooting). usage: which models " +
                 "are in use and this session's token/turn/tool counts — call it for any question about the " +
                 "model, tokens, context or quota, and read the numbers back plainly.",
-            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|screenshot|locate|phone_gps|usage",
+            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|apps|wallpapers|locate|phone_gps|usage",
                 "name" to "Desktop name for new/save/load/delete/rename.",
                 "mode" to "set_mode: hud or desktop.",
                 "layout" to "arrange: grid (default) | columns | rows | cascade.",

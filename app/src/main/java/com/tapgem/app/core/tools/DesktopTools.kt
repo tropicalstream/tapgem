@@ -8,7 +8,6 @@ import com.tapgem.app.core.bridge.WebCommandBus
 import com.tapgem.app.core.live.WidgetRefreshEngine
 import com.tapgem.app.core.media.EpubUnpacker
 import com.tapgem.app.core.media.MediaScanner
-import com.tapgem.app.core.media.Screenshots
 import com.tapgem.app.core.model.Canvas
 import com.tapgem.app.core.model.ColorUtil
 import com.tapgem.app.core.model.Desktop
@@ -1147,11 +1146,19 @@ class DesktopTool(private val context: Context) : AiTool {
                 Result.success(if (fix != null) "Phone GPS is flowing: ${fix.latLon()}, about ${fix.accuracyM.toInt()} m."
                     else "No phone GPS yet — ${pg.whyNot(context)}. Launcher status: ${pg.lastStatus} ${pg.lastStatusMessage ?: ""}; BLE link ${if (pg.isPhoneConnected(context)) "up" else "down"}.")
             }
-            "screenshot", "capture", "snap" -> {
-                val bmp = WebCommandBus.capture() ?: return@withContext Result.failure(IllegalStateException("Couldn't capture the display."))
-                val saved = Screenshots.save(context, bmp) ?: return@withContext Result.failure(IllegalStateException("Couldn't save the screenshot."))
-                HudStateBridge.notice("Screenshot saved")
-                Result.success(if (saved.inGallery) "Saved a screenshot to the photo gallery (Pictures/TapGem)." else "Saved a screenshot inside TapGem (the gallery wasn't writable).")
+            "apps", "app_drawer", "widgets" -> {
+                com.tapgem.app.core.bridge.LibraryBridge.show(com.tapgem.app.core.bridge.LibraryBridge.Drawer.APPS)
+                val apps = com.tapgem.app.core.library.Library.apps().joinToString(", ") { it.title }.ifBlank { "none yet" }
+                Result.success("Opened the apps & widgets drawer. Apps: $apps. Widgets: ${com.tapgem.app.core.library.Library.KINDS.joinToString(", ") { it.label }}. Sites: ${com.tapgem.app.core.library.Library.SITES.joinToString(", ") { it.label }}.")
+            }
+            "wallpapers", "themes", "wallpaper_drawer" -> {
+                com.tapgem.app.core.bridge.LibraryBridge.show(com.tapgem.app.core.bridge.LibraryBridge.Drawer.WALLPAPERS)
+                val wps = com.tapgem.app.core.library.Library.wallpapers().joinToString(", ") { it.title }.ifBlank { "none yet" }
+                Result.success("Opened the wallpapers & themes drawer. Wallpapers: $wps. Themes: ${Themes.ALL.joinToString(", ") { it.name }} (current ${DesktopBridge.current().theme.name}).")
+            }
+            "close_drawers", "hide_drawers" -> {
+                for (d in com.tapgem.app.core.bridge.LibraryBridge.Drawer.values()) com.tapgem.app.core.bridge.LibraryBridge.show(d, false)
+                Result.success("Drawers closed.")
             }
             else -> Result.failure(IllegalArgumentException("Unknown desktop action '${args.action}'."))
         }
@@ -1381,9 +1388,14 @@ class AppBuilderTool(private val context: Context) : AiTool {
                 "everything inline. There is NO keyboard: never rely on typed input; use buttons, sliders and taps. " +
                 "The device runs on a small battery: NO infinite CSS animations, glows, pulses or " +
                 "requestAnimationFrame loops — update visuals only when state changes or at most once per second " +
-                "(setInterval >= 1000 ms); transitions on user actions are fine. " +
+                "(setInterval >= 1000 ms); transitions on user actions are fine. Physics or motion toys may animate " +
+                "with requestAnimationFrame ONLY while something is actually moving and must stop the loop at rest. " +
+                "Layout: a flex column with a <canvas> needs `canvas{flex:1 1 0;min-height:0}` or it overflows the " +
+                "window. Anything the user might add by voice (a task, a note, a search) needs a real <input> with a " +
+                "clear placeholder plus a button, because the assistant types into fields by their placeholder. " +
                 "Must work offline in Chrome 95. A tiny host bridge exists as window.TapGem with " +
-                "notify(text) to flash a one-line message on the glasses, setTitle(text) to rename the window, " +
+                "notify(text) to flash a one-line message on the glasses, setTitle(text) to rename the window, eco() " +
+                "(true on battery — halve any animation rate), " +
                 "save(key, value) and load(key) (strings) for persistence — guard every call with " +
                 "`if (window.TapGem)`. PERSIST THE WHOLE STATE, not just scores: after every state change call " +
                 "TapGem.save('state', JSON.stringify(fullState)) and on load restore it from TapGem.load('state') " +
