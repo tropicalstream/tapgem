@@ -169,13 +169,24 @@ full / half left / half right / wide / tall`. Sizes and spots are defaults you
 can then adjust ("a bit bigger", "move it down").
 
 **Widgets**
-- "Put a clock in the top right." · "Add a note that says milk, eggs, coffee."
+- "Add a note that says milk, eggs, coffee."
 - "Show the Warriors score, refresh every five minutes." (live card)
 - "Add a panel with today's top three AI headlines, update hourly." (prompt text)
 - "Open the New York Times." · "Show me the Wikipedia page for Mars."
 - "Make the clock bigger." · "Move the weather to the bottom left." · "Remove the news."
 - "Make the note's text gold." · "Make that panel more transparent." · "Hide the title bars."
 - "Rename that window to Groceries." · "Undo that."
+
+**Clocks** (five faces, 12/24 h, seconds, date, world cities)
+- "Put a clock in the top right." · "Make it analog." · "Switch to a thin digital face." · "LED clock with
+  seconds." · "Modern analog." (faces: digital, thin, led, analog, modern)
+- "Use 24-hour time." · "Show seconds." · "Hide the date."
+- "Add a Tokyo clock." · "World clock with London, Tokyo and New York." (one window: city rows for digital
+  faces, a dial per city for analog ones, each with its offset from local) · "Add Paris to the world clock."
+- "Open the clock settings." — or tap the **⚙** in any window's title bar: a sheet of tappable chips (no
+  typing): clocks get face, 12/24 h, seconds, date and a city picker; live cards and tickers their refresh
+  rate; every window stay-on-top, opacity and text size. Voice changes and chip taps edit the same window,
+  and the sheet follows.
 
 **Windows**
 - "Organize and tile my windows." · "Line them up side by side." · "Stack them." · "Cascade them."

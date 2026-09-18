@@ -50,6 +50,8 @@ class DesktopHostView @JvmOverloads constructor(
     private var renderQueued = false
     private var ecoMode = false
     var onNotice: ((String) -> Unit)? = null
+    /** A window's ⚙ was tapped. */
+    var onSettings: ((String) -> Unit)? = null
 
     /** Battery: hidden WebViews are paused (always) and heavy widgets load one at a time (eco). */
     fun setEcoMode(eco: Boolean) {
@@ -150,6 +152,7 @@ class DesktopHostView @JvmOverloads constructor(
                 WidgetView(context).also { nv ->
                     nv.onClose = { id -> DesktopBridge.mutate { dd -> dd.copy(widgets = dd.widgets.filterNot { it.id == id }) } }
                     nv.onFocus = { id -> focus(id) }
+                    nv.onSettings = { id -> focus(id); onSettings?.invoke(id) }
                     nv.onStateChange = { id, st -> DesktopBridge.mutateWidget(id, pushUndo = false, quiet = st.keys.all { it.startsWith("app.__") }) { it.withState(st) } }
                     // The page the user navigated to becomes the widget's source (so a restart
                     // reopens it); titles the app made up from a host ("archive.org") follow

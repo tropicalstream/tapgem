@@ -93,6 +93,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     var onClose: ((String) -> Unit)? = null
     var onFocus: ((String) -> Unit)? = null
+    /** The ⚙ in the title bar: open this window's settings sheet. */
+    var onSettings: ((String) -> Unit)? = null
     /** Persist small runtime state (playback position, page counts) without undo. */
     var onStateChange: ((String, Map<String, String>) -> Unit)? = null
     /** A web widget navigated: (id, url, host) — the host view records the page and refreshes an auto title. */
@@ -103,6 +105,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private val titleBar = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     private val titleText = TextView(context).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTypeface(Typeface.DEFAULT_BOLD) }
     private val closeBtn = TextView(context).apply { text = "✕"; gravity = Gravity.CENTER; isClickable = true; isFocusable = true; contentDescription = "Close" }
+    private val settingsBtn = TextView(context).apply { text = "⚙"; gravity = Gravity.CENTER; isClickable = true; isFocusable = true; contentDescription = "Settings" }
     private val content = FrameLayout(context)
     private val errorLabel = TextView(context).apply {
         visibility = GONE; gravity = Gravity.CENTER; setTextColor(0xFFFFB4B4.toInt()); setBackgroundColor(0xB3000000.toInt())
@@ -140,6 +143,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         background = bg
         addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         titleBar.addView(titleText, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = 8 })
+        titleBar.addView(settingsBtn, LinearLayout.LayoutParams(22, TITLE_H))
         titleBar.addView(closeBtn, LinearLayout.LayoutParams(22, TITLE_H))
         addView(titleBar, LayoutParams(LayoutParams.MATCH_PARENT, TITLE_H, Gravity.TOP))
         addView(dimOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -147,6 +151,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         addView(errorLabel, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         addView(handle, LayoutParams(HANDLE, HANDLE, Gravity.BOTTOM or Gravity.END))
         closeBtn.setOnClickListener { onClose?.invoke(widget.id) }
+        settingsBtn.setOnClickListener { onSettings?.invoke(widget.id) }
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -175,7 +180,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         localX >= width - HANDLE - 6 && localY >= height - HANDLE - 6
 
     fun isOnTitleBar(localX: Float, localY: Float): Boolean =
-        chromeVisible() && localY < TITLE_H && localX < width - 24
+        chromeVisible() && localY < TITLE_H && localX < width - 46   // ⚙ and ✕ live in the last 46 px
 
     /**
      * Where a press-and-hold grabs the window: the title bar when shown;
@@ -207,6 +212,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         applyEcoCss()
         applyDim()
         tickerView?.setEco(on)
+        clockFace?.let { it.ecoMode = on; clockRunnable?.let { r -> main.removeCallbacks(r); main.post(r) } }
         // On battery, pages may not start media on their own (YouTube autoplay after a reload
         // is a full decode + network load nobody asked for); a tap — ours or the user's — still counts.
         if (widget.type == WidgetType.WEB) runCatching { webView?.settings?.mediaPlaybackRequiresUserGesture = on }
@@ -387,6 +393,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
         titleText.setTextSize(TypedValue.COMPLEX_UNIT_PX, 11f * theme.fontScale)
         closeBtn.setTextColor(theme.accent)
         closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, 12f)
+        settingsBtn.setTextColor(ColorUtil.withAlpha(theme.accent, 0.85f))
+        settingsBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, 12f)
         titleBar.setBackgroundColor(ColorUtil.withAlpha(theme.accent, if (active) 0.42f else if (mode == DesktopMode.HUD) 0.16f else 0.22f))
         (content.layoutParams as LayoutParams).topMargin = if (show) TITLE_H else 0
         content.requestLayout()
@@ -473,7 +481,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun unbindContent() {
         contentGen++
         appSnapshotRunnable?.let { main.removeCallbacks(it) }; appSnapshotRunnable = null; lastAppSnapshot = null
-        clockRunnable?.let { main.removeCallbacks(it) }; clockRunnable = null
+        clockRunnable?.let { main.removeCallbacks(it) }; clockRunnable = null; clockFace = null
         tickerView = null
         audioProgress?.let { main.removeCallbacks(it) }; audioProgress = null
         runCatching { mediaPlayer?.stop() }; runCatching { mediaPlayer?.release() }; mediaPlayer = null; mediaPrepared = false
@@ -516,22 +524,27 @@ class WidgetView(context: Context) : FrameLayout(context) {
         foot.text = if (widget.updatedAt > 0) "updated " + SimpleDateFormat("h:mm a", Locale.US).format(Date(widget.updatedAt)) else "…"
     }
 
+    private var clockFace: ClockFaceView? = null
+
+    private fun clockConfig(): ClockFaceView.Config = ClockFaceView.configOf(
+        widget, textColor = widget.style.textColor ?: theme.text, accent = theme.accent, fontScale = widget.style.fontSize?.let { it / 14f } ?: theme.fontScale,
+        default24 = android.text.format.DateFormat.is24HourFormat(context))
+
     private fun buildClock() {
-        val showDate = widget.source.contains("date")
-        val time = textView(textSize(if (showDate) 26f else 30f)).apply { gravity = Gravity.CENTER; setTypeface(Typeface.DEFAULT_BOLD); setPadding(4, 2, 4, 0) }
-        val date = textView(textSize(11f)).apply { gravity = Gravity.CENTER; setPadding(4, 0, 4, 4); visibility = if (showDate) VISIBLE else GONE }
-        val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        col.addView(time); col.addView(date)
-        content.addView(col, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        val tf = SimpleDateFormat(if (widget.source.contains("seconds")) "HH:mm:ss" else "HH:mm", Locale.US)
-        val df = SimpleDateFormat("EEEE, MMM d", Locale.US)
+        val face = ClockFaceView(context).apply { setConfig(clockConfig()); ecoMode = eco }
+        clockFace = face
+        content.addView(face, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply { setMargins(4, 2, 4, 2) })
         val r = object : Runnable {
-            override fun run() {
-                val now = Date(); time.text = tf.format(now); date.text = df.format(now)
-                main.postDelayed(this, if (widget.source.contains("seconds")) 1_000L else 15_000L)
-            }
+            override fun run() { face.invalidate(); main.postDelayed(this, face.tickMs()) }
         }
         clockRunnable = r; main.post(r)
+    }
+
+    /** Style / hours / zones changed: reconfigure in place and re-time the ticks. */
+    private fun applyClockState() {
+        val face = clockFace ?: return
+        face.setConfig(clockConfig())
+        clockRunnable?.let { main.removeCallbacks(it); main.post(it) }
     }
 
     private fun buildImage() {
@@ -1045,7 +1058,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             WidgetType.IMAGE -> if (old["reload"] != new["reload"]) (content.getChildAt(0) as? ImageView)?.let { loadImageInto(it, widget.source) }
             WidgetType.TICKER -> tickerView?.setItems(tickerItems())
-            WidgetType.CLOCK -> {}
+            WidgetType.CLOCK -> applyClockState()
         }
     }
 

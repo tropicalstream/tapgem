@@ -41,6 +41,8 @@ import com.tapgem.app.core.model.Widget
 import com.tapgem.app.core.store.Bookmarks
 import com.tapgem.app.core.tools.BookmarkTool
 import com.tapgem.app.ui.BookmarkPanel
+import com.tapgem.app.ui.WidgetSettingsPanel
+import com.tapgem.app.core.bridge.SettingsBridge
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -184,7 +186,8 @@ class MainActivity : AppCompatActivity() {
         DesktopBridge.thumbnailRenderer = null
         WebCommandBus.displayCapturer = null
         BookmarksBridge.panel = null; BookmarksBridge.thumbnailer = null; BookmarksBridge.freezer = null
-        bookmarkSub?.runCatching { close() }
+        bookmarkSub?.runCatching { close() }; desktopSub?.runCatching { close() }
+        SettingsBridge.opener = null; host.onSettings = null
         DesktopBridge.saveNow()
         if (serviceBound) runCatching { unbindService(serviceConnection) }
         serviceBound = false
@@ -519,6 +522,43 @@ class MainActivity : AppCompatActivity() {
         BookmarksBridge.panel = { show -> showBookmarkPanel(show) }
         BookmarksBridge.thumbnailer = { id -> host.renderWidgetThumbnail(id) }
         BookmarksBridge.freezer = { id, done -> host.snapshotAppState(id, done) }
+        setupSettingsSheet()
+    }
+
+    // ── per-window settings (the ⚙ in a title bar / "open the clock settings") ──
+
+    private lateinit var settingsPanel: WidgetSettingsPanel
+    private var desktopSub: AutoCloseable? = null
+
+    private fun setupSettingsSheet() {
+        val overlay = findViewById<ViewGroup>(R.id.overlay)
+        settingsPanel = WidgetSettingsPanel(this)
+        overlay.addView(settingsPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
+        settingsPanel.onClose = { showSettings(null) }
+        settingsPanel.onEdit = { id, t -> DesktopBridge.mutateWidget(id, transform = t) }
+        host.onSettings = { id -> showSettings(id) }
+        SettingsBridge.opener = { id -> showSettings(id) }
+        // Voice changes the same widget the sheet shows: keep the chips in step.
+        desktopSub = DesktopBridge.observe { d -> uiHandler.post {
+            val id = settingsPanel.widgetId ?: return@post
+            if (!settingsPanel.isVisible) return@post
+            val w = d.widget(id)
+            if (w == null) showSettings(null) else settingsPanel.show(w, d.theme)
+        } }
+    }
+
+    private fun showSettings(id: String?) {
+        val w = id?.let { DesktopBridge.current().widget(it) }
+        if (w == null) { settingsPanel.visibility = View.GONE; return }
+        showBookmarkPanel(false)
+        settingsPanel.show(w, DesktopBridge.current().theme)
+        // Under the window's title bar, kept inside the canvas.
+        settingsPanel.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.AT_MOST), View.MeasureSpec.makeMeasureSpec(430, View.MeasureSpec.AT_MOST))
+        val pw = settingsPanel.measuredWidth; val ph = settingsPanel.measuredHeight
+        val lp = settingsPanel.layoutParams as FrameLayout.LayoutParams
+        lp.leftMargin = (w.x + 4).coerceIn(4, (640 - pw - 4).coerceAtLeast(4))
+        lp.topMargin = (w.y + com.tapgem.app.ui.WidgetView.TITLE_H + 4).coerceIn(44, (480 - ph - 4).coerceAtLeast(44))
+        settingsPanel.layoutParams = lp
     }
 
     private fun activeWidget(): Widget? = DesktopBridge.activeWidgetId?.let { DesktopBridge.current().widget(it) }
@@ -919,9 +959,12 @@ class MainActivity : AppCompatActivity() {
         edgeScroller.stop()
         if (host.endInteraction()) { showNotice("Placed"); return }
         val overlayHit = findOverlayHit(cursorX, cursorY)
-        // A tap anywhere outside the open bookmarks drawer closes it (and does nothing else).
+        // A tap anywhere outside the open bookmarks drawer / settings sheet closes it (and does nothing else).
         if (bookmarkPanel.isVisible && (overlayHit == null || !isInside(overlayHit.view, bookmarkPanel)) && overlayHit?.view?.id != R.id.bookmarkBtn) {
             showBookmarkPanel(false); return
+        }
+        if (settingsPanel.isVisible && (overlayHit == null || !isInside(overlayHit.view, settingsPanel))) {
+            showSettings(null); return
         }
         if (overlayHit != null) {
             if (overlayHit.isInteractive) dispatchSyntheticTap(overlayHit.view)

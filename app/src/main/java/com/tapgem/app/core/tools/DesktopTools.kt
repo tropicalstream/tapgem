@@ -331,7 +331,15 @@ object WidgetOps {
             }
             WidgetType.CLOCK -> {
                 source = args.str("format")?.lowercase(Locale.US) ?: "time+date"
-                title = title ?: "Clock"
+                val (st, bad) = WidgetOps.clockState(args, emptyMap())
+                state.putAll(st)
+                bad?.let { warnings += it }
+                val zones = st["zones"]?.split(',')?.filter { it.isNotBlank() && it != "local" } ?: emptyList()
+                title = title ?: when {
+                    zones.size > 1 -> "World Clock"
+                    zones.size == 1 -> com.tapgem.app.core.model.WorldClocks.label(zones[0])
+                    else -> "Clock"
+                }
             }
             WidgetType.LIVE -> {
                 val q = query ?: args.str("text", "prompt")
@@ -457,8 +465,8 @@ object WidgetOps {
                     return@withContext Result.success("Showing \"$t\" in the open Maps window (id ${maps.id}).$note")
                 }
             }
-            val key = dedupeKey(type, source)
-            val dup = DesktopBridge.current().widgets.firstOrNull { dedupeKey(it.type, it.source) == key }
+            val key = dedupeKey(type, source, state["zones"])
+            val dup = DesktopBridge.current().widgets.firstOrNull { dedupeKey(it.type, it.source, it.state["zones"]) == key }
             if (dup != null) {
                 DesktopBridge.mutate(pushUndo = false) { d -> d.widget(dup.id)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d }
                 DesktopBridge.setActive(dup.id)
@@ -600,6 +608,46 @@ object WidgetOps {
             " Say next step / previous step / stop navigation.$quality")
     }
 
+    /**
+     * Clock settings from tool args → state delta: style (digital|thin|led|analog|modern), hours (12|24),
+     * seconds/date (true|false), zones (cities / zone ids, comma-separated; add_zone / remove_zone edit the
+     * list). Returns the delta and a warning for names it couldn't place.
+     */
+    fun clockState(args: Args, current: Map<String, String>): Pair<Map<String, String>, String?> {
+        val out = HashMap<String, String>()
+        var warn: String? = null
+        args.str("style", "look", "face", "clock_style")?.let { raw ->
+            val st = com.tapgem.app.ui.ClockFaceView.parseStyle(raw)
+            if (st != null) out["style"] = st else warn = "unknown clock style \"$raw\" — use digital, thin, led, analog or modern"
+        }
+        args.str("hours", "hour_format", "clock_hours")?.let { h ->
+            val v = h.filter { it.isDigit() }
+            if (v == "12" || v == "24") out["hours"] = v
+        }
+        args.bool("seconds", "show_seconds")?.let { out["seconds"] = it.toString() }
+        args.bool("date", "show_date")?.let { out["date"] = it.toString() }
+        val unknown = ArrayList<String>()
+        fun zonesOf(raw: String): List<String> = raw.split(Regex("\\s*(,|;|\\band\\b|\\+)\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+            .mapNotNull { name -> com.tapgem.app.core.model.WorldClocks.resolve(name)?.let { if (it.isBlank()) "local" else it } ?: run { unknown += name; null } }
+        args.str("zones", "cities", "timezones", "time_zones", "timezone", "time_zone", "zone", "city")?.let { raw ->
+            val z = zonesOf(raw)
+            if (z.isNotEmpty()) out["zones"] = z.distinct().joinToString(",")
+        }
+        args.str("add_zone", "add_city")?.let { raw ->
+            val cur = current["zones"]?.split(',')?.filter { it.isNotBlank() } ?: listOf("local")
+            val z = (cur + zonesOf(raw)).distinct()
+            if (z != cur) out["zones"] = z.joinToString(",")
+        }
+        args.str("remove_zone", "remove_city")?.let { raw ->
+            val cur = current["zones"]?.split(',')?.filter { it.isNotBlank() } ?: listOf("local")
+            val gone = zonesOf(raw).toSet()
+            val z = cur.filter { it !in gone }.ifEmpty { listOf("local") }
+            if (z != cur) out["zones"] = z.joinToString(",")
+        }
+        if (unknown.isNotEmpty()) warn = (warn?.let { "$it; " } ?: "") + "I don't know the time zone for ${unknown.joinToString(", ") { "\"$it\"" }} — say the nearest big city"
+        return out to warn
+    }
+
     /** Same type + same normalised content = the same window. */
     private val PLACES_WORDS = Regex("\\b(near|nearby|around|close to|on the way|along|restaurants?|food|eat|lunch|dinner|breakfast|brunch|coffee|caf[eé]s?|bars?|pubs?|gas|fuel|charg(?:er|ing)|hotels?|motels?|pharmac(?:y|ies)|grocer(?:y|ies)|supermarkets?|shops?|stores?|parks?|playgrounds?|gyms?|things to do|best|good|top|cheap|open now|atms?|banks?|parking|hospitals?|clinics?|dentists?|vets?)\\b", RegexOption.IGNORE_CASE)
 
@@ -615,13 +663,14 @@ object WidgetOps {
         return Regex("^https?://(www\\.)?google\\.[a-z.]+/maps").containsMatchIn(u) || u.startsWith("https://maps.google.") || u.startsWith("https://maps.app.goo.gl")
     }
 
-    fun dedupeKey(type: WidgetType, source: String): String {
+    fun dedupeKey(type: WidgetType, source: String, zones: String? = null): String {
         val s = source.trim().lowercase(Locale.US)
         val norm = when (type) {
             WidgetType.WEB -> s.removePrefix("https://").removePrefix("http://").removePrefix("www.").removePrefix("m.").trimEnd('/')
             WidgetType.LIVE, WidgetType.TICKER -> s.replace(Regex("[^a-z0-9 ]"), "").replace(Regex("\\s+"), " ")
             WidgetType.TEXT -> if (s.startsWith("prompt:") || s.startsWith("file:")) s else "text:" + s.hashCode()
-            WidgetType.CLOCK -> "clock"
+            // One clock per set of cities: a Tokyo clock beside the local one is fine, two local clocks aren't.
+            WidgetType.CLOCK -> "clock:" + (zones?.lowercase(Locale.US)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.sorted()?.joinToString(",") ?: "local")
             else -> s
         }
         return "${type.name}|$norm"
@@ -667,7 +716,9 @@ class WidgetTool(private val context: Context) : AiTool {
             "pin", "unpin", "stay_on_top", "on_top", "always_on_top", "toggle_pin", "toggle_on_top", "keep_on_top" -> pin(args)
             "navigate", "control", "nav" -> navigate(args)
             "refresh", "reload", "update_now" -> refresh(args)
-            else -> Result.failure(IllegalArgumentException("Unknown widget action '${args.action}'. Use add, update, remove, move, resize, front, list, navigate, refresh."))
+            "settings", "options", "preferences", "configure", "open_settings" -> settings(args)
+            "close_settings", "hide_settings" -> { com.tapgem.app.core.bridge.SettingsBridge.close(); Result.success("Settings closed.") }
+            else -> Result.failure(IllegalArgumentException("Unknown widget action '${args.action}'. Use add, update, remove, move, resize, front, list, navigate, refresh, settings."))
         }
     }
 
@@ -737,7 +788,12 @@ class WidgetTool(private val context: Context) : AiTool {
                     .withState("zoom" to (args.int("zoom") ?: Geocoder.zoomFor(geo.kind, n.state["zoom"]?.toIntOrNull() ?: 13)).coerceIn(1, 18).toString())
                 changes += "map moved to ${geo.label}"
             } else if (f.type == WidgetType.MAP) args.int("zoom")?.let { z -> n = n.withState("zoom" to z.coerceIn(1, 18).toString()); changes += "zoom $z" }
-            if (f.type == WidgetType.CLOCK) args.str("format")?.let { fm -> n = n.copy(source = fm.lowercase(Locale.US)); changes += "format $fm" }
+            if (f.type == WidgetType.CLOCK) {
+                args.str("format")?.let { fm -> n = n.copy(source = fm.lowercase(Locale.US)); changes += "format $fm" }
+                val (st, bad) = WidgetOps.clockState(args, n.state)
+                if (st.isNotEmpty()) { n = n.withState(st); changes += st.entries.joinToString(", ") { (k, v) -> "$k $v" } }
+                bad?.let { warnings += it }
+            }
             newSource?.let { s ->
                 n = n.copy(source = s, content = newSourceText ?: n.content).withState("reload" to System.currentTimeMillis().toString())
                 changes += "source changed"
@@ -822,6 +878,24 @@ class WidgetTool(private val context: Context) : AiTool {
         if (want == w.onTop) return Result.success(if (want) "\"${w.title}\" already stays on top." else "\"${w.title}\" wasn't pinned on top.")
         DesktopBridge.mutateWidget(w.id) { it.copy(onTop = want) }
         return Result.success(if (want) "\"${w.title}\" now stays on top of every other window." else "\"${w.title}\" no longer stays on top.")
+    }
+
+    /** Open the window's settings sheet (what its ⚙ shows); the model can also change the same things with update. */
+    private fun settings(args: Args): Result<String> {
+        val w = resolve(args) ?: return missing(args)
+        DesktopBridge.setActive(w.id)
+        com.tapgem.app.core.bridge.SettingsBridge.open(w.id)
+        val what = when (w.type) {
+            WidgetType.CLOCK -> {
+                val cfg = com.tapgem.app.ui.ClockFaceView.configOf(w, 0, 0, 1f, false)
+                "style ${cfg.style}, ${if (cfg.hours24) "24" else "12"}-hour, seconds ${if (cfg.seconds) "on" else "off"}, date ${if (cfg.date) "on" else "off"}, " +
+                    "cities ${cfg.zones.joinToString(", ") { com.tapgem.app.core.model.WorldClocks.label(it) }}. Styles: digital, thin, led, analog, modern; " +
+                    "change with widget action=update style=… hours=12|24 seconds=… date=… zones=<cities> (or add_zone / remove_zone)"
+            }
+            WidgetType.LIVE, WidgetType.TICKER -> "refresh every ${w.refreshSec}s (refresh_seconds), opacity ${(w.style.opacity * 100).toInt()}%, stay on top ${w.onTop}"
+            else -> "opacity ${(w.style.opacity * 100).toInt()}%, stay on top ${w.onTop}, text size ${w.style.fontSize ?: "default"}"
+        }
+        return Result.success("Opened the settings for \"${w.title}\": $what.")
     }
 
     private fun front(args: Args): Result<String> {

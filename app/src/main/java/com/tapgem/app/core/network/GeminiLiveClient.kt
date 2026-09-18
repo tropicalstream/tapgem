@@ -84,6 +84,13 @@ class GeminiLiveClient(
                 "value=6; on a Google Maps or any web window → web action=zoom direction=in|out — also ONE call, two levels; never by clicking around). \"Where am I?\" → desktop action=locate. A plain map window (no directions) is a web " +
                 "window: search, directions, 'what's nearby' all happen through the web tool. Only " +
                 "style=simple opens the tile map (zoom 1-18).\n" +
+                "- CLOCKS: five faces — digital, thin, led, analog, modern — plus 12/24 h, seconds, date and world " +
+                "cities. \"Make the clock analog\" / \"switch to 24 hour\" / \"show seconds\" → widget action=update " +
+                "style|hours|seconds; \"add a Tokyo clock\" → add type=clock zones=Tokyo; \"world clock with London, " +
+                "Tokyo and New York\" → add type=clock zones='London, Tokyo, New York' (one window, several cities); " +
+                "\"add Paris to the clock\" → update add_zone=Paris. \"Open the clock settings\" / \"settings for the " +
+                "ticker\" / \"window options\" → widget action=settings (every window has a ⚙ sheet: clocks their " +
+                "faces and cities, cards their refresh rate, all windows stay-on-top, opacity, text size).\n" +
                 "- \"Stock ticker\", \"news crawl\", \"scores ticker\" → widget action=add type=ticker " +
                 "query=<what> — it scrolls along the bottom by default; refresh_seconds for how often.\n" +
                 "- WEB PAGES are operated through the web tool. Every result tells you where the page is " +
@@ -404,13 +411,13 @@ class GeminiLiveClient(
                 "gap" to "arrange: gap between windows in px (default 8).")))
         .put(decl("widget",
             "Add, change, move, resize, style, refresh, navigate or remove one widget. " +
-                "add needs type; content by type: text (text, or prompt= to generate), clock (format), " +
+                "add needs type; content by type: text (text, or prompt= to generate), clock (style, hours, seconds, date, zones), " +
                 "live (query), image/video/audio/pdf/epub/model3d (path or url — use media find first for " +
                 "local files), web (url), app (via app_builder), map (query=place, zoom). Position via x,y or " +
                 "anchor; size via w,h or size name. navigate: nav=next|prev|page|chapter|play|pause|mute|" +
                 "unmute|loop|reload|url|seek with value. Identify existing widgets by id, title, or type; " +
                 "use new_title to rename. pin: keep a window/ticker above all others (on_top=true|false|toggle).",
-            mapOf("action" to "add|update|remove|move|resize|front|pin|list|navigate|refresh",
+            mapOf("action" to "add|update|remove|move|resize|front|pin|list|navigate|refresh|settings",
                 "id" to "Widget id or title (fuzzy) for non-add actions; or 'last'.",
                 "type" to "add: text|clock|live|ticker|image|video|audio|pdf|epub|web|app|model3d|map.",
                 "new_window" to "add: true to open a second window even if the same content is already open.",
@@ -427,6 +434,11 @@ class GeminiLiveClient(
                 "url" to "web/image/video/audio/pdf/epub/model3d: http(s) URL.",
                 "path" to "Local file path from media find.",
                 "format" to "clock: time | time+date | time+seconds.",
+                "style" to "clock: digital|thin|led|analog|modern (the five faces).",
+                "hours" to "clock: 12|24.",
+                "seconds" to "clock: true|false — show seconds / a second hand.",
+                "date" to "clock: true|false — show the date.",
+                "zones" to "clock: world-clock cities or zone ids, comma-separated ('Tokyo, London'; 'local' = here). add_zone / remove_zone edit the list.",
                 "zoom" to "map style=simple: 1 (world) to 18 (street); default 13.") + geometryProps + mapOf(
                 "dx" to "move: horizontal delta px.", "dy" to "move: vertical delta px.",
                 "scale" to "resize: multiply size (1.5 bigger, 0.7 smaller).",
