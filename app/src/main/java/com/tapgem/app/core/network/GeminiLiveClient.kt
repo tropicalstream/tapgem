@@ -65,15 +65,23 @@ class GeminiLiveClient(
                 "scale=1.5|0.7. Unnamed 'it / this window' means the active window. Never use arrange for a " +
                 "single window's size — arrange moves every other window too.\n" +
                 "- ONE REQUEST = ONE WINDOW. Never add a second copy of a page, card or ticker the desktop " +
-                "already has (describe lists them): navigate the open web window with web action=url, " +
-                "bring a window forward with widget action=front, change a card with widget action=update. " +
-                "Only pass new_window=true when the user explicitly asks for another window.\n" +
+                "already has (describe lists them): bring it forward with widget action=front, change a card " +
+                "with widget action=update, move within the SAME site with web action=url. A window is reused " +
+                "only for its own site: a Radio Garden or YouTube window is never sent to Google Maps or " +
+                "Spotify — a different site gets its own window (the user keeps what was open). Only pass " +
+                "new_window=true when the user explicitly asks for a second window of the same site.\n" +
                 "- \"Show a map of <place>\" / \"navigate to <place>\" / \"map of where I am\" → widget " +
-                "action=add type=map query=<place>. NAVIGATION: directions=true (travel_mode walking|driving|" +
+                "action=add type=map query=<place>. Places and errands — restaurants, coffee, gas, 'near me', " +
+                "'on the way to X', 'what's around here' — are map requests too: type=map query=<what> near " +
+                "<where> (while navigating, 'on the way' means near the destination or route), never a " +
+                "web search in some other window. NAVIGATION: directions=true (travel_mode walking|driving|" +
                 "bicycling) starts TapGem's own turn-by-turn from the glasses' position: the route is drawn on the " +
-                "map with the current step; read the tool result aloud (it holds the first step). Then 'next step' " +
-                "/ 'previous step' / 'repeat' / 'stop navigation' → widget action=navigate nav=next|prev|repeat|stop " +
-                "on that map. \"Where am I?\" → desktop action=locate. A plain map window (no directions) is a web " +
+                "map with the current step; read the tool result aloud (it holds the first step). 'Take me to X on " +
+                "the way to Y' / 'stop at X first' → query=Y via=X (the route goes through X, then on to Y). Then " +
+                "'next step' / 'previous step' / 'repeat' / 'stop navigation' → widget action=navigate " +
+                "nav=next|prev|repeat|stop on that map; 'zoom in / zoom out / recenter' on it → nav=in|out|center " +
+                "(exactly ONE call per request — a single call already zooms two levels; 'a lot' / 'all the way' → " +
+                "value=6; on a Google Maps or any web window → web action=zoom direction=in|out — also ONE call, two levels; never by clicking around). \"Where am I?\" → desktop action=locate. A plain map window (no directions) is a web " +
                 "window: search, directions, 'what's nearby' all happen through the web tool. Only " +
                 "style=simple opens the tile map (zoom 1-18).\n" +
                 "- \"Stock ticker\", \"news crawl\", \"scores ticker\" → widget action=add type=ticker " +
@@ -96,6 +104,11 @@ class GeminiLiveClient(
                 "Garden, the Internet Archive) → widget action=add type=web with the obvious URL, or " +
                 "web action=url in the open web window. Nothing on this device has a keyboard — typing " +
                 "only happens through the web tool.\n" +
+                "- \"Bookmark this / save the checkers game for later / keep this window\" → bookmark action=save " +
+                "(the active window unless one is named). \"Open my checkers bookmark / bring back the radio\" → " +
+                "bookmark action=open name=<it>. \"Show / hide my bookmarks\" → action=show|hide; \"forget the … " +
+                "bookmark\" → action=delete. Bookmarks are not desktops: a desktop is the whole layout (save/load), " +
+                "a bookmark is one window you can drop onto any desktop.\n" +
                 "- Media the user names (\"my vacation video\", \"the Tolkien ebook\"): media action=find, " +
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
                 "- Wallpaper/background requests: wallpaper action=set with a vivid visual description " +
@@ -395,6 +408,7 @@ class GeminiLiveClient(
                 "on_top" to "pin/update: true = stay on top of all other windows, false = stop, toggle = flip.",
                 "directions" to "map: true for navigation/directions to the place.",
                 "travel_mode" to "map directions: driving|walking|bicycling|transit.",
+                "via" to "map directions: stop(s) to route through first, comma-separated ('Glenview Taqueria').",
                 "style" to "map: google (default) | simple (clean offline-style tile map).",
                 "title" to "add: display title. Other actions: identifies the widget (does NOT rename).",
                 "new_title" to "update: rename the widget.",
@@ -420,15 +434,18 @@ class GeminiLiveClient(
         .put(decl("web",
             "Operate a web page or app widget like a user would. Every action's result reports the page " +
                 "it landed on, the items now on it (numbered; usable as index) and whether sound is playing. " +
-                "search: type text into the site's own search box and press enter (opens the box if it hides " +
-                "behind an icon). inspect: full numbered list of buttons, links, fields, rows and media, " +
+                "search: type text into the search box OF THE SITE ALREADY OPEN in the target window and press " +
+                "enter (opens the box if it hides behind an icon) — it searches within that site only, e.g. " +
+                "songs on Spotify, stations on Radio Garden; it is NOT a web search. Places, restaurants, " +
+                "'near me' → widget add type=map; facts → widget add type=live. inspect: full numbered list of buttons, links, fields, rows and media, " +
                 "including ones below the fold. read: page title and main text. click: the item whose " +
                 "visible text/label matches target_text, or index from the last list. type: put text into " +
                 "the field matched by field_text (label/placeholder); submit=true presses enter. press: a " +
                 "key (enter|escape|space|tab|arrow_down|arrow_up|backspace). scroll: direction " +
-                "up|down|left|right|top|bottom, amount px (default 300). play / pause: the page's media, " +
+                "up|down|left|right|top|bottom, amount px (default 300). zoom: direction in|out (Google Maps zooms " +
+                "the map; other pages scale). play / pause: the page's media, " +
                 "verified by sound. url: open a URL in the same widget. back, forward, reload.",
-            mapOf("action" to "search|inspect|read|click|type|press|scroll|play|pause|url|back|forward|reload",
+            mapOf("action" to "search|inspect|read|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
                 "target" to "Widget id/title; defaults to the most recent web or app widget.",
                 "target_text" to "click: visible text, aria-label or placeholder of the element.",
                 "index" to "click: number from the last inspect.",
@@ -436,9 +453,17 @@ class GeminiLiveClient(
                 "text" to "search / type: the text to enter.",
                 "submit" to "type: true to press enter after typing.",
                 "key" to "press: enter|escape|space|tab|arrow_down|arrow_up|backspace.",
-                "direction" to "scroll: up|down|left|right|top|bottom.",
+                "direction" to "scroll: up|down|left|right|top|bottom. zoom: in|out.",
                 "amount" to "scroll: pixels (default 300).",
                 "url" to "url: address to open.")))
+        .put(decl("bookmark",
+            "Windows saved for later, shared by every desktop, shown in the bookmarks panel (the ribbon " +
+                "next to the camera). save: snapshot a window with its current state (an app mid-game, a " +
+                "page, a PDF at its page); open: put a saved window on this desktop; list; delete; show/hide " +
+                "the panel.",
+            mapOf("action" to "save|open|list|delete|show|hide",
+                "target" to "save: the window to save (id/title; defaults to the active window).",
+                "name" to "save: a name for it (defaults to the window title). open/delete: which bookmark.")))
         .put(decl("theme",
             "Set the look of all widgets. Presets: midnight, neon, paper, forest, sunset, mono, ocean, wood (dark " +
                 "walnut grain with brass accents); " +

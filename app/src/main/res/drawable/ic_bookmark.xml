@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strip button: a ribbon bookmark with a small accent gem — tap to open saved windows. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path android:fillColor="#FFE0F4FF"
+        android:pathData="M7,2.5 H17 C18.1,2.5 19,3.4 19,4.5 V21 L12,16.6 L5,21 V4.5 C5,3.4 5.9,2.5 7,2.5 Z"/>
+    <path android:fillColor="#FF64D2FF"
+        android:pathData="M12,6.2 L13.6,8.9 L16.7,9.4 L14.4,11.6 L14.9,14.7 L12,13.2 L9.1,14.7 L9.6,11.6 L7.3,9.4 L10.4,8.9 Z"/>
+</vector>

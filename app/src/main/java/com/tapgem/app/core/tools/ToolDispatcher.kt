@@ -11,7 +11,7 @@ class ToolDispatcher(context: Context) {
 
     private val tools: Map<String, AiTool> = listOf(
         DesktopTool(context), WidgetTool(context), ThemeTool(), WallpaperTool(context),
-        AppBuilderTool(context), MediaTool(context), WebTool()
+        AppBuilderTool(context), MediaTool(context), WebTool(context), BookmarkTool()
     ).associateBy { it.name }
 
     fun isSupported(name: String): Boolean = tools.containsKey(name.trim())

@@ -33,6 +33,7 @@ object DesktopStore {
     private val ioLock = Any()
     private val tmpSeq = AtomicLong()
 
+    val appFilesDir: File get() = app.filesDir
     val desktopsDir: File get() = File(app.filesDir, "desktops").apply { mkdirs() }
     val wallpapersDir: File get() = File(app.filesDir, "wallpapers").apply { mkdirs() }
     val appsDir: File get() = File(app.filesDir, "apps").apply { mkdirs() }

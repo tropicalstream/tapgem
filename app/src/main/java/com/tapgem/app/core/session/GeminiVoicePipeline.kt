@@ -302,10 +302,11 @@ class GeminiVoicePipeline(context: Context) {
                 }
                 // The model re-issuing the very same call is the "second-guessing" loop: name it, so it moves on.
                 val key = toolName + normalizeArgs(args)
-                if (key == lastToolKey && toolName == "web" && !key.contains("\"action\":\"inspect\"")) {
+                val readOnly = Regex("\"action\":\"(inspect|read|describe|list|usage|locate|phone_gps)\"").containsMatchIn(key)
+                if (key == lastToolKey && resultText == lastToolResult && !readOnly) {
                     resultText = "You already made this exact call and the result is the same — do something different or tell the user what is blocking. $resultText"
                 }
-                lastToolKey = key
+                lastToolKey = key; lastToolResult = resultText
                 Log.i(TAG, "tool result $toolName: '${resultText.take(200)}'")
                 if (!isSessionEpochCurrent(epoch)) return@launch
                 if (cancelledToolIds.remove(callId)) { Log.i(TAG, "result for cancelled tool $callId dropped"); return@launch }
@@ -332,6 +333,7 @@ class GeminiVoicePipeline(context: Context) {
     }
 
     private var lastToolKey: String? = null
+    private var lastToolResult: String? = null
 
     /** JSON args with keys sorted, so the same call in a different key order compares equal. */
     private fun normalizeArgs(args: String): String = runCatching {

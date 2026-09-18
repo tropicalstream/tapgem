@@ -121,6 +121,13 @@
       ctx.strokeStyle = '#64D2FF'; ctx.lineWidth = 5; ctx.stroke();
       var last = route.coords[route.coords.length - 1], d = toPx(last[1], last[0], z, ox, oy);
       ctx.beginPath(); ctx.arc(d[0], d[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#FF375F'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+      // Intermediate stops: numbered orange pins with their name.
+      if (route.via) for (var v = 0; v < route.via.length; v++) {
+        var vp = toPx(route.via[v].lat, route.via[v].lon, z, ox, oy);
+        ctx.beginPath(); ctx.arc(vp[0], vp[1], 8, 0, Math.PI * 2); ctx.fillStyle = '#FF9F0A'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+        ctx.fillStyle = '#000'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(v + 1), vp[0], vp[1] + 0.5);
+        if (z >= 13 && route.via[v].label) { ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.9)'; ctx.strokeText(route.via[v].label, vp[0] + 11, vp[1]); ctx.fillStyle = '#FFD60A'; ctx.fillText(route.via[v].label, vp[0] + 11, vp[1]); }
+      }
       if (route.steps && route.steps[stepIdx]) {
         var st = route.steps[stepIdx], sp = toPx(st.lat, st.lon, z, ox, oy);
         ctx.beginPath(); ctx.arc(sp[0], sp[1], 9, 0, Math.PI * 2); ctx.strokeStyle = '#FFD60A'; ctx.lineWidth = 3; ctx.stroke();
@@ -148,10 +155,11 @@
     document.getElementById('pin').style.display = 'none'; document.getElementById('label').style.display = 'none';
   }
   window.setRoute = function (r) { route = (typeof r === 'string') ? JSON.parse(r) : r; stepIdx = 0; if (route && route.coords && route.coords.length) { var c0 = route.coords[0]; home = { lat: c0[1], lon: c0[0] }; } showStep(); window.setStep(0); return 'route set'; };
-  window.setStep = function (i) { if (!route || !route.steps) return 'no route'; stepIdx = Math.max(0, Math.min(i, route.steps.length - 1)); var st = route.steps[stepIdx]; st_center(st.lat, st.lon, 17); showStep(); return route.steps[stepIdx].text; };
+  var navZoom = 17;   // the user's zoom while navigating: "zoom out" must survive the next step's recentre
+  window.setStep = function (i) { if (!route || !route.steps) return 'no route'; stepIdx = Math.max(0, Math.min(i, route.steps.length - 1)); var st = route.steps[stepIdx]; st_center(st.lat, st.lon, navZoom); showStep(); return route.steps[stepIdx].text; };
   window.setPosition = function (lat, lon, acc, follow) { pos = { lat: lat, lon: lon, acc: acc || 0 }; if (follow) { st.lat = lat; st.lon = lon; } render(); return 'ok'; };
   function st_center(lat, lon, zoom) { st.lat = lat; st.lon = lon; if (zoom) st.zoom = zoom; render(); }
-  function setZoom(z) { st.zoom = Math.max(1, Math.min(18, Math.round(z))); render(); return 'zoom ' + st.zoom; }
+  function setZoom(z) { st.zoom = Math.max(1, Math.min(18, Math.round(z))); if (route) navZoom = st.zoom; render(); return 'zoom ' + st.zoom; }
   function panPx(dx, dy) {
     var c = world(st.lat, st.lon, st.zoom), p = unworld(c.x + dx, c.y + dy, st.zoom);
     st.lat = Math.max(-85, Math.min(85, p.lat)); st.lon = ((p.lon + 540) % 360) - 180; render();
@@ -163,7 +171,7 @@
     else if (dir === 'south' || dir === 'down') panPx(0, a);
     else if (dir === 'east' || dir === 'right') panPx(a, 0);
     else if (dir === 'west' || dir === 'left') panPx(-a, 0);
-    else if (dir === 'center' || dir === 'home' || dir === 'top') { st.lat = home.lat; st.lon = home.lon; render(); return 'recentered'; }
+    else if (dir === 'center' || dir === 'home' || dir === 'top') { if (route && route.steps) { var cs = route.steps[stepIdx]; st.lat = cs.lat; st.lon = cs.lon; } else { st.lat = home.lat; st.lon = home.lon; } render(); return 'recentered'; }
     else return 'unknown direction ' + dir;
     return 'panned ' + dir;
   }
@@ -173,6 +181,7 @@
     render(); return 'ok';
   }
   window.setZoom = setZoom; window.panBy = panBy; window.recenter = function () { return panBy('center'); }; window.setCenter = setCenter;
+  window.__mapState = function () { return { zoom: st.zoom, navZoom: navZoom, step: stepIdx, lat: st.lat, lon: st.lon, steps: route && route.steps ? route.steps.map(function (s) { return s.text; }) : null }; };
   window.__tgScroll = function (dir, amount) { return panBy(dir, amount); };
 
   document.getElementById('zin').addEventListener('click', function () { setZoom(st.zoom + 1); });

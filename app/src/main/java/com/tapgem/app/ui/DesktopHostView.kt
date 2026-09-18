@@ -150,7 +150,7 @@ class DesktopHostView @JvmOverloads constructor(
                 WidgetView(context).also { nv ->
                     nv.onClose = { id -> DesktopBridge.mutate { dd -> dd.copy(widgets = dd.widgets.filterNot { it.id == id }) } }
                     nv.onFocus = { id -> focus(id) }
-                    nv.onStateChange = { id, st -> DesktopBridge.mutateWidget(id, pushUndo = false) { it.withState(st) } }
+                    nv.onStateChange = { id, st -> DesktopBridge.mutateWidget(id, pushUndo = false, quiet = st.keys.all { it.startsWith("app.__") }) { it.withState(st) } }
                     // The page the user navigated to becomes the widget's source (so a restart
                     // reopens it); titles the app made up from a host ("archive.org") follow
                     // the page, user-given titles stay.
@@ -306,6 +306,27 @@ class DesktopHostView @JvmOverloads constructor(
     }
 
     /** 160×120 snapshot of the desktop for the strip (video frames included). */
+    /** Freeze an app window's live state into the desktop model (no-op for other types); [done] runs after. */
+    fun snapshotAppState(id: String, done: () -> Unit) {
+        val v = views[id] ?: return done()
+        v.snapshotAppState(done)
+    }
+
+    /** One window as it looks right now (bookmark tile), letterboxed into [w]×[h]. */
+    fun renderWidgetThumbnail(id: String, w: Int = 232, h: Int = 148): Bitmap? {
+        val v = views[id] ?: return null
+        if (v.width <= 0 || v.height <= 0) return null
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(0xFF0B1016.toInt())
+        val s = minOf(w.toFloat() / v.width, h.toFloat() / v.height)
+        c.translate((w - v.width * s) / 2f, (h - v.height * s) / 2f)
+        c.scale(s, s)
+        runCatching { v.draw(c) }
+        runCatching { v.drawLiveFrame(c) }
+        return bmp
+    }
+
     fun renderThumbnail(): Bitmap? {
         if (width <= 0 || height <= 0) return null
         val bmp = Bitmap.createBitmap(160, 120, Bitmap.Config.ARGB_8888)

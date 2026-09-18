@@ -102,7 +102,7 @@ object WidgetRefreshEngine {
     private fun reroute(w: Widget, fix: com.tapgem.app.core.location.LocationSource.Fix, old: com.tapgem.app.core.network.Router.Route, pos: String) {
         val mode = w.state["mode"] ?: old.mode
         com.tapgem.app.core.bridge.HudStateBridge.notice("Off route — recalculating…")
-        val fresh = com.tapgem.app.core.network.Router.route(fix.lat, fix.lon, old.destLat, old.destLon, mode, old.dest)
+        val fresh = com.tapgem.app.core.network.Router.route(fix.lat, fix.lon, old.destLat, old.destLon, mode, old.dest, old.remainingVia(fix.lat, fix.lon))
         if (fresh == null) {
             Log.w(TAG, "reroute failed; keeping the old route")
             DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("pos" to pos, "posSrc" to fix.source, "offRoute" to "1") }

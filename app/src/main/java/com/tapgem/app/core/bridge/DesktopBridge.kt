@@ -77,7 +77,7 @@ object DesktopBridge {
      * shouldn't pollute the user's undo history. Returns the new desktop.
      */
     @Synchronized
-    fun mutate(pushUndo: Boolean = true, transform: (Desktop) -> Desktop): Desktop {
+    fun mutate(pushUndo: Boolean = true, quiet: Boolean = false, transform: (Desktop) -> Desktop): Desktop {
         val before = current()
         val after = transform(before).copy(updatedAt = System.currentTimeMillis())
         if (pushUndo && after != before) {
@@ -86,13 +86,17 @@ object DesktopBridge {
         }
         state.set(after)
         fire(after)
-        scheduleAutosave()
+        scheduleAutosave(thumb = !quiet)
         return after
     }
 
-    /** Update one widget by id (no-op if it is gone — never resurrects a closed window). */
-    fun mutateWidget(id: String, pushUndo: Boolean = true, transform: (Widget) -> Widget): Desktop =
-        mutate(pushUndo) { d -> d.widget(id)?.let { w -> d.replaceWidget(transform(w)) } ?: d }
+    /**
+     * Update one widget by id (no-op if it is gone — never resurrects a closed window).
+     * [quiet] = bookkeeping the user can't see (an app's frozen state): saved, but no
+     * thumbnail re-render every few seconds.
+     */
+    fun mutateWidget(id: String, pushUndo: Boolean = true, quiet: Boolean = false, transform: (Widget) -> Widget): Desktop =
+        mutate(pushUndo, quiet) { d -> d.widget(id)?.let { w -> d.replaceWidget(transform(w)) } ?: d }
 
     /** Switch to a different desktop (load / new). Flushes the previous one first. Clears undo. */
     @Synchronized
@@ -245,9 +249,10 @@ object DesktopBridge {
         for (l in listeners) runCatching { l(d) }
     }
 
-    private fun scheduleAutosave() {
+    private fun scheduleAutosave(thumb: Boolean = true) {
         main.removeCallbacks(saveRunnable)
         main.postDelayed(saveRunnable, AUTOSAVE_DELAY_MS)
+        if (!thumb) return
         main.removeCallbacks(thumbRunnable)
         main.postDelayed(thumbRunnable, THUMB_DELAY_MS)
     }

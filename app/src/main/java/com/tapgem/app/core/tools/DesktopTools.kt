@@ -399,6 +399,9 @@ object WidgetOps {
                     title = title ?: (if (directions) "Directions: " else "Maps: ") + (place?.take(22) ?: "here")
                     val whence = when { here == null -> ""; here.isPrecise -> " from your current location"; else -> " from a rough (internet-based) position" }
                     note = if (directions) " Google Maps directions ($mode) to $place$whence." else " Google Maps: ${place ?: "your location"}$whence."
+                    // "Restaurants near X": the map shows the pins; Maps' mobile list is ads-first and lazy, so the
+                    // spoken shortlist should come from the model's own Google Search, not from clicking the page.
+                    if (!directions && place != null && isPlacesQuery(place)) note += PLACES_NOTE
                     if (Geocoder.isHere(place) && here == null) warnings += "I couldn't get your location (permission or location services off)"
                 } else {
                     val geo = if (Geocoder.isHere(place)) LocationSource.current(context)?.let { f ->
@@ -443,6 +446,17 @@ object WidgetOps {
 
         // One request, one window: the same page / query / file already open is reused, not duplicated.
         if (args.bool("new_window", "duplicate") != true) {
+            // Google Maps is one window per desktop: a new search/place/directions query re-points the
+            // Maps window that is already open instead of stacking a second map.
+            if (type == WidgetType.WEB && isGoogleMaps(source)) {
+                val maps = DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.WEB && isGoogleMaps(it.source) }
+                if (maps != null) {
+                    val t = (title ?: maps.title).take(32)
+                    DesktopBridge.mutate { d -> d.widget(maps.id)?.let { d.replaceWidget(it.copy(source = source, title = t, z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d }
+                    DesktopBridge.setActive(maps.id)
+                    return@withContext Result.success("Showing \"$t\" in the open Maps window (id ${maps.id}).$note")
+                }
+            }
             val key = dedupeKey(type, source)
             val dup = DesktopBridge.current().widgets.firstOrNull { dedupeKey(it.type, it.source) == key }
             if (dup != null) {
@@ -502,33 +516,59 @@ object WidgetOps {
     suspend fun startNavigation(context: Context, destination: String?, modeArg: String?, existingId: String?, args: Args): Result<String> = withContext(Dispatchers.IO) {
         val dest = destination?.trim()?.takeIf { it.isNotBlank() }
             ?: return@withContext Result.failure(IllegalArgumentException("Where to? Navigation needs a destination."))
-        val mode = modeArg?.lowercase(Locale.US)?.let {
+        val modeGiven = modeArg?.lowercase(Locale.US)?.let {
             when { it.startsWith("walk") || it.startsWith("foot") -> "walking"; it.startsWith("bik") || it.startsWith("cycl") -> "bicycling"
-                it.startsWith("driv") || it.startsWith("car") -> "driving"; else -> "walking" }
-        } ?: "walking"
+                it.startsWith("driv") || it.startsWith("car") -> "driving"; else -> null }
+        }
+        // "Stop at X on the way": via=X (comma / "then" separated, in order).
+        val viaNames = (args.str("via", "stop", "stops", "waypoint", "waypoints", "through") ?: "")
+            .split(Regex("\\s*(,|;| then | and then )\\s*", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotBlank() }
+        val viaKey = viaNames.joinToString("|").lowercase(Locale.US)
         // One navigation at a time — and the model likes to repeat itself: an identical, fresh
         // request just re-reads the current instruction instead of routing again.
         val navWidget = existingId?.let { DesktopBridge.current().widget(it) }
             ?: DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.MAP && (it.state["navMap"] == "1" || it.state["nav"] == "on" || it.state.containsKey("mode") || it.title.startsWith("→ ")) }
+        // No mode said: keep the mode of the navigation already running (a stop added to a drive stays a drive).
+        val mode = modeGiven ?: navWidget?.state?.get("mode")?.takeIf { navWidget.state["nav"] == "on" } ?: "walking"
         if (navWidget != null && navWidget.state["nav"] == "on" && navWidget.state["dest"].equals(dest, ignoreCase = true)
+            && navWidget.state["via"].orEmpty().equals(viaKey, ignoreCase = true)
             && System.currentTimeMillis() - navWidget.updatedAt < 120_000L) {
             val r = Router.Route.fromJson(navWidget.content)
             val st = r?.steps?.getOrNull(navWidget.state["step"]?.toIntOrNull() ?: 0)
             DesktopBridge.setActive(navWidget.id)
             return@withContext Result.success("Already navigating to ${r?.dest ?: dest}${st?.let { ": ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}" } ?: ""}.")
         }
-        HudStateBridge.notice("Finding $dest…")
-        val to = Geocoder.lookup(dest) ?: return@withContext Result.failure(IllegalStateException("I couldn't find a place called \"$dest\"."))
+        // Where the user is comes first: it biases place lookups to their area and is the route origin.
         val from = LocationSource.current(context) ?: return@withContext Result.failure(IllegalStateException("I can't tell where you are right now, so I can't route from here."))
+        suspend fun place(name: String, what: String): Geocoder.Place {
+            HudStateBridge.notice("Finding $name…")
+            try {
+                return Geocoder.resolve(context, name, from.lat, from.lon)
+                    ?: throw IllegalStateException("I couldn't find $what \"$name\" — try its address or the town.")
+            } catch (e: Geocoder.FarAway) {
+                HudStateBridge.notice(null)
+                val miles = (e.km * 0.621371).toInt()
+                throw IllegalStateException("The only \"$name\" I can find is ${e.place.label}, about $miles miles away" +
+                    (e.nearby?.let { " — did you mean ${it.label} nearby? Say so and I'll route there." } ?: " — if you really mean it, say the city too."))
+            }
+        }
+        val to = runCatching { place(dest, "a place called") }.getOrElse { return@withContext Result.failure(it) }
+        val via = ArrayList<Router.Via>()
+        for (name in viaNames) {
+            val p = runCatching { place(name, "the stop") }.getOrElse { return@withContext Result.failure(it) }
+            via += Router.Via(p.lat, p.lon, p.label)
+        }
         HudStateBridge.notice("Routing…")
-        val route = Router.route(from.lat, from.lon, to.lat, to.lon, mode, to.label)
+        val route = Router.route(from.lat, from.lon, to.lat, to.lon, mode, to.label, via)
             ?: run { HudStateBridge.notice(null); return@withContext Result.failure(IllegalStateException("I couldn't get a $mode route to ${to.label}.")) }
         HudStateBridge.notice(null)
         val json = route.toJson().toString()
         val source = "geo:%.6f,%.6f?q=%s".format(Locale.US, to.lat, to.lon, URLEncoder.encode(to.label, "UTF-8"))
-        val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode, "dest" to dest, "navMap" to "1",
+        val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode, "dest" to dest, "via" to viaKey, "navMap" to "1",
             "pos" to "%.6f,%.6f,%d".format(Locale.US, from.lat, from.lon, from.accuracyM.toInt()), "posSrc" to from.source)
-        val title = "→ ${to.label.take(26)}"
+        val viaText = if (via.isEmpty()) "" else " via " + via.joinToString(", ") { it.label }
+        // Title leads with the next stop: "→ Glenview Taqueria → Montera Middle School".
+        val title = ("→ " + (via.map { it.label } + to.label).joinToString(" → ")).take(32)
         // One navigation window per desktop: a new destination re-routes the existing map (even a stopped one).
         var id = navWidget?.id
         if (id != null && DesktopBridge.current().widget(id) != null) {
@@ -555,12 +595,26 @@ object WidgetOps {
             else -> " Your position is only approximate — connect your phone in the RayNeo app for real GPS; ${com.tapgem.app.core.location.PhoneGps.whyNot(context)}."
         }
         if (from.source == "phone") LocationSource.keepPhoneStream(context)
-        Result.success("Navigation started to ${to.label}: ${Router.distance(route.distM)}, about ${Router.duration(route.durS)} $mode. " +
+        Result.success("Navigation started to ${to.label}$viaText: ${Router.distance(route.distM)}, about ${Router.duration(route.durS)} $mode. " +
             (first?.let { "First: ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "") +
             " Say next step / previous step / stop navigation.$quality")
     }
 
     /** Same type + same normalised content = the same window. */
+    private val PLACES_WORDS = Regex("\\b(near|nearby|around|close to|on the way|along|restaurants?|food|eat|lunch|dinner|breakfast|brunch|coffee|caf[eé]s?|bars?|pubs?|gas|fuel|charg(?:er|ing)|hotels?|motels?|pharmac(?:y|ies)|grocer(?:y|ies)|supermarkets?|shops?|stores?|parks?|playgrounds?|gyms?|things to do|best|good|top|cheap|open now|atms?|banks?|parking|hospitals?|clinics?|dentists?|vets?)\\b", RegexOption.IGNORE_CASE)
+
+    /** "restaurants near X", "good coffee on the way", "gas around here" — a category, not one named place. */
+    fun isPlacesQuery(q: String): Boolean = PLACES_WORDS.containsMatchIn(q)
+
+    private const val PLACES_NOTE = " The map shows the matching pins. Don't click through Maps' list (it starts with " +
+        "sponsored entries and loads slowly): name 2-3 well-rated options from your own Google Search, then offer " +
+        "to show one on the map by name (widget add type=map query=<name>)."
+
+    fun isGoogleMaps(url: String): Boolean {
+        val u = url.lowercase(Locale.US)
+        return Regex("^https?://(www\\.)?google\\.[a-z.]+/maps").containsMatchIn(u) || u.startsWith("https://maps.google.") || u.startsWith("https://maps.app.goo.gl")
+    }
+
     fun dedupeKey(type: WidgetType, source: String): String {
         val s = source.trim().lowercase(Locale.US)
         val norm = when (type) {
@@ -869,8 +923,9 @@ class WidgetTool(private val context: Context) : AiTool {
                     return WidgetOps.startNavigation(context, dest, w.state["mode"] ?: args.str("travel_mode", "mode"), w.id, args)
                 }
                 when (nav) {
-                    "zoom_in", "in", "closer", "next" -> { detail = " — zoom ${(z + 1).coerceAtMost(18)}"; { it.withState("zoom" to (z + 1).coerceAtMost(18).toString()) } }
-                    "zoom_out", "out", "farther", "further", "prev", "back" -> { detail = " — zoom ${(z - 1).coerceAtLeast(1)}"; { it.withState("zoom" to (z - 1).coerceAtLeast(1).toString()) } }
+                    // A spoken "zoom in/out" is two levels (a clearly visible 4× change); value=N sets the notch.
+                    "zoom_in", "in", "closer", "next" -> { val nz = (z + (value?.toIntOrNull() ?: 2)).coerceIn(1, 18); detail = " — zoom $nz of 18"; { it.withState("zoom" to nz.toString()) } }
+                    "zoom_out", "out", "farther", "further", "prev", "back" -> { val nz = (z - (value?.toIntOrNull() ?: 2)).coerceIn(1, 18); detail = " — zoom $nz of 18"; { it.withState("zoom" to nz.toString()) } }
                     "zoom" -> { val nz = (value?.toIntOrNull() ?: z).coerceIn(1, 18); detail = " — zoom $nz"; { it.withState("zoom" to nz.toString()) } }
                     "north", "up", "south", "down", "east", "right", "west", "left", "pan" -> {
                         val dir = if (nav == "pan") (value ?: "north") else nav
@@ -1209,7 +1264,11 @@ class AppBuilderTool(private val context: Context) : AiTool {
                 "Must work offline in Chrome 95. A tiny host bridge exists as window.TapGem with " +
                 "notify(text) to flash a one-line message on the glasses, setTitle(text) to rename the window, " +
                 "save(key, value) and load(key) (strings) for persistence — guard every call with " +
-                "`if (window.TapGem)`. Output ONLY the HTML document — no markdown fences, no commentary."
+                "`if (window.TapGem)`. PERSIST THE WHOLE STATE, not just scores: after every state change call " +
+                "TapGem.save('state', JSON.stringify(fullState)) and on load restore it from TapGem.load('state') " +
+                "(fall back to a fresh start when empty), so the window resumes exactly where it was — mid-game " +
+                "board, timer, notes — when the desktop reloads or the user bookmarks it. Output ONLY the HTML " +
+                "document — no markdown fences, no commentary."
     }
 }
 
@@ -1251,14 +1310,15 @@ class MediaTool(private val context: Context) : AiTool {
 // web — operate pages and apps like a user would
 // ─────────────────────────────────────────────────────────────────────
 
-class WebTool : AiTool {
+class WebTool(private val context: Context) : AiTool {
     override val name = "web"
 
-    private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "play", "pause", "url", "back", "forward", "reload", "eval")
+    private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
 
     override suspend fun execute(args: Args): Result<String> {
         val action = when (args.action) {
             "find", "query", "lookup" -> "search"
+            "zoom_in", "zoom_out", "pinch" -> "zoom"
             "tap", "press_button", "select" -> "click"
             "enter", "fill", "input", "write" -> "type"
             "key", "keypress" -> "press"
@@ -1271,22 +1331,46 @@ class WebTool : AiTool {
             else -> args.action
         }
         if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use search, inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
+        val named = args.str("target", "id", "title", "widget", "name") != null
         val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
-        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click"))) {
+        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
             return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")
         }
         DesktopBridge.setActive(w.id)
         if (action == "url") {
             val u = args.str("url", "value", "text") ?: return Result.failure(IllegalArgumentException("url needs 'url'."))
             val norm = WidgetOps.normalizeUrl(u)
-            if (w.type == WidgetType.WEB) DesktopBridge.mutateWidget(w.id) { it.copy(source = norm).withState("reload" to System.currentTimeMillis().toString()) }
+            if (w.type == WidgetType.WEB) {
+                // Sent to a different site: a hand-written title ("Radio Garden") would now lie, so
+                // fall back to the new host and let the page's own navigation keep it honest.
+                val oldHost = hostOf(w.source); val newHost = hostOf(norm)
+                val sameSite = oldHost.isBlank() || newHost.isBlank() || oldHost == newHost
+                val title = args.str("new_title") ?: if (sameSite) w.title else newHost.take(32)
+                DesktopBridge.mutateWidget(w.id) { it.copy(source = norm, title = title).withState("reload" to System.currentTimeMillis().toString()) }
+            }
             val r = WebCommandBus.execute(w.id, WebCommandBus.Command("url", mapOf("url" to norm)))
             return Result.success(r)
         }
-        val passthrough = args.raw.filterKeys { it != "action" }
+        var passthrough = args.raw.filterKeys { it != "action" }
+        if (action == "zoom" && args.action in setOf("zoom_in", "zoom_out")) passthrough = passthrough + ("direction" to args.action.removePrefix("zoom_"))
+        // The tile map (TapGem navigation) zooms through its own state, not a page.
+        if (action == "zoom" && w.type == WidgetType.MAP) {
+            val dir = (args.str("direction", "value") ?: "in").lowercase(Locale.US)
+            return WidgetTool(context).execute(Args(mapOf("action" to "navigate", "id" to w.id, "nav" to (if (dir.startsWith("out")) "out" else "in")) + (args.str("amount", "levels")?.let { mapOf("value" to it) } ?: emptyMap())))
+        }
         val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
+        // A search that landed on whichever window happened to be active: say which site answered,
+        // so "restaurants near X" typed into Radio Garden is recognised as the wrong tool, not a result.
+        if (action == "search" && !named) {
+            val site = hostOf(w.source).ifBlank { w.title }
+            return Result.success("Searched within $site (the active window) — for places use widget add type=map, for another site open it first. $result")
+        }
         return Result.success(result)
     }
+
+    /** Registrable-ish host for "same site" checks: www./m./open. prefixes dropped. */
+    private fun hostOf(url: String): String = runCatching { java.net.URL(url).host }.getOrDefault("")
+        .lowercase(Locale.US).removePrefix("www.").removePrefix("m.").removePrefix("open.")
 
     private fun resolveTarget(args: Args): Widget? {
         val ref = args.str("target", "id", "title", "widget", "name")

@@ -33,6 +33,14 @@ import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import android.widget.FrameLayout
+import android.view.Gravity
+import androidx.core.view.isVisible
+import com.tapgem.app.core.bridge.BookmarksBridge
+import com.tapgem.app.core.model.Widget
+import com.tapgem.app.core.store.Bookmarks
+import com.tapgem.app.core.tools.BookmarkTool
+import com.tapgem.app.ui.BookmarkPanel
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -161,6 +169,7 @@ class MainActivity : AppCompatActivity() {
         startCatalogObserver()
         wave.setOnClickListener { if (HudStateBridge.current().phase == HudStateBridge.VoicePhase.IDLE) activateAssistant() }
         findViewById<View>(R.id.screenshotBtn).setOnClickListener { takeScreenshot() }
+        setupBookmarks()
         bindVoiceService()
         if (BuildConfig.DEBUG) registerVoiceReceiver()
     }
@@ -174,6 +183,8 @@ class MainActivity : AppCompatActivity() {
         hudSub?.runCatching { close() }; catalogSub?.runCatching { close() }
         DesktopBridge.thumbnailRenderer = null
         WebCommandBus.displayCapturer = null
+        BookmarksBridge.panel = null; BookmarksBridge.thumbnailer = null; BookmarksBridge.freezer = null
+        bookmarkSub?.runCatching { close() }
         DesktopBridge.saveNow()
         if (serviceBound) runCatching { unbindService(serviceConnection) }
         serviceBound = false
@@ -470,6 +481,68 @@ class MainActivity : AppCompatActivity() {
             }
             row.addView(iv, LinearLayout.LayoutParams(44, 30).apply { marginStart = 5 })
         }
+    }
+
+    // ── bookmarks ──────────────────────────────────────────────────
+
+    private lateinit var bookmarkPanel: BookmarkPanel
+    private var bookmarkSub: AutoCloseable? = null
+
+    /**
+     * The ribbon next to the camera opens a drawer of windows saved for later;
+     * the same drawer on every desktop. Tiles open a copy on this desktop; the
+     * "+" tile saves the active window; ✕ forgets one. Tools drive it too.
+     */
+    private fun setupBookmarks() {
+        val overlay = findViewById<ViewGroup>(R.id.overlay)
+        bookmarkPanel = BookmarkPanel(this)
+        overlay.addView(bookmarkPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
+            leftMargin = 6; topMargin = 70   // below the notice line, so "Bookmarked …" never covers the header
+        })
+        val btn = findViewById<ImageView>(R.id.bookmarkBtn)
+        btn.setOnClickListener { showBookmarkPanel(!bookmarkPanel.isVisible) }
+        bookmarkPanel.onClose = { showBookmarkPanel(false) }
+        bookmarkPanel.onOpen = { b ->
+            val placed = BookmarkTool.place(b)
+            showBookmarkPanel(false)
+            showNotice("Opened \"${placed.title}\"")
+        }
+        bookmarkPanel.onDelete = { b -> Bookmarks.delete(b.id); showNotice("Forgot \"${b.title}\"") }
+        bookmarkPanel.onSaveActive = { activeWidget()?.let { w -> bookmarkWidget(w) } }
+        bookmarkSub = Bookmarks.observe { uiHandler.post { if (bookmarkPanel.isVisible) refreshBookmarkPanel() } }
+        BookmarksBridge.panel = { show -> showBookmarkPanel(show) }
+        BookmarksBridge.thumbnailer = { id -> host.renderWidgetThumbnail(id) }
+        BookmarksBridge.freezer = { id, done -> host.snapshotAppState(id, done) }
+    }
+
+    private fun activeWidget(): Widget? = DesktopBridge.activeWidgetId?.let { DesktopBridge.current().widget(it) }
+        ?: DesktopBridge.current().widgets.maxByOrNull { it.z }
+
+    private fun bookmarkWidget(w: Widget) {
+        host.snapshotAppState(w.id) {
+            val fresh = DesktopBridge.current().widget(w.id) ?: w
+            val b = Bookmarks.save(fresh, host.renderWidgetThumbnail(w.id))
+            showNotice("Bookmarked \"${b.title}\"")
+            refreshBookmarkPanel()
+        }
+    }
+
+    private fun showBookmarkPanel(show: Boolean) {
+        val btn = findViewById<ImageView>(R.id.bookmarkBtn)
+        if (show) {
+            refreshBookmarkPanel()
+            bookmarkPanel.visibility = View.VISIBLE
+            btn.imageTintList = null
+            btn.background = GradientDrawable().apply { cornerRadius = 6f; setColor((DesktopBridge.current().theme.accent and 0x00FFFFFF) or 0x33000000) }
+        } else {
+            bookmarkPanel.visibility = View.GONE
+            btn.background = null
+        }
+    }
+
+    private fun refreshBookmarkPanel() {
+        bookmarkPanel.setAccent(DesktopBridge.current().theme.accent)
+        bookmarkPanel.refresh(Bookmarks.list(), activeWidget())
     }
 
     // ── screenshot ─────────────────────────────────────────────────
@@ -835,6 +908,10 @@ class MainActivity : AppCompatActivity() {
         edgeScroller.stop()
         if (host.endInteraction()) { showNotice("Placed"); return }
         val overlayHit = findOverlayHit(cursorX, cursorY)
+        // A tap anywhere outside the open bookmarks drawer closes it (and does nothing else).
+        if (bookmarkPanel.isVisible && (overlayHit == null || !isInside(overlayHit.view, bookmarkPanel)) && overlayHit?.view?.id != R.id.bookmarkBtn) {
+            showBookmarkPanel(false); return
+        }
         if (overlayHit != null) {
             if (overlayHit.isInteractive) dispatchSyntheticTap(overlayHit.view)
             return
@@ -863,6 +940,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private data class OverlayHit(val view: View, val isInteractive: Boolean)
+
+    private fun isInside(v: View, ancestor: View): Boolean {
+        var n: View? = v
+        while (n != null) { if (n === ancestor) return true; n = n.parent as? View }
+        return false
+    }
 
     /** Hit-test the strip/overlay only (container-local coords). Notices and captions never block taps. */
     private fun findOverlayHit(x: Float, y: Float): OverlayHit? {

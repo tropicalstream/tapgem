@@ -94,7 +94,9 @@ search box"), then type.
 ### The strip
 
 Left: **camera** — one tap saves a screenshot of what you see (both video and
-web content) to the photo gallery under `Pictures/TapGem`. Right: the saved
+web content) to the photo gallery under `Pictures/TapGem`; next to it the
+**bookmark ribbon** opens the drawer of windows saved for later (see
+*Bookmarks* below). Right: the saved
 desktops as **thumbnails** (newest first, the current one ringed) right next
 to the **time · date · battery · network**, then the assistant's **wave**.
 
@@ -183,10 +185,25 @@ can then adjust ("a bit bigger", "move it down").
 **Maps & navigation**
 - "Show me a map of downtown Oakland." · "Coffee near Lake Merritt." · "Map of where I am." (Google Maps in a
   window, dark tiles; search and "ask Maps" questions go through the web tool)
+- "Find good restaurants on the way to Montera Middle School." — the Maps window shows the pins and the
+  assistant names a few well-rated options from its own Google Search (Maps' mobile list is ads-first).
+  There is one Maps window per desktop: every new place query re-points it rather than stacking maps, and
+  a window showing another site (Radio Garden, YouTube) is never hijacked for it.
 - "Take me to Berkeley High School on foot." · "Drive me to SFO." → **TapGem's own turn-by-turn**: the route
   is drawn on the dark street map with the current step as a banner and the first step is read aloud.
   "Next step." · "Previous step." · "Repeat." · "Stop navigation." There is **one navigation at a time**: a new
   destination re-routes the same window; asking again for the same place just repeats the current step.
+- "Take me to Glenview Taqueria on the way to Montera Middle School." — **stops**: the route goes through the
+  stop first (numbered orange pin, "Arrive at Glenview Taqueria — then continue to Montera Middle School"),
+  and a re-route keeps the stops you haven't reached yet. Business names OpenStreetMap doesn't know are
+  looked up on Google Maps (key-free: an off-screen page load, only the result URL is read), biased to
+  where you are — which also rescues misheard names ("Monterey Middle School" resolves to Montera, two
+  miles away, instead of a school 1,100 miles east). A bare name that only exists hundreds of miles away
+  is refused with the nearby alternative ("did you mean…?") rather than routed. The route line is
+  simplified by bend, not by dropping every Nth point, so it hugs the streets at every zoom.
+- "Zoom out." · "Zoom in a little." · "Recenter." — on the navigation map (one request = two zoom levels,
+  and your zoom survives the next step) and on a Google Maps window ("zoom in on Google Maps" changes the
+  map's zoom level directly — the mobile site has no zoom buttons on place pages).
   With phone GPS the step follows where you are on the route, and **two fixes off the line re-route
   automatically** ("Off route — recalculating…", then the new first step).
 - "Where am I?" — the glasses have no GPS chip, but **your phone's GPS is relayed to them**: pair the
@@ -232,6 +249,22 @@ part (it grants the WebView's protected-media permission, which is what most Web
 if a future RayNeo firmware adds Widevine, full playback will simply start working. Until then:
 sign out for previews ("sign me out of Spotify"), or ask for the song on YouTube, SoundCloud,
 Bandcamp or the Internet Archive — none of them use DRM.
+
+**Bookmarks** (one window kept for later — on every desktop)
+- "Bookmark this." · "Save the checkers game for later." · "Bookmark the groceries note as shopping list."
+- "Open my checkers bookmark." · "Show my bookmarks." · "Forget the radio bookmark."
+- The ribbon next to the camera opens the drawer: thumbnails of saved windows, a **+** tile that saves the
+  active window, a ✕ on each to forget it. Tap a tile and a copy lands on the current desktop at its saved
+  size, with its state — an app mid-game, a page, a PDF at its page. A bookmark is not a desktop: desktops
+  are whole layouts (save/load from the strip), bookmarks are single windows you drop anywhere.
+- **Apps freeze and thaw by themselves.** A vibe-coded app keeps its state in `let`/`const` variables the
+  page can't reach from outside, so TapGem rewrites each app as it loads: the inline scripts are scanned
+  (even inside an IIFE / `DOMContentLoaded` wrapper) and a registration is appended that exposes every
+  variable and function. Every 5 s, and right before a bookmark, the variables are snapshotted as JSON into
+  the widget; after any reload — bookmark opened, desktop switched, app restarted — they are put back and
+  the zero-argument `render…`/`update…`/`sync…` functions are called. The checkers board comes back
+  mid-move whether or not the author wrote a line of persistence. Snapshots are keyed to the app's code, so
+  an updated app starts clean instead of thawing stale state.
 
 **Media** (files on the glasses, found by name)
 - "Open my vacation video, bottom right." · "Play the fanfare mp3." · "Pause it." · "Mute it."
@@ -316,7 +349,7 @@ Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/und
 `widget` (add/update/remove/move/resize/front/list/navigate/refresh),
 `web` (search/inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
 `theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update),
-`media` (find/open).
+`media` (find/open), `bookmark` (save/open/list/delete/show/hide).
 
 ---
 

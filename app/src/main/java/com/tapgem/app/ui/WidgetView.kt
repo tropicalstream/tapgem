@@ -72,6 +72,10 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     companion object {
         private const val TAG = "WidgetView"
+        const val APP_SNAPSHOT_KEY = "app.__snapshot"
+        const val APP_SNAPSHOT_SRC = "app.__snapshotSrc"
+        private const val APP_SNAPSHOT_MS = 5_000L
+        private const val APP_SNAPSHOT_MAX = 256 * 1024
         const val HANDLE = 18
         const val TITLE_H = 18
         /** Edge auto-scroll bands (px inside the content area). */
@@ -468,6 +472,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     private fun unbindContent() {
         contentGen++
+        appSnapshotRunnable?.let { main.removeCallbacks(it) }; appSnapshotRunnable = null; lastAppSnapshot = null
         clockRunnable?.let { main.removeCallbacks(it) }; clockRunnable = null
         tickerView = null
         audioProgress?.let { main.removeCallbacks(it) }; audioProgress = null
@@ -760,7 +765,12 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun buildApp() {
         val wv = newWebView(Kind.APP)
         content.addView(wv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        wv.loadUrl("file://" + widget.source)
+        // Served through the instrumenter so the app's state can be frozen and thawed (see AppInstrumenter).
+        val f = java.io.File(widget.source)
+        val html = runCatching { f.readText() }.getOrNull()
+        if (html == null) { wv.loadUrl("file://" + widget.source); return }
+        appHtmlHash = html.hashCode().toString(16) + ":" + html.length   // a snapshot only ever thaws into the same code
+        wv.loadDataWithBaseURL("file://" + widget.source, com.tapgem.app.core.apps.AppInstrumenter.instrument(html), "text/html", "utf-8", null)
     }
 
     private fun buildModel3d() {
@@ -788,6 +798,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 lastRouteJson = widget.content
                 wv.evaluateJavascript("window.setRoute && setRoute(${JSONObject.quote(widget.content)})", null)
                 wv.evaluateJavascript("window.setStep && setStep(${widget.state["step"]?.toIntOrNull() ?: 0})", null)
+                // The user's chosen zoom outlives a reload / restart.
+                wv.evaluateJavascript("window.setZoom && setZoom(${widget.state["zoom"]?.toIntOrNull() ?: 17})", null)
                 applyMapPosition()
             }
         } else if (lastRouteJson != null) {
@@ -908,7 +920,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             override fun onPageFinished(view: WebView, url: String?) {
                 pageLoading = false; navSeq++
-                if (kind == Kind.APP) { ecoCssApplied = false; applyEcoCss() }
+                if (kind == Kind.APP) { ecoCssApplied = false; applyEcoCss(); onAppLoaded(view) }
                 // Google Maps: force-dark leaves the (blob-image) tiles white; invert them into a dark map.
                 if (kind == Kind.WEB && url != null && url.contains("google.") && url.contains("/maps")) {
                     view.evaluateJavascript(GOOGLE_MAPS_DARK_JS, null)
@@ -934,6 +946,57 @@ class WidgetView(context: Context) : FrameLayout(context) {
         }
         if (kind == Kind.APP) wv.addJavascriptInterface(JsBridge(), "TapGem")
         return wv
+    }
+
+    // ── app state freezer ──────────────────────────────────────────
+    //
+    // Vibe-coded apps keep their state in top-level `let`/`const` variables and
+    // redraw through zero-argument render functions. Nothing forces them to
+    // persist anything, so TapGem does it for them: the page is scanned for
+    // those declarations, their values are snapshotted into the widget's state
+    // every few seconds (and right before a bookmark), and after a reload the
+    // values are put back and the renderers called — the checkers board comes
+    // back mid-game whether or not the app's author thought of it.
+
+    private var appSnapshotRunnable: Runnable? = null
+    private var lastAppSnapshot: String? = null
+    private var appHtmlHash: String = ""
+
+    private fun onAppLoaded(wv: WebView) {
+        val gen = contentGen
+        val saved = widget.state[APP_SNAPSHOT_KEY]?.takeIf { widget.state[APP_SNAPSHOT_SRC] == appHtmlHash }
+        if (!saved.isNullOrBlank()) {
+            // Let the app's own init finish first, then overwrite it with where the user left off.
+            main.postDelayed({
+                if (gen != contentGen || webView !== wv) return@postDelayed
+                wv.evaluateJavascript("window.__tgState && __tgState.restore(${JSONObject.quote(saved)})") { r -> Log.i(TAG, "app state restored: ${r?.take(120)}") }
+                lastAppSnapshot = saved
+            }, 350L)
+        }
+        appSnapshotRunnable?.let { main.removeCallbacks(it) }
+        val tick = object : Runnable {
+            override fun run() {
+                if (gen != contentGen || webView !== wv) return
+                if (!covered) snapshotAppState(null)
+                main.postDelayed(this, APP_SNAPSHOT_MS)
+            }
+        }
+        appSnapshotRunnable = tick
+        main.postDelayed(tick, APP_SNAPSHOT_MS)
+    }
+
+    /** Snapshot now (bookmark about to be taken, or the periodic tick); [done] runs once the state is stored. */
+    fun snapshotAppState(done: (() -> Unit)?) {
+        val wv = webView
+        if (widget.type != WidgetType.APP || wv == null) { done?.invoke(); return }
+        wv.evaluateJavascript("(function(){try{return window.__tgState?__tgState.snapshot():null}catch(e){return null}})()") { raw ->
+            val json = (decodeJs(raw) as? String)?.takeIf { it.isNotBlank() && it != "null" && it.length < APP_SNAPSHOT_MAX }
+            if (json != null && json != lastAppSnapshot) {
+                lastAppSnapshot = json
+                onStateChange?.invoke(widget.id, mapOf(APP_SNAPSHOT_KEY to json, APP_SNAPSHOT_SRC to appHtmlHash))
+            }
+            done?.invoke()
+        }
     }
 
     private fun hideIme() {
@@ -977,7 +1040,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 if (old["nav"] != new["nav"] || (new["nav"] == "on" && lastRouteJson != widget.content)) { applyMapRoute(force = true); return }
                 if (old["step"] != new["step"] && new["nav"] == "on") wv.evaluateJavascript("window.setStep && setStep(${new["step"]?.toIntOrNull() ?: 0})", null)
                 if (old["pos"] != new["pos"]) applyMapPosition()
-                if (old["zoom"] != new["zoom"] && new["nav"] != "on") wv.evaluateJavascript("window.setZoom && setZoom(${new["zoom"]?.toIntOrNull() ?: 13})", null)
+                if (old["zoom"] != new["zoom"]) wv.evaluateJavascript("window.setZoom && setZoom(${new["zoom"]?.toIntOrNull() ?: 13})", null)
                 if (old["panNonce"] != new["panNonce"]) wv.evaluateJavascript("window.panBy && panBy(${jsStr(new["pan"] ?: "center")})", null)
             }
             WidgetType.IMAGE -> if (old["reload"] != new["reload"]) (content.getChildAt(0) as? ImageView)?.let { loadImageInto(it, widget.source) }
@@ -1017,6 +1080,27 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 if (!SyntheticInput.key(wv, key)) return done("I can't press \"$key\" — try enter, escape, space, tab, arrow keys, backspace, page_down.")
                 val seq0 = navSeq
                 main.postDelayed({ awaitLoad(10_000L) { main.postDelayed({ finish(wv, "Pressed $key.", done, changed = navSeq != seq0) }, 300L) } }, 500L)
+            }
+            "zoom" -> {
+                val dir = (cmd.arg("direction", "value") ?: "in").lowercase(Locale.US)
+                val out = dir.startsWith("out") || dir.startsWith("far") || dir == "-" || dir == "minus"
+                val levels = cmd.arg("amount", "levels")?.toDoubleOrNull()?.toInt()?.coerceIn(1, 6) ?: 2   // one spoken "zoom" = a visible 4× change
+                val cur = wv.url.orEmpty()
+                val gm = Regex("(@-?\\d+\\.\\d+,-?\\d+\\.\\d+,)(\\d+(?:\\.\\d+)?)z").find(cur)
+                if (gm != null) {
+                    // Google Maps mobile has no zoom buttons on place pages: the zoom lives in the URL.
+                    val z = (gm.groupValues[2].toDouble() + if (out) -levels else levels).coerceIn(2.0, 21.0)
+                    val next = cur.replaceRange(gm.range, gm.groupValues[1] + "%.2f".format(Locale.US, z).trimEnd('0').trimEnd('.') + "z")
+                    pageLoading = true; lastHttpStatus = 0
+                    wv.loadUrl(next)
+                    awaitLoad(12_000L) { main.postDelayed({ finish(wv, "Zoomed ${if (out) "out" else "in"} on the map to level ${"%.0f".format(Locale.US, z)} of 21.", done) }, 400L) }
+                } else {
+                    // Other pages: scale the page itself, like a pinch.
+                    val f = if (out) Math.pow(0.8, levels.toDouble()) else Math.pow(1.25, levels.toDouble())
+                    wv.settings.setSupportZoom(true)
+                    wv.zoomBy(f.toFloat().coerceIn(0.01f, 100f))
+                    main.postDelayed({ finish(wv, "Zoomed ${if (out) "out" else "in"} on the page.", done) }, 400L)
+                }
             }
             "scroll" -> {
                 val dir = (cmd.arg("direction", "value") ?: "down").lowercase(Locale.US)
@@ -1233,7 +1317,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
  function attr(el,n){ return (el.getAttribute&&el.getAttribute(n))||''; }
  function labelFor(el){ var t=''; try{ if(el.id){ var root=el.getRootNode?el.getRootNode():document; var l=root.querySelector('label[for="'+el.id+'"]'); if(l) t=l.innerText; } if(!t&&el.closest){ var p=el.closest('label'); if(p) t=p.innerText; } }catch(e){} return t||''; }
  function chain(el){ var out=[]; var n=el; while(n){ out.push(n); n=n.parentNode||n.host||null; if(n&&n.nodeType===11&&n.host){ n=n.host; } } return out; }
- function txt(el){ var t=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim(); if(!t){ var a=attr(el,'aria-label')||attr(el,'title')||attr(el,'placeholder')||attr(el,'alt')||labelFor(el); if(!a&&el.querySelector){ var i=el.querySelector('img[alt],[aria-label],svg title'); if(i) a=attr(i,'alt')||attr(i,'aria-label')||i.textContent; } t=a||''; } return String(t).slice(0,80); }
+ function clean(s){ return String(s||'').replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\uE000-\uF8FF\uFE00-\uFE0F\uFFFD]/g,'').replace(/\s+/g,' ').trim(); }
+ function txt(el){ var t=clean(el.innerText||el.textContent||''); if(!t){ var a=attr(el,'aria-label')||attr(el,'title')||attr(el,'placeholder')||attr(el,'alt')||labelFor(el); if(!a&&el.querySelector){ var i=el.querySelector('img[alt],[aria-label],svg title'); if(i) a=attr(i,'alt')||attr(i,'aria-label')||i.textContent; } t=clean(a); } return String(t).slice(0,80); }
  var SEL='a[href],button,input,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[role=textbox],[role=searchbox],[role=combobox],[onclick],[contenteditable=true],video,audio,summary';
  function parentEl(n){ return n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; }
  function pointer(el){ try{ return getComputedStyle(el).cursor==='pointer'; }catch(e){ return false; } }
@@ -1267,7 +1352,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
  function walkAll(root,out,depth){ if(depth>25||out.length>6000) return; var els; try{ els=root.querySelectorAll('*'); }catch(e){ return; } for(var i=0;i<els.length&&out.length<6000;i++){ out.push(els[i]); if(els[i].shadowRoot) walkAll(els[i].shadowRoot,out,depth+1); } }
  T.findAnyText=function(q){ q=norm(q); if(!q) return null; var out=[]; walkAll(document,out,0); var best=null,ba=1e12; out.forEach(function(el){ if(el.children&&el.children.length>6) return; if(!vis(el)) return; var t=norm(el.innerText||el.textContent); if(!t||t.length>200||t.indexOf(q)<0) return; var r=el.getBoundingClientRect(); var a=r.width*r.height; if(a<ba){ba=a;best=el;} }); if(!best) return null; var n=best; for(var k=0;k<8&&n&&n!==document.body;k++){ try{ if(n.matches&&n.matches('a[href],button,[role=button],[role=link],[onclick],[tabindex]')) return n; if(getComputedStyle(n).cursor==='pointer') return n; }catch(e){} n=n.parentNode&&n.parentNode.nodeType===1?n.parentNode:(n.parentNode&&n.parentNode.host)||null; } return best; };
  /* A dialog / consent sheet / app-nag covering the page: role=dialog, aria-modal, or a fixed box over most of the viewport at its centre. */
- T.dialog=function(){ var c=null; try{ c=Array.prototype.filter.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],dialog[open]'),laidOut).pop()||null; }catch(e){} if(c) return c; try{ var els=document.elementsFromPoint(innerWidth/2,innerHeight/2); for(var i=0;i<els.length;i++){ var n=els[i]; for(var k=0;k<8&&n&&n!==document.body;k++){ var cs=getComputedStyle(n); if(cs.position==='fixed'||cs.position==='absolute'){ var r=n.getBoundingClientRect(); if(r.width*r.height>=0.45*innerWidth*innerHeight&&(parseInt(cs.zIndex,10)||0)>0&&n!==T.scroller()&&(n.innerText||'').trim().length>=20) return n; } n=n.parentElement; } } }catch(e){} return null; };
+ T.dialog=function(){ var c=null; try{ c=Array.prototype.filter.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],dialog[open]'),laidOut).pop()||null; }catch(e){} if(c) return c; try{ var els=document.elementsFromPoint(innerWidth/2,innerHeight/2); for(var i=0;i<els.length;i++){ var n=els[i]; for(var k=0;k<8&&n&&n!==document.body;k++){ var cs=getComputedStyle(n); if(cs.position==='fixed'||cs.position==='absolute'){ var r=n.getBoundingClientRect(); if(r.width*r.height>=0.45*innerWidth*innerHeight&&(parseInt(cs.zIndex,10)||0)>0&&n!==T.scroller()&&(n.innerText||'').trim().length>=20&&!sheetLike(n)) return n; } n=n.parentElement; } } }catch(e){} return null; };
+ /* Bottom sheets and side panels (Google Maps results, players) are content, not dialogs: they scroll or hold many controls. */
+ function sheetLike(n){ try{ if(n.scrollHeight>n.clientHeight+50) return true; var inner=n.querySelector('[style*="overflow"],[class*="scroll"]'); var ctl=n.querySelectorAll('a[href],button,[role=button],input').length; if(ctl>8) return true; var sc=Array.prototype.slice.call(n.querySelectorAll('div')).some(function(e){ var s=getComputedStyle(e); return /(auto|scroll)/.test(s.overflowY)&&e.scrollHeight>e.clientHeight+50; }); return sc; }catch(e){ return false; } }
  T.dialogButtons=function(d){ var out=[]; walk(d,out,0); return out.filter(function(el){ return laidOut(el)&&txt(el)&&!/^(input|textarea|select)$/i.test(el.tagName); }); };
  T.dismisser=function(d){ var re=/^(not now|no thanks|no, thanks|maybe later|later|skip|dismiss|close|cancel|got it|ok|okay|continue|i agree|agree|accept|accept all|allow all|reject all|x|×|✕)$/i; var bs=T.dialogButtons(d); if(bs.length===1) return bs[0]; /* a single-button gate: 'Press play to start', 'Enter' */ return bs.filter(function(b){ return re.test(norm(txt(b))); })[0]||bs.filter(function(b){ return /close|dismiss/i.test(attr(b,'aria-label')+' '+attr(b,'title')+' '+(attr(b,'data-testid'))); })[0]||null; };
  T.dialogLine=function(){ var d=T.dialog(); if(!d) return ''; var t=(d.innerText||'').replace(/\s+/g,' ').trim().slice(0,70); var bs=T.dialogButtons(d).slice(0,5).map(function(b){ return txt(b); }); return 'A dialog covers the page: "'+t+'"'+(bs.length?(' — buttons: '+bs.join(' | ')):'')+'.'; };
