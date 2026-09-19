@@ -12,6 +12,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *  conversation  — both at once: two sessions on the same mic, each silent for its own language.
  */
 object Interpreter {
+    /** Mic gating while the glasses talk — the fallback if the platform echo canceller is not enough. */
+    @Volatile var HALF_DUPLEX = false
     val LANGS: List<Pair<String, String>> = listOf(
         "af" to "Afrikaans", "ak" to "Akan", "sq" to "Albanian", "am" to "Amharic", "ar" to "Arabic", "hy" to "Armenian", "az" to "Azerbaijani", "eu" to "Basque",
         "be" to "Belarusian", "bn" to "Bengali", "bg" to "Bulgarian", "my" to "Burmese", "ca" to "Catalan", "zh-Hans" to "Chinese (Simplified)", "zh-Hant" to "Chinese (Traditional)",
@@ -35,8 +37,22 @@ object Interpreter {
     }
     fun langName(code: String) = LANGS.firstOrNull { it.first.equals(code, true) }?.second ?: LANGS.firstOrNull { it.first.substringBefore('-').equals(code.substringBefore('-'), true) }?.second ?: code
 
+    /**
+     * The language shown on a row. Detection outside the configured pair is almost always detector
+     * noise on a short fragment (an English reply tagged Dutch), so those rows fall back to the language
+     * the direction implies — or to no label at all in conversation mode, where either side may speak.
+     */
+    fun labelLang(lang: String, dir: String, kind: String): String {
+        val b = lang.substringBefore('-').lowercase()
+        if (b.isNotBlank() && (b == mine.substringBefore('-').lowercase() || b == theirs.substringBefore('-').lowercase())) return lang
+        return when (mode) {
+            "listen" -> if (kind == "in") theirs else mine
+            "speak" -> if (kind == "in") mine else theirs
+            else -> if (kind == "out") (if (dir == "in") mine else theirs) else ""
+        }
+    }
     class Entry(val seq: Long, val t: Long, val dir: String, val kind: String, val text: String, val lang: String) {
-        fun json() = JSONObject().put("seq", seq).put("t", t).put("dir", dir).put("kind", kind).put("text", text).put("lang", lang).put("langName", langName(lang))
+        fun json() = JSONObject().put("seq", seq).put("t", t).put("dir", dir).put("kind", kind).put("text", text).put("lang", lang).put("langName", labelLang(lang, dir, kind).let { if (it.isBlank()) "" else langName(it) })
     }
     fun interface Listener { fun onEvent(json: JSONObject) }
     private val listeners = CopyOnWriteArrayList<Listener>()
@@ -75,7 +91,7 @@ object Interpreter {
             val setup = JSONObject().put("model", "models/gemini-3.5-live-translate-preview")
                 .put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("AUDIO")).put("translationConfig", JSONObject().put("targetLanguageCode", target).put("echoTargetLanguage", false)))
                 .put("inputAudioTranscription", JSONObject()).put("outputAudioTranscription", JSONObject())
-            val s = LiveAudioSession(appContext, dir, setup) { onSession(it) }
+            val s = LiveAudioSession(appContext, dir, setup, halfDuplex = HALF_DUPLEX) { onSession(it) }
             sessions += s; s.open()
         }
     }
@@ -89,7 +105,7 @@ object Interpreter {
                 if (o.optString("type") == "in" && mode == "conversation" && dir == "out") return
                 val kind = o.optString("type"); val key = "$dir:$kind"; val sb = partial.getOrPut(key) { StringBuilder() }
                 sb.append(o.optString("text")); lastText[key] = System.currentTimeMillis(); o.optString("lang").takeIf { it.isNotBlank() }?.let { langOf[key] = it }
-                emit(JSONObject().put("type", "partial").put("dir", dir).put("kind", kind).put("text", sb.toString().trim()).put("lang", langOf[key] ?: "").put("langName", langOf[key]?.let { langName(it) } ?: ""))
+                emit(JSONObject().put("type", "partial").put("dir", dir).put("kind", kind).put("text", sb.toString().trim()).put("lang", langOf[key] ?: "").put("langName", labelLang(langOf[key] ?: "", dir, kind).let { if (it.isBlank()) "" else langName(it) }))
                 val t = sb.toString().trimEnd()
                 // a phrase is done at sentence punctuation, when it gets long, or after a pause (see flusher)
                 if (sb.length > 300 || t.endsWith(".") || t.endsWith("?") || t.endsWith("!") || t.endsWith("。") || t.endsWith("？") || t.endsWith("！")) commit(key)

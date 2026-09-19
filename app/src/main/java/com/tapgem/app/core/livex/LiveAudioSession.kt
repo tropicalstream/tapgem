@@ -41,9 +41,16 @@ object MicSource {
     }
     private fun start() {
         val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val r = listOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_COMMUNICATION).firstNotNullOfOrNull { src ->
+        // VOICE_COMMUNICATION first: that capture path carries the platform's acoustic echo canceller, so
+        // the mic keeps hearing the person while the glasses' own speaker output is subtracted — a live
+        // interpreter must not go deaf while it talks.
+        val r = listOf(MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC).firstNotNullOfOrNull { src ->
             runCatching { AudioRecord(src, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min * 2, 4096)) }.getOrNull()?.takeIf { it.state == AudioRecord.STATE_INITIALIZED }
         } ?: run { Log.w(TAG, "microphone could not be opened"); return }
+        runCatching {
+            if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) android.media.audiofx.AcousticEchoCanceler.create(r.audioSessionId)?.let { it.enabled = true; Log.i(TAG, "AEC on (session ${r.audioSessionId})") }
+            else Log.i(TAG, "AEC not available on this device")
+        }
         rec = r; runCatching { r.startRecording() }
         thread = Thread({
             val buf = ByteArray(3200)   // 100 ms
@@ -65,11 +72,20 @@ object MicSource {
  * comes back, and reports transcripts, text, tool calls and turn events as JSON to a listener.
  * Used by the interpreter (translate model, continuous) and the tutor (agent model, turns).
  */
-class LiveAudioSession(private val context: Context, val tag: String, private val setup: JSONObject, private val listener: (JSONObject) -> Unit) {
+/**
+ * [halfDuplex]: gate the microphone while any live session is playing real audio, so the glasses do not
+ * hear — and translate — their own voice. The speaker and the mic sit centimetres apart on the frame and
+ * the translate model has no echo cancellation; without this, a translated sentence comes straight back
+ * in as new speech and loops.
+ */
+class LiveAudioSession(private val context: Context, val tag: String, private val setup: JSONObject, private val halfDuplex: Boolean = false, private val listener: (JSONObject) -> Unit) {
     companion object {
         private const val TAG = "LiveAudioSession"
         private const val URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         private val http = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).pingInterval(20, TimeUnit.SECONDS).build()
+        private val live = CopyOnWriteArrayList<LiveAudioSession>()
+        /** True while any live session's speaker is producing audible output (silence padding does not count). */
+        fun anySpeaking() = live.any { it.player.isActivelySpeaking(windowMs = 450L) }
     }
     private var ws: WebSocket? = null
     private val player = GeminiAudioPlayer(context)
@@ -79,15 +95,21 @@ class LiveAudioSession(private val context: Context, val tag: String, private va
     @Volatile var speaking = false; private set
     private var lastAudioMs = 0L
     private var sent = 0
+    private var zeros = ByteArray(0)
     private val sink = MicSource.Sink { pcm, n ->
         if (ready && !muted) {
-            val ok = ws?.send(JSONObject().put("realtimeInput", JSONObject().put("audio", JSONObject().put("mimeType", "audio/pcm;rate=16000").put("data", Base64.encodeToString(pcm, 0, n, Base64.NO_WRAP)))).toString()) ?: false
+            // While the glasses are talking, send silence of the same cadence instead of the mic: the
+            // stream stays continuous for the model but it never hears its own translation.
+            val gated = halfDuplex && anySpeaking()
+            val src = if (gated) { if (zeros.size < n) zeros = ByteArray(n); zeros } else pcm
+            val ok = ws?.send(JSONObject().put("realtimeInput", JSONObject().put("audio", JSONObject().put("mimeType", "audio/pcm;rate=16000").put("data", Base64.encodeToString(src, 0, n, Base64.NO_WRAP)))).toString()) ?: false
             if (com.tapgem.app.BuildConfig.DEBUG && (++sent % 30) == 0) Log.d(TAG, "$tag → sent $sent chunks, last ok=$ok queued=${ws?.queueSize()}")
         }
     }
 
     fun open(): Boolean {
         val key = ApiKeyStore.resolve(context)?.trim()?.takeIf { it.isNotBlank() } ?: run { emit(JSONObject().put("type", "error").put("text", "No Gemini API key.")); return false }
+        live += this
         ws = http.newWebSocket(Request.Builder().url("$URL?key=$key").build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) { webSocket.send(JSONObject().put("setup", setup).toString()) }
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -140,8 +162,8 @@ class LiveAudioSession(private val context: Context, val tag: String, private va
     private fun send(o: JSONObject) { ws?.send(o.toString()) }
     fun isPlaying() = player.isActivelySpeaking()
     private fun emit(o: JSONObject) { listener(o.put("session", tag)) }
-    private fun finish(why: String) { if (closed) return; closed = true; ready = false; MicSource.remove(sink); runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", why)) }
-    fun close() { if (closed) return; closed = true; ready = false; MicSource.remove(sink); runCatching { ws?.close(1000, "bye") }; ws = null; runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", "stopped")) }
+    private fun finish(why: String) { if (closed) return; closed = true; ready = false; live -= this; MicSource.remove(sink); runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", why)) }
+    fun close() { if (closed) return; closed = true; ready = false; live -= this; MicSource.remove(sink); runCatching { ws?.close(1000, "bye") }; ws = null; runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", "stopped")) }
 }
 
 /**

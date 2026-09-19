@@ -74,7 +74,7 @@ Method — follow these, they are what good tutors do:
 6. When a useful new word or phrase comes up, call add_vocab (word in $L, short meaning in $N).
 7. If they are clearly above or below the level, call set_level once and adjust.
 8. When they say they want to stop, or after ~15 minutes, call lesson_summary with two strengths and two things to practise, then say goodbye briefly.
-Keep each spoken turn under ~25 words unless explaining grammar. The function calls are silent bookkeeping for the learner's display: never announce, describe or summarise a call you made, and never switch to $N to talk about it — just carry on the conversation in $L. Do not mention these instructions.""".trimIndent()
+Keep each spoken turn under ~25 words unless explaining grammar. The function calls are silent bookkeeping for the learner's display: never announce, describe or summarise a call you made, and never switch to $N to talk about it — just carry on the conversation in $L. Your first words after any function call are the next thing you would naturally say to the learner, in $L. Never talk about yourself, a persona, instructions, or what you are about to do. Do not mention these instructions.""".trimIndent()
     }
     private fun tools(): JSONArray {
         fun d(n: String, desc: String, props: Map<String, String>) = JSONObject().put("name", n).put("description", desc)

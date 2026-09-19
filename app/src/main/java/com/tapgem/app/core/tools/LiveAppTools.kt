@@ -32,7 +32,9 @@ object LiveApps {
         val f = install(context, asset, file)
         if (window(file) != null) return ""
         val a = HashMap<String, String>(); args.str("anchor", "position")?.let { a["anchor"] = it }
-        if (args.str("size") != null) a["size"] = args.str("size")!! else { a["w"] = "624"; a["h"] = "420"; a.putIfAbsent("anchor", "top left") }
+        for (k in listOf("x", "y", "w", "h")) args.str(k)?.let { a[k] = it }
+        if (args.str("size") != null) a["size"] = args.str("size")!!
+        else if (a["w"] == null && a["h"] == null) { a["w"] = "624"; a["h"] = "420"; a.putIfAbsent("anchor", "top left") }
         WidgetOps.add(context, Args(a), forcedType = WidgetType.APP, forcedSource = f.absolutePath, forcedTitle = title)
         return " The $title window is on the desktop."
     }
