@@ -19,11 +19,18 @@ object Router {
     private const val TAG = "Router"
     private const val UA = "TapGem/1.0 (RayNeo X3 Pro AR glasses)"
 
-    class Step(val lat: Double, val lon: Double, val text: String, val distM: Double, val durS: Double)
+    /**
+     * One manoeuvre. [text] is the spoken instruction; the raw OSRM fields ([type], [modifier],
+     * bearings, roundabout [exit], street [name]) let the navigation HUD draw the turn instead of
+     * re-parsing the sentence. Older stored routes lack them (blank / NaN / 0) and still load.
+     */
+    class Step(val lat: Double, val lon: Double, val text: String, val distM: Double, val durS: Double,
+               val type: String = "", val modifier: String = "", val bearingBefore: Double = Double.NaN, val bearingAfter: Double = Double.NaN,
+               val exit: Int = 0, val name: String = "")
     /** An intermediate stop ("Glenview Taqueria on the way to school"). */
     class Via(val lat: Double, val lon: Double, val label: String)
     class Route(val coords: List<DoubleArray>, val steps: List<Step>, val distM: Double, val durS: Double, val mode: String, val dest: String,
-                val via: List<Via> = emptyList()) {
+                val via: List<Via> = emptyList(), val drivingSide: String? = null) {
         val destLat: Double get() = coords.last()[1]
         val destLon: Double get() = coords.last()[0]
 
@@ -76,17 +83,29 @@ object Router {
         }
         fun toJson(): JSONObject = JSONObject()
             .put("coords", JSONArray().also { a -> coords.forEach { c -> a.put(JSONArray().put(c[0]).put(c[1])) } })
-            .put("steps", JSONArray().also { a -> steps.forEach { s -> a.put(JSONObject().put("lat", s.lat).put("lon", s.lon).put("text", s.text).put("dist", s.distM).put("dur", s.durS)) } })
+            .put("steps", JSONArray().also { a -> steps.forEach { s ->
+                val o = JSONObject().put("lat", s.lat).put("lon", s.lon).put("text", s.text).put("dist", s.distM).put("dur", s.durS)
+                if (s.type.isNotBlank()) o.put("type", s.type)
+                if (s.modifier.isNotBlank()) o.put("mod", s.modifier)
+                if (!s.bearingBefore.isNaN()) o.put("bb", s.bearingBefore)
+                if (!s.bearingAfter.isNaN()) o.put("ba", s.bearingAfter)
+                if (s.exit > 0) o.put("exit", s.exit)
+                if (s.name.isNotBlank()) o.put("name", s.name)
+                a.put(o) } })
             .put("via", JSONArray().also { a -> via.forEach { v -> a.put(JSONObject().put("lat", v.lat).put("lon", v.lon).put("label", v.label)) } })
             .put("dist", distM).put("dur", durS).put("mode", mode).put("dest", dest)
+            .also { o -> drivingSide?.let { o.put("drivingSide", it) } }
 
         companion object {
             fun fromJson(s: String): Route? = runCatching {
                 val o = JSONObject(s)
                 val coords = o.getJSONArray("coords").let { a -> List(a.length()) { i -> val c = a.getJSONArray(i); doubleArrayOf(c.getDouble(0), c.getDouble(1)) } }
-                val steps = o.getJSONArray("steps").let { a -> List(a.length()) { i -> val st = a.getJSONObject(i); Step(st.getDouble("lat"), st.getDouble("lon"), st.getString("text"), st.getDouble("dist"), st.getDouble("dur")) } }
+                val steps = o.getJSONArray("steps").let { a -> List(a.length()) { i -> val st = a.getJSONObject(i)
+                    Step(st.getDouble("lat"), st.getDouble("lon"), st.getString("text"), st.getDouble("dist"), st.getDouble("dur"),
+                        st.optString("type"), st.optString("mod"), st.optDouble("bb", Double.NaN), st.optDouble("ba", Double.NaN), st.optInt("exit", 0), st.optString("name")) } }
                 val via = o.optJSONArray("via")?.let { a -> List(a.length()) { i -> val v = a.getJSONObject(i); Via(v.getDouble("lat"), v.getDouble("lon"), v.optString("label")) } } ?: emptyList()
-                Route(coords, steps, o.getDouble("dist"), o.getDouble("dur"), o.optString("mode", "foot"), o.optString("dest"), via)
+                Route(coords, steps, o.getDouble("dist"), o.getDouble("dur"), o.optString("mode", "foot"), o.optString("dest"), via,
+                    o.optString("drivingSide").takeIf { it.isNotBlank() })
             }.getOrNull()
         }
     }
@@ -112,20 +131,24 @@ object Router {
                 val raw = List(geom.length()) { i -> val c = geom.getJSONArray(i); doubleArrayOf(c.getDouble(0), c.getDouble(1)) }
                 val coords = simplify(raw)
                 val steps = ArrayList<Step>()
+                var drivingSide: String? = null
                 val legs = route.getJSONArray("legs")
                 for (l in 0 until legs.length()) {
                     val ss = legs.getJSONObject(l).getJSONArray("steps")
                     val stop = via.getOrNull(l)   // this leg ends at stop l (the last leg ends at the destination)
                     for (i in 0 until ss.length()) {
                         val st = ss.getJSONObject(i)
+                        if (drivingSide == null) drivingSide = st.optString("driving_side").takeIf { it == "left" || it == "right" }
                         val man = st.getJSONObject("maneuver")
                         val loc = man.getJSONArray("location")
                         var text = instruction(st, man, mode)
                         if (stop != null && man.optString("type") == "arrive") text = text.replace("your destination", stop.label) + " — then continue to ${if (l + 1 < via.size) via[l + 1].label else dest}"
-                        steps += Step(loc.getDouble(1), loc.getDouble(0), text, st.optDouble("distance", 0.0), st.optDouble("duration", 0.0))
+                        steps += Step(loc.getDouble(1), loc.getDouble(0), text, st.optDouble("distance", 0.0), st.optDouble("duration", 0.0),
+                            man.optString("type"), man.optString("modifier"), man.optDouble("bearing_before", Double.NaN), man.optDouble("bearing_after", Double.NaN),
+                            man.optInt("exit", 0), st.optString("name"))
                     }
                 }
-                Route(coords, steps, route.optDouble("distance", 0.0), route.optDouble("duration", 0.0), mode, dest, via)
+                Route(coords, steps, route.optDouble("distance", 0.0), route.optDouble("duration", 0.0), mode, dest, via, drivingSide)
             }
         }.onFailure { Log.w(TAG, "route failed: ${it.message}") }.getOrNull()
     }
@@ -200,9 +223,12 @@ object Router {
         return dirs[((bearing + 22.5) / 45.0).toInt() % 8]
     }
 
+    /** US customary for a US (or unset) locale, metric otherwise — the HUD page follows the same rule. */
+    fun usUnits(): Boolean = Locale.getDefault().country == "US" || Locale.getDefault().country.isBlank()
+
     /** "350 ft" / "0.8 mi" — US units for a US user; metres if the locale isn't. */
     fun distance(m: Double): String {
-        val us = Locale.getDefault().country == "US" || Locale.getDefault().country.isBlank()
+        val us = usUnits()
         return if (us) {
             val ft = m * 3.28084
             if (ft < 1000) "${(ft / 10).roundToInt() * 10} ft" else "%.1f mi".format(Locale.US, m / 1609.344)

@@ -143,6 +143,7 @@ class MainActivity : AppCompatActivity() {
     private var noticeClearRunnable: Runnable? = null
     private var shownNoticeSeq = -1L
     private var captionHideRunnable: Runnable? = null
+    private var captionIdleArmed = false   // the 4 s idle linger has been scheduled for the shown caption
     private var shownCaption: String? = null
 
     private lateinit var host: DesktopHostView
@@ -753,8 +754,16 @@ class MainActivity : AppCompatActivity() {
             tv.visibility = View.GONE; shownCaption = null; return
         }
         val idle = st.phase == HudStateBridge.VoicePhase.IDLE
-        if (text == shownCaption && !idle) return
-        shownCaption = text
+        // The same caption again: only the first update after the session goes idle may re-arm the
+        // hide (to shorten the linger to 4 s). Every later unrelated state change — a notice, a level
+        // tick, a navigation update — must leave the timer alone, or the caption never clears.
+        if (text == shownCaption) {
+            if (!idle || captionIdleArmed) return
+            captionIdleArmed = true
+        } else {
+            shownCaption = text
+            captionIdleArmed = idle
+        }
         captionHideRunnable?.let { uiHandler.removeCallbacks(it) }
         tv.text = text; tv.visibility = View.VISIBLE
         val hide = Runnable { captionHideRunnable = null; tv.visibility = View.GONE }

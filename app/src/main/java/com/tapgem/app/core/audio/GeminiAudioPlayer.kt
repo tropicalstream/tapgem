@@ -38,6 +38,7 @@ class GeminiAudioPlayer(context: Context) {
     @Volatile private var lastOutputLevel = 0f
     @Volatile private var lastOutputAtMs = 0L
     @Volatile private var writeGeneration = 0L
+    private val tee = if (com.tapgem.app.BuildConfig.DEBUG) VoiceTee(appContext) else null
 
     /**
      * The assistant's voice never yields to a page: a radio stream (re)starting, a
@@ -57,8 +58,11 @@ class GeminiAudioPlayer(context: Context) {
         }
     }
 
-    fun playChunk(mimeType: String, data: ByteArray) {
-        if (data.isEmpty()) return
+    /** The current cut generation; a chunk queued before a barge-in must be dropped, not played late. */
+    val generation: Long get() = writeGeneration
+
+    fun playChunk(mimeType: String, data: ByteArray, queuedAt: Long = writeGeneration) {
+        if (data.isEmpty() || queuedAt != writeGeneration) return
         val sampleRate = parseSampleRate(mimeType) ?: DEFAULT_SAMPLE_RATE
         var track: AudioTrack
         val myGeneration: Long
@@ -99,6 +103,7 @@ class GeminiAudioPlayer(context: Context) {
                 continue
             }
             stalledSinceMs = 0L
+            tee?.wrote(data, offset, wrote, sampleRate)
             offset += wrote
             lastOutputAtMs = SystemClock.uptimeMillis()
         }
@@ -113,6 +118,7 @@ class GeminiAudioPlayer(context: Context) {
         writeGeneration++
         synchronized(lock) {
             val track = audioTrack ?: return
+            tee?.flushed(runCatching { track.playbackHeadPosition }.getOrDefault(-1))
             runCatching { track.pause() }
             runCatching { track.flush() }
             lastOutputLevel = 0f
@@ -153,6 +159,7 @@ class GeminiAudioPlayer(context: Context) {
             return null
         }
         audioTrack = track; trackSampleRate = sampleRate
+        tee?.newTrack(sampleRate)
         return track
     }
 

@@ -48,6 +48,7 @@ import com.tapgem.app.core.model.Theme
 import com.tapgem.app.core.model.Widget
 import com.tapgem.app.core.model.WidgetType
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
@@ -55,6 +56,7 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.tapgem.app.core.network.Router
 import kotlin.math.roundToInt
 
 /**
@@ -219,6 +221,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         // On battery, pages may not start media on their own (YouTube autoplay after a reload
         // is a full decode + network load nobody asked for); a tap — ours or the user's — still counts.
         if (widget.type == WidgetType.WEB) runCatching { webView?.settings?.mediaPlaybackRequiresUserGesture = on }
+        if (isHud) pushHudEnv()
     }
 
     private fun applyDim() {
@@ -489,7 +492,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
         audioProgress?.let { main.removeCallbacks(it) }; audioProgress = null
         runCatching { mediaPlayer?.stop() }; runCatching { mediaPlayer?.release() }; mediaPlayer = null; mediaPrepared = false
         runCatching { videoSurface?.release() }; videoSurface = null; textureView = null
-        exitFullscreen()
+        exitFullscreen(); stopHeading(); roadsCell = null; com.tapgem.app.core.bridge.NavCueBridge.forget(widget.id)
+        ircListener?.let { com.tapgem.app.core.irc.IrcClient.removeListener(it) }; ircListener = null
         runCatching { webView?.stopLoading(); webView?.loadUrl("about:blank"); webView?.destroy() }; webView = null
         synchronized(this) { runCatching { pdfRenderer?.close() }; pdfRenderer = null }
         runCatching { pdfFd?.close() }; pdfFd = null
@@ -689,6 +693,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     /** Activity went to the background: stop sound, remember to resume. */
     fun pauseForBackground() {
+        stopHeading()
         val mp = mediaPlayer ?: return
         resumeOnForeground = runCatching { mediaPrepared && mp.isPlaying }.getOrDefault(false)
         if (resumeOnForeground) runCatching { mp.pause() }
@@ -697,6 +702,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     fun resumeFromBackground() {
         runCatching { webView?.onResume() }
+        if (isHud && webView != null) startHeading()
         if (!resumeOnForeground) return
         resumeOnForeground = false
         runCatching { if (mediaPrepared && widget.state["playing"] != "false") mediaPlayer?.start() }
@@ -826,8 +832,13 @@ class WidgetView(context: Context) : FrameLayout(context) {
         val lat = m?.groupValues?.get(1) ?: "0"; val lon = m?.groupValues?.get(2) ?: "0"
         val label = m?.groupValues?.getOrNull(3).orEmpty()
         val zoom = widget.state["zoom"] ?: "13"
+        if (isHud) return "file:///android_asset/navhud.html?theme=${widget.state["theme"] ?: "auto"}&orient=${widget.state["orient"] ?: "auto"}" +
+            "&mode=${widget.state["mode"] ?: "walking"}&units=${if (Router.usUnits()) "us" else "metric"}"
         return "file:///android_asset/map.html?lat=$lat&lon=$lon&zoom=$zoom&label=$label&style=dark"
     }
+
+    /** The compact turn-by-turn HUD (arrow · info · heading-up minimap) instead of the slippy map. */
+    private val isHud: Boolean get() = widget.type == WidgetType.MAP && widget.state["view"] == "hud" && widget.state["nav"] == "on"
 
     private var lastRouteJson: String? = null
 
@@ -840,12 +851,14 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 wv.evaluateJavascript("window.setRoute && setRoute(${JSONObject.quote(widget.content)})", null)
                 wv.evaluateJavascript("window.setStep && setStep(${widget.state["step"]?.toIntOrNull() ?: 0})", null)
                 // The user's chosen zoom outlives a reload / restart.
-                wv.evaluateJavascript("window.setZoom && setZoom(${widget.state["zoom"]?.toIntOrNull() ?: 17})", null)
+                if (isHud) applyHudSettings() else wv.evaluateJavascript("window.setZoom && setZoom(${widget.state["zoom"]?.toIntOrNull() ?: 17})", null)
                 applyMapPosition()
+                applyMapFlags()
             }
-        } else if (lastRouteJson != null) {
-            lastRouteJson = null
-            wv.loadUrl(mapUrl())
+            if (isHud) startHeading() 
+        } else {
+            stopHeading()
+            if (lastRouteJson != null) { lastRouteJson = null; wv.loadUrl(mapUrl()) }
         }
     }
 
@@ -854,8 +867,77 @@ class WidgetView(context: Context) : FrameLayout(context) {
         val p = widget.state["pos"]?.split(',') ?: return
         if (p.size < 2) return
         val acc = p.getOrNull(2)?.toIntOrNull() ?: 0
-        wv.evaluateJavascript("window.setPosition && setPosition(${p[0]}, ${p[1]}, $acc, false)", null)
+        if (isHud) {
+            val vel = widget.state["vel"]?.split(',').orEmpty()
+            val speed = vel.getOrNull(0)?.toDoubleOrNull()?.let { "%.1f".format(Locale.US, it) } ?: "null"
+            val course = vel.getOrNull(1)?.toDoubleOrNull()?.let { "%.0f".format(Locale.US, it) } ?: "null"
+            wv.evaluateJavascript("window.setPosition && setPosition(${p[0]}, ${p[1]}, $acc, ${jsStr(widget.state["posSrc"] ?: "")}, $speed, $course)", null)
+            p[0].toDoubleOrNull()?.let { lat -> p[1].toDoubleOrNull()?.let { lon -> fetchRoads(lat, lon) } }
+        } else wv.evaluateJavascript("window.setPosition && setPosition(${p[0]}, ${p[1]}, $acc, false)", null)
     }
+
+    /** Off-route / rerouted / arrived, for the HUD's status line. */
+    private fun applyMapFlags() {
+        if (!isHud) return
+        val wv = webView ?: return
+        val steps = Router.Route.fromJson(widget.content)?.steps?.size ?: 0
+        val step = widget.state["step"]?.toIntOrNull() ?: 0
+        val flags = JSONObject().put("offRoute", (widget.state["offRoute"]?.toIntOrNull() ?: 0) > 0)
+            .put("rerouted", widget.state["rerouted"]?.toLongOrNull()?.let { System.currentTimeMillis() - it < 20_000L } ?: false)
+            .put("rerouting", widget.state["rerouting"] == "1")
+            .put("arrived", widget.state["arrived"] == "1")
+        wv.evaluateJavascript("window.setFlags && setFlags(${flags})", null)
+    }
+
+    private fun applyHudSettings() {
+        val wv = webView ?: return
+        pushHudEnv()
+        wv.evaluateJavascript("window.setUnits && setUnits(${jsStr(widget.state["units"] ?: (if (Router.usUnits()) "us" else "metric"))})", null)
+        wv.evaluateJavascript("window.setTheme && setTheme(${jsStr(widget.state["theme"]?.ifBlank { null } ?: "auto")})", null)
+        wv.evaluateJavascript("window.setOrientation && setOrientation(${jsStr(widget.state["orient"]?.ifBlank { null } ?: "auto")})", null)
+        wv.evaluateJavascript("window.setZoom && setZoom(${jsStr(widget.state["mzoom"]?.ifBlank { null } ?: "auto")})", null)
+        wv.evaluateJavascript("window.setArrowSize && setArrowSize(${jsStr(widget.state["arrow"]?.ifBlank { null } ?: "normal")})", null)
+    }
+
+    private fun pushHudEnv() {
+        val wv = webView ?: return
+        val env = JSONObject().put("eco", eco).put("hour12", !android.text.format.DateFormat.is24HourFormat(context))
+            .put("active", isAttachedToWindow)
+        Router.Route.fromJson(widget.content)?.drivingSide?.let { env.put("drivingSide", it) }
+        wv.evaluateJavascript("window.setEnv && setEnv($env)", null)
+    }
+
+    // ── HUD: compass heading and the streets around the wearer ─────
+    private var headingOn = false
+    private val headingListener = com.tapgem.app.core.location.HeadingSource.Listener { h ->
+        val wv = webView ?: return@Listener
+        if (!isHud || !isAttachedToWindow) return@Listener
+        wv.evaluateJavascript("window.setHeading && setHeading(${"%.1f".format(Locale.US, h.deg)}, ${h.reliable})", null)
+    }
+    private fun startHeading() {
+        if (headingOn) return
+        headingOn = true
+        com.tapgem.app.core.location.HeadingSource.acquire(context, headingListener)
+    }
+    private fun stopHeading() {
+        if (!headingOn) return
+        headingOn = false
+        com.tapgem.app.core.location.HeadingSource.release(headingListener)
+    }
+
+    private var roadsCell: String? = null
+    /** Fetch the surrounding streets once per ~250 m grid cell; cached cells are pushed at once. */
+    private fun fetchRoads(lat: Double, lon: Double) {
+        val cell = com.tapgem.app.core.network.RoadsSource.cellOf(lat, lon)
+        if (cell == roadsCell) return
+        com.tapgem.app.core.network.RoadsSource.cached(lat, lon)?.let { roadsCell = cell; pushRoads(it); return }
+        val gen = contentGen
+        Thread({
+            val json = com.tapgem.app.core.network.RoadsSource.around(lat, lon) ?: return@Thread
+            main.post { if (gen == contentGen && isHud && isAttachedToWindow) { roadsCell = cell; pushRoads(json) } }
+        }, "tapgem-roads").start()
+    }
+    private fun pushRoads(json: String) { webView?.evaluateJavascript("window.setRoads && setRoads(${JSONObject.quote(json)})", null) }
 
     private fun buildMap() {
         val wv = newWebView(Kind.MAP)
@@ -1005,6 +1087,16 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
         }
         if (kind == Kind.APP) wv.addJavascriptInterface(JsBridge(), "TapGem")
+        if (kind == Kind.APP && widget.source.endsWith(com.tapgem.app.core.tools.IrcTool.APP_FILE)) {
+            wv.addJavascriptInterface(IrcBridge(), "TapGemIrc")
+            ircListener?.let { com.tapgem.app.core.irc.IrcClient.removeListener(it) }
+            val l = com.tapgem.app.core.irc.IrcClient.Listener { o ->
+                val js = "window.__ircEvent && __ircEvent(${JSONObject.quote(o.toString())})"
+                main.post { if (webView === wv) wv.evaluateJavascript(js, null) }
+            }
+            ircListener = l; com.tapgem.app.core.irc.IrcClient.addListener(l)
+        }
+        if (kind == Kind.MAP) wv.addJavascriptInterface(NavBridge(), "TapGemNav")
         return wv
     }
 
@@ -1065,6 +1157,31 @@ class WidgetView(context: Context) : FrameLayout(context) {
     }
 
     /** Tiny bridge exposed to vibe-coded apps as window.TapGem. */
+    private var ircListener: com.tapgem.app.core.irc.IrcClient.Listener? = null
+
+    /** The IRC page's window onto the shared connection (see IrcClient / IrcTool). */
+    inner class IrcBridge {
+        @JavascriptInterface fun snapshot(since: String): String = com.tapgem.app.core.irc.IrcClient.snapshot(since.toLongOrNull() ?: 0L).toString()
+        @JavascriptInterface fun cmd(json: String): String {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"
+            val c = com.tapgem.app.core.irc.IrcClient
+            return when (o.optString("op")) {
+                "connect" -> { val srv = c.serverFor(o.optString("server")) ?: return "unknown server"; c.connect(srv, o.optString("nick").ifBlank { null }); "ok" }
+                "disconnect" -> { c.disconnect(); "ok" }
+                "join" -> { c.join(o.optString("channel")); "ok" }
+                "part" -> { c.part(o.optString("channel")); "ok" }
+                "nick" -> { c.changeNick(o.optString("nick")); "ok" }
+                "say" -> if (c.say(o.optString("target"), o.optString("text"))) "ok" else "not connected"
+                "current" -> { c.setCurrent(o.optString("target")); "ok" }
+                "confirm" -> { val p = c.pending ?: return "nothing"; c.pending = null; if (c.say(p.first, p.second)) "ok" else "not connected" }
+                "cancel" -> { c.pending = null; "ok" }
+                "members" -> JSONArray(c.membersOf(o.optString("target"))).toString()
+                "raw" -> { c.raw(o.optString("line")); "ok" }
+                else -> "unknown op"
+            }
+        }
+    }
+
     inner class JsBridge {
         @JavascriptInterface fun notify(msg: String) { HudStateBridge.notice(msg.take(80)) }
         @JavascriptInterface fun setTitle(t: String) { main.post { titleText.text = t.take(32) } }
@@ -1077,6 +1194,40 @@ class WidgetView(context: Context) : FrameLayout(context) {
         @JavascriptInterface fun load(key: String): String {
             val k = "app." + key.take(32).replace(Regex("[^A-Za-z0-9_.-]"), "_")
             return widget.state[k].orEmpty()
+        }
+    }
+
+    /**
+     * Events from the navigation HUD page (navhud.html): approach phases become a HUD
+     * notice and, while a voice session is open, a spoken cue; the minimap's zoom
+     * choice is persisted so it survives a reload; a tap on the arrow re-reads the step.
+     */
+    inner class NavBridge {
+        @JavascriptInterface fun event(json: String) {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return
+            when (o.optString("t")) {
+                "phase" -> {
+                    val text = o.optString("text").take(120)
+                    val cue = when (o.optString("phase")) {
+                        "near" -> if (text.isNotBlank()) "In ${o.optString("distText").ifBlank { Router.distance(o.optDouble("distM", 0.0)) }}, $text" else ""
+                        "now" -> text.ifBlank { "Turn now" }
+                        "arrived" -> text.ifBlank { "You've arrived" }
+                        else -> ""
+                    }
+                    if (cue.isNotBlank()) { HudStateBridge.notice(cue.take(80)); com.tapgem.app.core.bridge.NavCueBridge.cue(cue) }
+                }
+                "zoom" -> main.post {
+                    val auto = o.optBoolean("auto"); val preset = if (auto) "" else o.optString("preset")
+                    val pending = !widget.state["mzoomCmd"].isNullOrBlank()
+                    if ((pending || !auto) && (pending || widget.state["mzoom"].orEmpty() != preset)) onStateChange?.invoke(widget.id, mapOf("mzoom" to preset, "mzoomCmd" to ""))
+                }
+                "tap" -> if (o.optString("on") == "arrow") {
+                    val text = o.optString("text").ifBlank { Router.Route.fromJson(widget.content)?.steps?.getOrNull(widget.state["step"]?.toIntOrNull() ?: 0)?.text.orEmpty() }
+                    val dist = o.optString("distText")
+                    if (text.isNotBlank()) { val cue = if (dist.isNotBlank()) "In $dist, $text" else text; HudStateBridge.notice(cue.take(80)); com.tapgem.app.core.bridge.NavCueBridge.cue(cue) }
+                }
+                "state" -> com.tapgem.app.core.bridge.NavCueBridge.state(widget.id, (o.optJSONObject("s") ?: o).toString())
+            }
         }
     }
 
@@ -1100,10 +1251,17 @@ class WidgetView(context: Context) : FrameLayout(context) {
             WidgetType.APP -> if (old["reload"] != new["reload"]) webView?.let { loadApp(it) }
             WidgetType.MAP -> {
                 val wv = webView ?: return
-                if (old["reload"] != new["reload"]) { wv.loadUrl(mapUrl()); return }
+                if (old["reload"] != new["reload"] || old["view"] != new["view"]) { lastRouteJson = null; roadsCell = null; stopHeading(); wv.loadUrl(mapUrl()); return }
                 if (old["nav"] != new["nav"] || (new["nav"] == "on" && lastRouteJson != widget.content)) { applyMapRoute(force = true); return }
-                if (old["step"] != new["step"] && new["nav"] == "on") wv.evaluateJavascript("window.setStep && setStep(${new["step"]?.toIntOrNull() ?: 0})", null)
-                if (old["pos"] != new["pos"]) applyMapPosition()
+                if (old["step"] != new["step"] && new["nav"] == "on") { wv.evaluateJavascript("window.setStep && setStep(${new["step"]?.toIntOrNull() ?: 0})", null); applyMapFlags() }
+                if (old["pos"] != new["pos"] || old["vel"] != new["vel"]) applyMapPosition()
+                if (old["offRoute"] != new["offRoute"] || old["rerouted"] != new["rerouted"] || old["rerouting"] != new["rerouting"] || old["arrived"] != new["arrived"]) applyMapFlags()
+                if (isHud) {
+                    if (old["theme"] != new["theme"] || old["orient"] != new["orient"] || old["units"] != new["units"] || old["arrow"] != new["arrow"]) applyHudSettings()
+                    if (old["mzoom"] != new["mzoom"] && new["mzoomCmd"].isNullOrBlank()) wv.evaluateJavascript("window.setZoom && setZoom(${jsStr(new["mzoom"]?.ifBlank { null } ?: "auto")})", null)
+                    // "zoom in / out / auto": a one-shot command; the page answers with a zoom event that persists the preset.
+                    if (old["mzoomCmd"] != new["mzoomCmd"] && !new["mzoomCmd"].isNullOrBlank()) wv.evaluateJavascript("window.setZoom && setZoom(${jsStr(new["mzoomCmd"]!!.substringBefore(':'))})", null)
+                }
                 if (old["zoom"] != new["zoom"]) wv.evaluateJavascript("window.setZoom && setZoom(${new["zoom"]?.toIntOrNull() ?: 13})", null)
                 if (old["panNonce"] != new["panNonce"]) wv.evaluateJavascript("window.panBy && panBy(${jsStr(new["pan"] ?: "center")})", null)
             }

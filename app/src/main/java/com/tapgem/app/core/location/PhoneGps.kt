@@ -134,7 +134,10 @@ object PhoneGps {
         val acc = o.optDouble("mHorizontalAccuracyMeters", 20.0).toFloat().coerceAtLeast(1f)
         // Age the fix by the phone's own timestamp when present.
         val ageMs = o.optLong("mTime", 0L).takeIf { it > 0 }?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) } ?: 0L
-        return LocationSource.Fix(lat, lon, acc, "phone", SystemClock.elapsedRealtime() - ageMs.coerceAtMost(10 * 60_000L))
+        // Course only while actually moving: a standing phone reports 0 speed and a stale or zero bearing.
+        val speed = o.optDouble("mSpeed", Double.NaN).toFloat().takeIf { !it.isNaN() && it >= 0f }
+        val bearing = o.optDouble("mBearing", Double.NaN).toFloat().takeIf { !it.isNaN() && speed != null && speed > 0.5f && (o.optBoolean("mHasBearing", true)) }
+        return LocationSource.Fix(lat, lon, acc, "phone", SystemClock.elapsedRealtime() - ageMs.coerceAtMost(10 * 60_000L), speed, bearing)
     }
 
     /** Words for the user when no phone fix arrives. */

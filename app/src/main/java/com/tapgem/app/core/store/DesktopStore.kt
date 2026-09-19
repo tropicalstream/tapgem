@@ -133,7 +133,8 @@ object DesktopStore {
 
     /**
      * Remove generated wallpapers, apps and downloads no saved desktop refers
-     * to any more. Runs after deletes and on a periodic engine tick.
+     * to any more, once they have sat unreferenced past their grace period.
+     * Runs after deletes and on a periodic engine tick.
      */
     fun gc() {
         runCatching {
@@ -147,8 +148,12 @@ object DesktopStore {
                 }
             }
             var removed = 0
-            val cutoff = System.currentTimeMillis() - 10 * 60_000L // never touch files younger than 10 min
-            listOf(wallpapersDir, appsDir, downloadsDir).forEach { dir ->
+            val now = System.currentTimeMillis()
+            // Closing a window must not destroy what the model built: apps stay reopenable for a month,
+            // painted wallpapers for a week; only downloads are treated as scratch.
+            val grace = mapOf(appsDir to 30 * 24 * 3_600_000L, wallpapersDir to 7 * 24 * 3_600_000L, downloadsDir to 10 * 60_000L)
+            grace.forEach { (dir, keepMs) ->
+                val cutoff = now - keepMs
                 dir.listFiles()?.forEach { f ->
                     val key = canonical(f.absolutePath)
                     if (!referenced.contains(key) && f.lastModified() < cutoff && f.isFile) {

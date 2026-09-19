@@ -63,6 +63,20 @@ adb -s <X3_SERIAL> shell am broadcast -a com.tapgem.app.SET_API_KEY --es key "AI
 
 The key is never stored in this repo (`gemini_api_key.txt` is git-ignored).
 
+**Free-tier quota.** A key from [Google AI Studio](https://aistudio.google.com/apikey) needs no
+credit card, but it carries real request-per-minute/day limits — and the **Live API (voice,
+`gemini-3.8-live`) has its own, much stricter concurrent-session cap**, separate from the
+`gemini-3.8-flash` text quota the tools use. Live is usually the first thing to 429. If TapGem
+says a voice session hit its quota, that is Google's real `429 RESOURCE_EXHAUSTED` relayed as-is
+(TapGem never invents that message) — check
+[aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit) for the live numbers on
+your project. Linking a billing account (Cloud Console → Billing, on the same Google Cloud
+project as the key) lifts the caps a lot and Flash is cheap for casual single-user use, but it
+also **removes the free tier for that project entirely** — every call becomes billable from the
+first token once billing is linked, not just the overflow. Prefer to stay card-free? Just wait
+for the daily reset (midnight Pacific), or use a second Google Cloud project/key to get a second
+independent free allotment.
+
 ---
 
 ## Controls
@@ -269,6 +283,43 @@ automatically before the click is retried; a click that changes nothing says so
 called out, so the assistant stops second-guessing itself and either moves on or
 tells you what is blocking.
 
+**Navigation HUD — "walk to the taqueria with minimap".** Add *with minimap* to any
+directions request and instead of the big map you get a small window (340×210 by default,
+top right): a **3-D turn arrow** for the next manoeuvre (every OSRM turn, fork, ramp, merge,
+roundabout with its exit number, U-turn and arrival side has its own shape), the distance to it
+in large numerals that count down between GPS fixes, the instruction with the street in bold,
+a *then …* hint for the manoeuvre after, and a circular **heading-up minimap**: the streets
+around you from OpenStreetMap (Overpass), the route ahead bright and behind dim, the next
+turn ringed, stops and the destination marked (as rim chevrons when off the disc), north on
+the rim and a fixed pointer at your position. On foot the map turns with your head (the
+glasses' compass); on a bike or in a car it follows your direction of travel and never spins
+with head turns; with no usable heading it falls back to route-up, then north-up. The strip
+along the bottom carries ETA, distance and time left, speed or pace, the travel-mode glyph and
+GPS quality. Four themes besides the default — **fallout** (Pip-Boy phosphor, scanlines,
+radar minimap, amber alert mode), **synthwave** (neon arrow over a horizon grid and striped
+sun), **hiking** (trail-blaze arrow, topo contours, compass rose, a sunset chip when you'll
+finish near dusk) and **running** (sports-watch numerals, pace panel, lap ring, split flashes)
+— chosen by voice ("… in synthwave", "switch to fallout", "hiking theme") or in the ⚙ sheet
+together with the view (minimap ↔ full map), orientation (heading / course / north), minimap
+zoom, arrow size and units. The window resizes from an arrow-only glyph up to the full
+display, and the last theme and view you chose become the defaults next time.
+"Run to …" and "hike to …" pick the running / hiking themes on their own. The page is
+`app/src/main/assets/navhud.html`; `?demo=glyphs` and `?demo=route` inside it replay every
+manoeuvre and a whole walk for checking themes without leaving the desk. Minimap design after
+[Everyday](https://github.com/TheophileGaudin/Everyday) (heading-up vector roads, rim
+indicators), re-implemented.
+
+**IRC — "connect to Libera / EFnet / OCF", "join #ocf", "tell them …".** A built-in retro-terminal
+chat client (`app/src/main/assets/irc.html`, styled after cool-retro-term's profiles: amber, green,
+scanlines, pixel, apple2, vintage, dos, ibm3278, futuristic — "IRC theme scanlines") with the
+connection living in the app (`core/irc/IrcClient.kt`, TLS on 6697; a certificate Android cannot
+verify, as on parts of EFnet, degrades to encrypted-unverified with a note in the server tab).
+Default nick `gomie_`; networks Libera.Chat, EFnet and OCF Berkeley (`irc.ocf.berkeley.edu`). Say
+"join #rebuild", "leave the channel", "change my nick to …", "switch to #ocf", "what did they say in
+#ocf". Dictated messages are never sent blind: "tell the channel hello" stages the words, the
+assistant reads them back and asks "send it?" — only your yes transmits (the window shows the same
+staged line with send / cancel buttons, and the input box works too: `/join`, `/nick`, `/msg`, `/me`).
+
 **YouTube Music and video in a window.** music.youtube.com's player page is laid out for a
 phone held upright — it reserves 408 px under the media for the controls and the Up next / Lyrics
 strip — so in a 640×418 window the music video (or the album art) came out 10 px tall. TapGem
@@ -390,6 +441,15 @@ adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.TOOL --es name web --es
 # simulate battery power to see the eco policy kick in (and undo it)
 adb -s <X3_SERIAL> shell dumpsys battery unplug
 adb -s <X3_SERIAL> shell dumpsys battery reset
+# put the glasses somewhere else: a simulated position wins over every real source until cleared,
+# so "walk to …" routes, the HUD and the minimap can be exercised from a desk (lat,lon[,accuracy m[,speed m/s[,bearing°]]])
+adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.LOCATION --es fix '37.8716,-122.2727,8,1.4,90'"
+adb -s <X3_SERIAL> shell "am broadcast -a com.tapgem.app.LOCATION --es fix clear"
+# keep a copy of what the assistant actually said: while files/voice_tee.on exists, every PCM chunk the
+# speaker played lands in files/voice_tee/<epoch>.pcm (16-bit mono, rate in the .log) with a log of write
+# times and barge-in cut points — screen recordings have no audio, this is how a demo gets its real voice back
+adb -s <X3_SERIAL> shell "run-as com.tapgem.app touch files/voice_tee.on"
+adb -s <X3_SERIAL> shell "run-as com.tapgem.app cat files/voice_tee/<epoch>.pcm" > reply.pcm
 ```
 
 Results are logged under the `TapGemApp` tag and flashed as a notice. With a
@@ -399,7 +459,7 @@ macOS voice you can run the whole loop hands-free: start the session, then
 Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/undo/clear/apps/wallpapers),
 `widget` (add/update/remove/move/resize/front/list/navigate/refresh),
 `web` (search/inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
-`theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update),
+`theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update), `irc` (connect/join/part/nick/say/confirm/read/status/theme),
 `media` (find/open), `bookmark` (save/open/list/delete/show/hide).
 
 ---

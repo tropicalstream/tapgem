@@ -40,12 +40,18 @@ object LocationSource {
     private const val LAST_KNOWN_MAX_AGE_MS = 15 * 60_000L
     private const val PHONE_FIX_TIMEOUT_MS = 12_000L
 
-    data class Fix(val lat: Double, val lon: Double, val accuracyM: Float, val source: String, val atMs: Long) {
+    /** [speedMps] / [bearingDeg] are the receiver's course when it reported one (phone GPS while moving); null otherwise. */
+    data class Fix(val lat: Double, val lon: Double, val accuracyM: Float, val source: String, val atMs: Long,
+                   val speedMps: Float? = null, val bearingDeg: Float? = null) {
         val isPrecise: Boolean get() = source != "ip"
         fun latLon(): String = "%.6f,%.6f".format(java.util.Locale.US, lat, lon)
     }
 
     @Volatile private var cached: Fix? = null
+
+    /** Bench-test position (debug builds, `com.tapgem.app.LOCATION` broadcast); wins over every real source while set. */
+    @Volatile var simulated: Fix? = null
+        set(v) { field = v?.takeIf { com.tapgem.app.BuildConfig.DEBUG } }
 
     fun hasPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -54,6 +60,7 @@ object LocationSource {
     /** Best available position, or null if nothing at all could be determined. */
     suspend fun current(context: Context, allowIpFallback: Boolean = true, maxAgeMs: Long = FRESH_MS): Fix? = withContext(Dispatchers.IO) {
         val app = context.applicationContext
+        simulated?.let { return@withContext it.copy(atMs = SystemClock.elapsedRealtime()) }
         // Tier 0 — the paired phone's real GPS through RayNeo's IPC (what the stock navigation uses).
         // A fresh cached push, else the launcher's last fix, else start the stream and wait briefly.
         PhoneGps.latest(maxAgeMs)?.let { cached = it; return@withContext it }
@@ -81,7 +88,8 @@ object LocationSource {
         for (p in providers) {
             val loc = requestOnce(lm, p) ?: continue
             Log.i(TAG, "fix from $p acc=${loc.accuracy}m")
-            return Fix(loc.latitude, loc.longitude, loc.accuracy, p, SystemClock.elapsedRealtime())
+            return Fix(loc.latitude, loc.longitude, loc.accuracy, p, SystemClock.elapsedRealtime(),
+                loc.speed.takeIf { loc.hasSpeed() }, loc.bearing.takeIf { loc.hasBearing() })
         }
         return null
     }

@@ -30,6 +30,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLEncoder
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -237,6 +238,9 @@ object Layout {
 // ─────────────────────────────────────────────────────────────────────
 
 object WidgetOps {
+    /** Default window for the navigation HUD ("mini window"): arrow + info left, minimap right. */
+    val HUD_SIZE = 340 to 210
+
 
     private const val TAG = "WidgetOps"
     const val MAX_TEXT_FILE_CHARS = 24_000
@@ -307,7 +311,7 @@ object WidgetOps {
         when (type) {
             WidgetType.TEXT -> {
                 val prompt = args.str("prompt", "generate")
-                val text = args.str("text", "content", "body")
+                val text = args.str("text", "content", "body")?.let(::unescapeModelText)
                 when {
                     prompt != null -> {
                         source = "prompt:$prompt"
@@ -543,7 +547,14 @@ object WidgetOps {
             val r = Router.Route.fromJson(navWidget.content)
             val st = r?.steps?.getOrNull(navWidget.state["step"]?.toIntOrNull() ?: 0)
             DesktopBridge.setActive(navWidget.id)
-            return@withContext Result.success("Already navigating to ${r?.dest ?: dest}${st?.let { ": ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}" } ?: ""}.")
+            // Same trip asked again with a different look ("… with the minimap", "… in fallout"): just restyle it.
+            val (delta, _) = WidgetOps.navState(args, navWidget.state)
+            val changed = if (delta.isNotEmpty()) {
+                DesktopBridge.mutateWidget(navWidget.id, pushUndo = false) { it.withState(delta) }
+                WidgetOps.rememberHud(context, delta["view"]?.let { it == "hud" }, delta["theme"])
+                " Switched to " + delta.entries.joinToString(", ") { (k, v) -> when (k) { "view" -> if (v == "hud") "the minimap HUD" else "the full map"; "theme" -> "the ${v.ifBlank { "default" }} theme"; else -> "$k ${v.ifBlank { "auto" }}" } } + "."
+            } else ""
+            return@withContext Result.success("Already navigating to ${r?.dest ?: dest}${st?.let { ": ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}" } ?: ""}.$changed")
         }
         // Where the user is comes first: it biases place lookups to their area and is the route origin.
         val from = LocationSource.current(context) ?: return@withContext Result.failure(IllegalStateException("I can't tell where you are right now, so I can't route from here."))
@@ -571,8 +582,27 @@ object WidgetOps {
         HudStateBridge.notice(null)
         val json = route.toJson().toString()
         val source = "geo:%.6f,%.6f?q=%s".format(Locale.US, to.lat, to.lon, URLEncoder.encode(to.label, "UTF-8"))
+        // "… with minimap" → the compact HUD (arrow · info · heading-up minimap) instead of the slippy map;
+        // an existing navigation keeps its view and theme unless the request names one.
+        val (hudDelta, hudWarn) = WidgetOps.navState(args, emptyMap(), filterUnchanged = false)
+        val (rememberedView, rememberedTheme) = WidgetOps.rememberedHud(context)
+        val activity = WidgetOps.impliedActivity(args)                     // "run to" / "hike to": this trip only
+        val hudAsked = WidgetOps.hudRequested(args)
+        val hud = hudAsked ?: (if (activity != null) true else null) ?: navWidget?.let { it.state["view"] == "hud" } ?: rememberedView
+        val theme = when {
+            hudDelta.containsKey("theme") -> hudDelta["theme"]!!          // named, or an explicit "default" ("")
+            activity != null -> activity
+            else -> navWidget?.state?.get("theme")?.takeIf { it.isNotBlank() } ?: rememberedTheme
+        }
+        val orient = if (hudDelta.containsKey("orient")) hudDelta["orient"]!! else navWidget?.state?.get("orient").orEmpty()
+        val keep = navWidget?.state.orEmpty()
+        val hudExtras = mapOf("mzoom" to (hudDelta["mzoom"] ?: keep["mzoom"].orEmpty()), "arrow" to (hudDelta["arrow"] ?: keep["arrow"].orEmpty()), "units" to (hudDelta["units"] ?: keep["units"].orEmpty()))
+        // Only what the user said outright becomes the default for next time.
+        WidgetOps.rememberHud(context, hudAsked, if (hudDelta.containsKey("theme")) hudDelta["theme"] else null)
         val state = mapOf("zoom" to "17", "step" to "0", "nav" to "on", "mode" to mode, "dest" to dest, "via" to viaKey, "navMap" to "1",
-            "pos" to "%.6f,%.6f,%d".format(Locale.US, from.lat, from.lon, from.accuracyM.toInt()), "posSrc" to from.source)
+            "pos" to "%.6f,%.6f,%d".format(Locale.US, from.lat, from.lon, from.accuracyM.toInt()), "posSrc" to from.source,
+            "vel" to (from.speedMps?.let { sp -> "%.1f,%s".format(Locale.US, sp, from.bearingDeg?.let { "%.0f".format(Locale.US, it) } ?: "") } ?: ""))
+            .filterValues { it.isNotEmpty() } + (mapOf("view" to (if (hud) "hud" else ""), "theme" to theme, "orient" to orient) + hudExtras).filterValues { it.isNotEmpty() }
         val viaText = if (via.isEmpty()) "" else " via " + via.joinToString(", ") { it.label }
         // Title leads with the next stop: "→ Glenview Taqueria → Montera Middle School".
         val title = ("→ " + (via.map { it.label } + to.label).joinToString(" → ")).take(32)
@@ -581,11 +611,12 @@ object WidgetOps {
         if (id != null && DesktopBridge.current().widget(id) != null) {
             DesktopBridge.mutateWidget(id) { w -> w.copy(type = WidgetType.MAP, title = title, source = source, content = json, state = state, updatedAt = System.currentTimeMillis()) }
         } else {
-            val (dw, dh) = Layout.sizeFor(WidgetType.MAP, args.str("size") ?: "large")
+            val (dw, dh) = if (hud) Layout.sizeFor(WidgetType.MAP, args.str("size"), fallback = HUD_SIZE) else Layout.sizeFor(WidgetType.MAP, args.str("size") ?: "large")
             val (w, h) = Layout.clampSize(args.int("w", "width") ?: dw, args.int("h", "height") ?: dh)
             var placed: Widget? = null
             DesktopBridge.mutate { d ->
-                val (px, py) = Layout.anchorPos(args.str("anchor", "position") ?: "center", w, h) ?: Layout.freeSlot(d.widgets, w, h)
+                // The HUD sits out of the way by default (top right, under the strip); the full map takes the centre.
+                val (px, py) = Layout.anchorPos(args.str("anchor", "position") ?: (if (hud) "top right" else "center"), w, h) ?: Layout.freeSlot(d.widgets, w, h)
                 val (x, y) = Layout.clampPos(px, py, w, h)
                 val widget = Widget(type = WidgetType.MAP, title = title, x = x, y = y, w = w, h = h, z = (d.widgets.maxOfOrNull { it.z } ?: 0) + 1,
                     source = source, state = state, content = json, updatedAt = System.currentTimeMillis())
@@ -602,9 +633,119 @@ object WidgetOps {
             else -> " Your position is only approximate — connect your phone in the RayNeo app for real GPS; ${com.tapgem.app.core.location.PhoneGps.whyNot(context)}."
         }
         if (from.source == "phone") LocationSource.keepPhoneStream(context)
+        val hudNote = if (hud) " The minimap HUD is up${theme.takeIf { it.isNotBlank() }?.let { " in the ${HUD_THEMES[it] ?: it} theme" } ?: ""} — themes: fallout, synthwave, hiking, running; say 'full map' for the big map." else ""
         Result.success("Navigation started to ${to.label}$viaText: ${Router.distance(route.distM)}, about ${Router.duration(route.durS)} $mode. " +
             (first?.let { "First: ${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "") +
-            " Say next step / previous step / stop navigation.$quality")
+            " Say next step / previous step / stop navigation.$quality$hudNote${hudWarn?.let { " ($it)" } ?: ""}")
+    }
+
+    /** Navigation HUD themes: the words the user says → the theme key the page knows. */
+    val HUD_THEMES = linkedMapOf("fallout" to "Fallout", "synthwave" to "Synthwave", "hiking" to "Hiking", "running" to "Running")
+    fun parseHudTheme(raw: String?): String? {
+        val k = raw?.trim()?.lowercase(Locale.US) ?: return null
+        return when {
+            k.isBlank() -> null
+            k.contains("synth") || k.contains("neon") || k.contains("retrowave") || k.contains("outrun") || k.contains("cyber") || k.contains("vapor") || k.contains("miami") || k.contains("eighties") || k.contains("80s") -> "synthwave"
+            k.contains("fallout") || k.contains("pip") || k.contains("vault") || k.contains("terminal") || k.contains("wasteland") || k.contains("phosphor") || k.contains("retro") -> "fallout"
+            k.contains("hik") || k.contains("nature") || k.contains("trail") || k.contains("forest") || k.contains("outdoor") || k.contains("topo") -> "hiking"
+            k.contains("run") || k.contains("jog") || k.contains("sport") || k.contains("fitness") || k.contains("pace") -> "running"
+            k == "auto" || k == "default" || k == "none" || k == "plain" || k == "classic" || k == "normal" || k == "blue" || k == "hud" || k == "standard" -> "auto"
+            else -> null
+        }
+    }
+    fun parseHudOrientation(raw: String?): String? {
+        val k = raw?.trim()?.lowercase(Locale.US)?.replace(Regex("[^a-z]"), "") ?: return null
+        return when {
+            k.isBlank() -> null
+            k.startsWith("north") -> "north"
+            k.startsWith("head") || k.contains("compass") || k.contains("look") -> "heading"
+            k.startsWith("course") || k.contains("travel") || k.contains("gps") || k.contains("track") -> "course"
+            k == "auto" || k == "default" -> "auto"
+            else -> null
+        }
+    }
+
+    /** minimap=true / view=minimap|hud → true; minimap=false / view=full|map → false; unsaid → null. */
+    fun hudRequested(args: Args): Boolean? {
+        val view = args.str("view", "layout", "display")?.lowercase(Locale.US)
+        val minimap = args.bool("minimap", "hud", "compact", "mini")
+        return when {
+            minimap == true || view != null && (view.contains("mini") || view.contains("hud") || view.contains("compact") || view.contains("arrow")) -> true
+            minimap == false || view != null && (view.contains("full") || view.contains("map") || view.contains("tile") || view.contains("big")) -> false
+            else -> null
+        }
+    }
+
+    /**
+     * Navigation HUD settings from tool args → state delta: view (minimap|map), theme
+     * (fallout|synthwave|hiking|running|auto), orientation (auto|heading|course|north). Warns on unknown names.
+     */
+    fun navState(args: Args, current: Map<String, String>, filterUnchanged: Boolean = true): Pair<Map<String, String>, String?> {
+        val out = HashMap<String, String>()
+        var warn: String? = null
+        hudRequested(args)?.let { out["view"] = if (it) "hud" else "" }
+        args.str("theme", "hud_theme", "skin", "look")?.let { raw ->
+            parseHudTheme(raw)?.let { out["theme"] = if (it == "auto") "" else it } ?: run { warn = "I don't have a \"$raw\" theme — the HUD comes in fallout, synthwave, hiking and running." }
+        }
+        args.str("orientation", "orient", "map_orientation", "rotation")?.let { raw ->
+            parseHudOrientation(raw)?.let { out["orient"] = if (it == "auto") "" else it } ?: run { warn = (warn?.let { "$it " } ?: "") + "Orientation is heading, course, north or auto." }
+        }
+        args.str("arrow", "arrow_size")?.lowercase(Locale.US)?.let { a ->
+            out["arrow"] = when { a.startsWith("larg") || a.startsWith("big") -> "large"; a.startsWith("small") || a.startsWith("tiny") -> "small"; else -> "" }
+        }
+        args.str("units", "unit", "measure")?.lowercase(Locale.US)?.let { u ->
+            out["units"] = when { u.startsWith("met") || u.startsWith("km") || u.startsWith("kilo") -> "metric"; u.startsWith("us") || u.startsWith("imp") || u.startsWith("mi") || u.startsWith("feet") || u.startsWith("ft") -> "us"; else -> "" }
+        }
+        // Minimap radius presets: only when the caller names one (a bare number is the tile map's zoom level).
+        args.str("zoom", "radius", "minimap_zoom")?.lowercase(Locale.US)?.takeIf { it.toIntOrNull() == null }?.let { z ->
+            hudZoomPreset(z)?.let { out["mzoom"] = if (it == "auto") "" else it }
+        }
+        return (if (filterUnchanged) out.filter { (k, v) -> current[k].orEmpty() != v } else out) to warn
+    }
+
+    /** near · mid · far · wide · region (200 ft · 400 ft · 0.15 mi · 0.3 mi · 0.6 mi / 60 · 120 · 250 · 500 · 1000 m). */
+    val HUD_ZOOMS = listOf("near", "mid", "far", "wide", "region")
+    private val HUD_RADII = listOf("near" to 60.0, "mid" to 120.0, "far" to 250.0, "wide" to 500.0, "region" to 1000.0)
+    fun hudZoomPreset(raw: String?): String? {
+        val k = raw?.trim()?.lowercase(Locale.US)?.replace(",", "") ?: return null
+        if (k.isBlank()) return null
+        // "600 feet", "0.3 mi", "250 m", "1 km": the preset whose radius is nearest.
+        Regex("([0-9]*\\.?[0-9]+)\\s*(ft|feet|foot|m|meters|metres|mi|mile|miles|km|kilometers|kilometres|yd|yards)?").find(k)?.let { m ->
+            val n = m.groupValues[1].toDoubleOrNull() ?: return@let
+            val metres = when (m.groupValues[2]) { "ft", "feet", "foot" -> n * 0.3048; "mi", "mile", "miles" -> n * 1609.344; "km", "kilometers", "kilometres" -> n * 1000; "yd", "yards" -> n * 0.9144; "" -> if (n <= 5) n * 1609.344 else n; else -> n }
+            return HUD_RADII.minByOrNull { abs(it.second - metres) }!!.first
+        }
+        return when {
+            k == "auto" || k == "default" -> "auto"
+            k.startsWith("near") || k.startsWith("close") -> "near"
+            k.startsWith("mid") -> "mid"
+            k.startsWith("far") -> "far"
+            k.startsWith("wide") -> "wide"
+            k.startsWith("region") -> "region"
+            else -> null
+        }
+    }
+
+    private const val PREF_HUD_THEME = "nav_hud_theme"
+    private const val PREF_HUD_VIEW = "nav_hud_view"
+    /** The last theme / view chosen become the defaults for the next navigation. */
+    /** [theme] "" clears the remembered theme (an explicit "default"); null leaves it alone. */
+    fun rememberHud(context: Context, view: Boolean?, theme: String?) {
+        val e = context.getSharedPreferences("tapgem_config", Context.MODE_PRIVATE).edit()
+        view?.let { e.putBoolean(PREF_HUD_VIEW, it) }
+        theme?.let { if (it.isBlank()) e.remove(PREF_HUD_THEME) else e.putString(PREF_HUD_THEME, it) }
+        e.apply()
+    }
+    /** The model sometimes emits "\\n" as two characters inside an already-decoded JSON string. */
+    fun unescapeModelText(t: String): String = t.replace("\\n", "\n").replace("\\t", "\t")
+
+    /** "Run to" / "hike to": a theme (and the minimap) for this trip only, never remembered. */
+    fun impliedActivity(args: Args): String? = args.str("activity", "sport")?.lowercase(Locale.US)?.let { a ->
+        when { a.startsWith("run") || a.startsWith("jog") -> "running"; a.startsWith("hik") || a.startsWith("trail") || a.startsWith("walk") && a.contains("nature") -> "hiking"; else -> null }
+    }
+    fun rememberedHud(context: Context): Pair<Boolean, String> {
+        val p = context.getSharedPreferences("tapgem_config", Context.MODE_PRIVATE)
+        return p.getBoolean(PREF_HUD_VIEW, false) to p.getString(PREF_HUD_THEME, "").orEmpty()
     }
 
     /**
@@ -768,7 +909,7 @@ class WidgetTool(private val context: Context) : AiTool {
                 val want = if (v == "toggle") !n.onTop else v in setOf("true", "yes", "on", "1")
                 if (want != n.onTop) { n = n.copy(onTop = want); changes += if (want) "stays on top" else "no longer on top" }
             }
-            args.str("text", "content", "body")?.let { t ->
+            args.str("text", "content", "body")?.let(WidgetOps::unescapeModelText)?.let { t ->
                 n = if (f.type == WidgetType.TEXT) n.copy(source = t, content = "") else n.copy(content = t, updatedAt = System.currentTimeMillis())
                 changes += "text changed"
             }
@@ -787,6 +928,17 @@ class WidgetTool(private val context: Context) : AiTool {
                     .withState("zoom" to (args.int("zoom") ?: Geocoder.zoomFor(geo.kind, n.state["zoom"]?.toIntOrNull() ?: 13)).coerceIn(1, 18).toString())
                 changes += "map moved to ${geo.label}"
             } else if (f.type == WidgetType.MAP) args.int("zoom")?.let { z -> n = n.withState("zoom" to z.coerceIn(1, 18).toString()); changes += "zoom $z" }
+            if (f.type == WidgetType.MAP && (f.state["nav"] == "on" || f.state["navMap"] == "1")) {
+                val (st, bad) = WidgetOps.navState(args, n.state)
+                if (st.isNotEmpty()) {
+                    n = n.withState(st)
+                    changes += st.entries.joinToString(", ") { (k, v) -> when (k) {
+                        "view" -> if (v == "hud") "minimap HUD" else "full map"; "theme" -> "theme ${v.ifBlank { "default" }}"; "orient" -> "orientation ${v.ifBlank { "auto" }}"
+                        "arrow" -> "${v.ifBlank { "normal" }} arrow"; "units" -> if (v == "metric") "metric units" else "miles and feet"; "mzoom" -> "minimap zoom ${v.ifBlank { "auto" }}"; else -> "$k $v" } }
+                    WidgetOps.rememberHud(context, st["view"]?.let { it == "hud" }, st["theme"])
+                }
+                bad?.let { warnings += it }
+            }
             if (f.type == WidgetType.CLOCK) {
                 args.str("format")?.let { fm -> n = n.copy(source = fm.lowercase(Locale.US)); changes += "format $fm" }
                 val (st, bad) = WidgetOps.clockState(args, n.state)
@@ -891,6 +1043,9 @@ class WidgetTool(private val context: Context) : AiTool {
                     "cities ${cfg.zones.joinToString(", ") { com.tapgem.app.core.model.WorldClocks.label(it) }}. Styles: digital, thin, led, analog, modern; " +
                     "change with widget action=update style=… hours=12|24 seconds=… date=… zones=<cities> (or add_zone / remove_zone)"
             }
+            WidgetType.MAP -> if (w.state["nav"] == "on") "view ${if (w.state["view"] == "hud") "minimap HUD" else "full map"}, theme ${w.state["theme"]?.ifBlank { null } ?: "default"}, " +
+                "orientation ${w.state["orient"]?.ifBlank { null } ?: "auto"}. Change with widget action=update minimap=true|false theme=fallout|synthwave|hiking|running orientation=heading|course|north|auto"
+                else "zoom ${w.state["zoom"] ?: "13"}, opacity ${(w.style.opacity * 100).toInt()}%, stay on top ${w.onTop}"
             WidgetType.LIVE, WidgetType.TICKER -> "refresh every ${w.refreshSec}s (refresh_seconds), opacity ${(w.style.opacity * 100).toInt()}%, stay on top ${w.onTop}"
             else -> "opacity ${(w.style.opacity * 100).toInt()}%, stay on top ${w.onTop}, text size ${w.style.fontSize ?: "default"}"
         }
@@ -979,7 +1134,7 @@ class WidgetTool(private val context: Context) : AiTool {
                 val step = w.state["step"]?.toIntOrNull() ?: 0
                 if (route != null && nav in setOf("next", "next_step", "forward", "prev", "previous", "back", "previous_step", "stop", "end", "cancel", "stop_navigation", "repeat", "current", "first", "start")) {
                     return when (nav) {
-                        "stop", "end", "cancel", "stop_navigation" -> { DesktopBridge.mutateWidget(w.id) { it.copy(content = "", title = it.title.removePrefix("→ ")).withState("nav" to "", "step" to "", "pos" to "", "offRoute" to "", "zoom" to "15") }; Result.success("Navigation stopped.") }
+                        "stop", "end", "cancel", "stop_navigation" -> { DesktopBridge.mutateWidget(w.id) { it.copy(content = "", title = it.title.removePrefix("→ ")).withState("nav" to "", "step" to "", "pos" to "", "vel" to "", "offRoute" to "", "rerouting" to "", "arrived" to "", "zoom" to "15") }; Result.success("Navigation stopped.") }
                         "start", "first" -> { DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to "0") }; Result.success("Back to the first step: ${route.steps.firstOrNull()?.text}.") }
                         "repeat", "current" -> Result.success(route.steps.getOrNull(step)?.let { "${it.text}${if (it.distM > 0) " for ${Router.distance(it.distM)}" else ""}." } ?: "No current step.")
                         "prev", "previous", "back", "previous_step" -> { val n = (step - 1).coerceAtLeast(0); DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("step" to n.toString()) }; Result.success("Step ${n + 1}: ${route.steps[n].text}.") }
@@ -994,6 +1149,12 @@ class WidgetTool(private val context: Context) : AiTool {
                 if (nav in setOf("start", "navigate", "go", "directions")) {
                     val dest = value ?: Regex("q=([^&]+)").find(w.source)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: w.title
                     return WidgetOps.startNavigation(context, dest, w.state["mode"] ?: args.str("travel_mode", "mode"), w.id, args)
+                }
+                if (w.state["view"] == "hud" && nav in setOf("zoom_in", "in", "closer", "zoom_out", "out", "farther", "further", "zoom_auto", "auto", "zoom")) {
+                    // The minimap zooms by radius presets; the page picks the next one and reports back what it chose.
+                    val cmd = when (nav) { "zoom_in", "in", "closer" -> "in"; "zoom_out", "out", "farther", "further" -> "out"; else -> WidgetOps.hudZoomPreset(value) ?: "auto" }
+                    DesktopBridge.mutateWidget(w.id, pushUndo = false) { it.withState("mzoomCmd" to "$cmd:$now") }
+                    return Result.success(when (cmd) { "in" -> "Minimap zoomed in."; "out" -> "Minimap zoomed out."; "auto" -> "Minimap zoom back to auto."; else -> "Minimap zoom: $cmd." })
                 }
                 when (nav) {
                     // A spoken "zoom in/out" is two levels (a clearly visible 4× change); value=N sets the notch.
@@ -1289,7 +1450,7 @@ class AppBuilderTool(private val context: Context) : AiTool {
     /** `smart_aquarium__v2_1789…html` / `pomodoro_1789…html` / `bm_5cf76cb6_checkers__v1_….html` → "smart_aquarium" / "pomodoro" / "checkers". */
     private fun appBase(f: File): String = f.nameWithoutExtension.replace(Regex("^(bm_[0-9a-f]{8}_)+"), "").substringBefore("__v").replace(Regex("_\\d{10,}$"), "")
 
-    /** Saved app files by display name (newest version of each). Apps no desktop or bookmark holds are garbage-collected, so this is "apps in use". */
+    /** Saved app files by display name (newest version of each). Apps nothing holds are garbage-collected a month after they were last touched. */
     private fun savedApps(): List<Pair<String, File>> = (DesktopStore.appsDir.listFiles { f -> f.extension == "html" } ?: emptyArray())
         .groupBy { appBase(it) }
         .map { (base, files) -> base.split('_').filter { it.isNotBlank() }.joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } } to files.maxByOrNull { it.lastModified() }!! }

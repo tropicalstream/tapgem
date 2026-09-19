@@ -220,6 +220,23 @@ object DesktopBridge {
                 if (w.onTop) sb.append(" [stays on top]")
                 if (w.refreshSec > 0) sb.append(" refresh=${w.refreshSec}s")
                 if (w.type == WidgetType.WEB || w.type.isFetched) sb.append(" src=\"${w.source.take(60)}\"")
+                if (w.type == WidgetType.MAP && w.state["nav"] == "on") {
+                    sb.append(if (w.state["view"] == "hud") " [minimap HUD, theme ${w.state["theme"]?.ifBlank { null } ?: "auto"}]" else " [navigating, full map]")
+                    // The HUD page reports what it shows (focus step, distance, ETA) every few seconds.
+                    val fromPage = NavCueBridge.stateOf(w.id)?.let { st -> runCatching { org.json.JSONObject(st) }.getOrNull() }?.let { o0 ->
+                        val o = o0.optJSONObject("s") ?: o0
+                        val f = o.optJSONObject("focus") ?: return@let null
+                        fun str(k: String) = o.opt(k)?.takeIf { it != org.json.JSONObject.NULL }?.toString().orEmpty()
+                        val eta = str("eta"); val dist = str("distText")
+                        " next: ${f.optString("text").take(60)}${if (dist.isNotBlank()) " in $dist" else ""}${if (eta.isNotBlank()) ", ETA $eta" else ""}"
+                    }
+                    sb.append(fromPage ?: com.tapgem.app.core.network.Router.Route.fromJson(w.content)?.let { r ->
+                        val i = (w.state["step"]?.toIntOrNull() ?: 0).coerceIn(0, r.steps.size - 1)
+                        val st = r.steps.getOrNull(i) ?: return@let ""
+                        val left = r.steps.drop(i).sumOf { it.distM }
+                        " now: ${st.text.take(60)}${if (st.distM > 0) " for ${com.tapgem.app.core.network.Router.distance(st.distM)}" else ""}, ${com.tapgem.app.core.network.Router.distance(left)} left"
+                    }.orEmpty())
+                }
                 sb.append('\n')
             }
         }

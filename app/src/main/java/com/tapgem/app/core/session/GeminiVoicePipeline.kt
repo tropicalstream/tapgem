@@ -60,6 +60,8 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var liveSession: GeminiLiveClient.LiveSessionHandle? = null
     @Volatile private var liveSessionReady = false
     @Volatile private var localBargeAtMs = 0L
+    @Volatile private var interruptedAtMs = 0L
+    @Volatile private var lastMicSpeechMs = 0L
     @Volatile private var captureActive = false
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile private var audioThread: Thread? = null
@@ -143,7 +145,8 @@ class GeminiVoicePipeline(context: Context) {
             val rec = audioRecord; audioRecord = null
             runCatching { rec?.stop() }; runCatching { rec?.release() }
             val session = liveSession; liveSession = null
-            liveSessionReady = false; localBargeAtMs = 0L
+            liveSessionReady = false; localBargeAtMs = 0L; interruptedAtMs = 0L
+            com.tapgem.app.core.bridge.NavCueBridge.speaker = null
             runCatching { session?.close() }
             connectJob?.cancel(); connectJob = null
             dropLateOutputUntilMs = 0L
@@ -170,7 +173,7 @@ class GeminiVoicePipeline(context: Context) {
     private fun noteConversationActivity() { lastConversationActivityMs = SystemClock.uptimeMillis() }
 
     private fun onLocalBargeIn(level: Float, gate: Float) {
-        localBargeAtMs = SystemClock.uptimeMillis()
+        localBargeAtMs = SystemClock.uptimeMillis(); interruptedAtMs = localBargeAtMs
         Log.i(TAG, "Local barge-in: mic=%.2f over gate=%.2f".format(level, gate))
         noteConversationActivity()
         runCatching { audioPlayer.stopAndFlush() }
@@ -180,10 +183,42 @@ class GeminiVoicePipeline(context: Context) {
     private fun inBargeHold(): Boolean =
         localBargeAtMs != 0L && SystemClock.uptimeMillis() - localBargeAtMs < LOCAL_BARGE_HOLD_MS
 
+    /**
+     * After an interruption the server keeps streaming the tail of the turn it just cut; those
+     * chunks arrive while the user is still talking and would play as stutter between flushes.
+     * Drop audio until the mic has been quiet for a moment (the reply to what was said can only
+     * start after that), bounded so a noisy room cannot mute the assistant.
+     */
+    private fun inInterruptHold(): Boolean {
+        val at = interruptedAtMs
+        if (at == 0L) return false
+        val now = SystemClock.uptimeMillis()
+        if (now - at > INTERRUPT_HOLD_MAX_MS) { interruptedAtMs = 0L; return false }
+        if (now - lastMicSpeechMs > INTERRUPT_MIC_QUIET_MS) { interruptedAtMs = 0L; return false }
+        return true
+    }
+
+    /**
+     * Turn-by-turn cues from the navigation HUD: voiced only while a session is open and the
+     * assistant is quietly listening (never over its own speech, a tool run or the user's turn);
+     * otherwise the HUD notice the widget posted is all there is.
+     */
+    private fun speakNavCue(text: String) {
+        val session = liveSession ?: return
+        if (!liveSessionReady || toolCallsInFlight.get() > 0) return
+        if (HudStateBridge.current().phase != VoicePhase.LISTENING) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastNavCueMs < 4_000L) return
+        lastNavCueMs = now
+        runCatching { session.sendClientText("[Navigation cue — tell the user, in one short sentence and nothing else: \"$text\"]") }
+    }
+    private var lastNavCueMs = 0L
+
     private fun createListener(epoch: Long) = object : GeminiLiveClient.LiveSessionListener {
         override fun onSessionReady() {
             if (!isSessionEpochCurrent(epoch)) return
             liveSessionReady = true
+            com.tapgem.app.core.bridge.NavCueBridge.speaker = { text -> speakNavCue(text) }
             noteConversationActivity()
             HudStateBridge.update { it.copy(connection = ConnectionStatus.CONNECTED, notification = null) }
             startAudioStreaming(epoch)
@@ -220,16 +255,18 @@ class GeminiVoicePipeline(context: Context) {
 
         override fun onModelAudio(mimeType: String, data: ByteArray) {
             if (!isSessionEpochCurrent(epoch) || !liveSessionReady || data.isEmpty()) return
-            if (inBargeHold()) return
+            if (inBargeHold() || inInterruptHold()) return
             noteConversationActivity()
             val norm = (calculatePcm16Peak(data, data.size) / 32_767f).coerceIn(0f, 1f)
             HudStateBridge.update { it.copy(phase = VoicePhase.SPEAKING, level = norm, channel = Channel.MODEL) }
-            runCatching { audioExecutor.execute { if (isSessionEpochCurrent(epoch)) runCatching { audioPlayer.playChunk(mimeType, data) } } }
+            val gen = audioPlayer.generation
+            runCatching { audioExecutor.execute { if (isSessionEpochCurrent(epoch)) runCatching { audioPlayer.playChunk(mimeType, data, gen) } } }
         }
 
         override fun onInterrupted() {
             if (!isSessionEpochCurrent(epoch)) return
             localBargeAtMs = 0L
+            interruptedAtMs = SystemClock.uptimeMillis()
             noteConversationActivity()
             runCatching { audioPlayer.stopAndFlush() }
             HudStateBridge.update { it.copy(phase = VoicePhase.LISTENING, level = 0f) }
@@ -452,7 +489,7 @@ class GeminiVoicePipeline(context: Context) {
                 if (read == 0) continue
                 readErrors = 0
                 val norm = (calculatePcm16Peak(chunk, read) / 32_767f).coerceIn(0f, 1f)
-                if (norm >= USER_SPEECH_LEVEL) lastConversationActivityMs = SystemClock.uptimeMillis()
+                if (norm >= USER_SPEECH_LEVEL) { lastConversationActivityMs = SystemClock.uptimeMillis(); lastMicSpeechMs = lastConversationActivityMs }
                 var suppressToServer = false
                 if (audioPlayer.isActivelySpeaking()) {
                     val gate = BARGE_BASE_LEVEL + BARGE_ECHO_REJECT * audioPlayer.currentOutputLevel()
@@ -520,6 +557,8 @@ class GeminiVoicePipeline(context: Context) {
         private const val BARGE_FRAMES = 3
         private const val BARGE_HANGOVER_MS = 900L
         private const val LOCAL_BARGE_HOLD_MS = 1_200L
+        private const val INTERRUPT_HOLD_MAX_MS = 2_500L
+        private const val INTERRUPT_MIC_QUIET_MS = 350L
         /** Screen frames for the model: cadence and size. */
         private const val FRAME_PERIOD_MS = 3_000L
         private const val FRAME_WIDTH = 512

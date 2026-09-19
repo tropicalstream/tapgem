@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.tapgem.app.core.bridge.DesktopBridge
 import com.tapgem.app.core.bridge.HudStateBridge
+import com.tapgem.app.core.location.LocationSource
 import com.tapgem.app.core.live.WidgetRefreshEngine
 import com.tapgem.app.core.store.ApiKeyStore
 import com.tapgem.app.core.tools.ToolDispatcher
@@ -53,6 +54,25 @@ class TapGemApp : Application() {
         }
     }
 
+    /**
+     * Debug builds only: a simulated position for bench-testing navigation indoors.
+     * adb shell am broadcast -a com.tapgem.app.LOCATION --es fix "lat,lon[,accuracyM[,speedMps[,bearingDeg]]]"   (or --es fix clear)
+     */
+    private val locationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_LOCATION) return
+            val raw = intent.getStringExtra("fix")?.trim().orEmpty()
+            val fix = if (raw.equals("clear", ignoreCase = true)) null else {
+                val n = raw.split(',').map { it.trim().toDoubleOrNull() }
+                if (n.size < 2 || n[0] == null || n[1] == null) { Log.w(TAG, "LOCATION: bad fix '$raw'"); return }
+                LocationSource.Fix(n[0]!!, n[1]!!, (n.getOrNull(2) ?: 8.0).toFloat(), "simulated", android.os.SystemClock.elapsedRealtime(),
+                    n.getOrNull(3)?.toFloat(), n.getOrNull(4)?.toFloat())
+            }
+            LocationSource.simulated = fix
+            Log.i(TAG, "LOCATION → ${fix?.latLon() ?: "cleared"}")
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         // Night mode process-wide: web pages that have a dark theme use it (prefers-color-scheme).
@@ -67,6 +87,8 @@ class TapGemApp : Application() {
         if (BuildConfig.DEBUG) runCatching {
             ContextCompat.registerReceiver(this, toolReceiver, IntentFilter(ACTION_TOOL),
                 SHELL_PERMISSION, null, ContextCompat.RECEIVER_EXPORTED)
+            ContextCompat.registerReceiver(this, locationReceiver, IntentFilter(ACTION_LOCATION),
+                SHELL_PERMISSION, null, ContextCompat.RECEIVER_EXPORTED)
         }
     }
 
@@ -75,6 +97,7 @@ class TapGemApp : Application() {
         const val ACTION_TOOL = "com.tapgem.app.TOOL"
         const val ACTION_VOICE = "com.tapgem.app.VOICE"
         const val ACTION_TRACKPAD = "com.tapgem.app.TRACKPAD"
+        const val ACTION_LOCATION = "com.tapgem.app.LOCATION"
         /** Held by the adb shell and the system only. */
         const val SHELL_PERMISSION = "android.permission.DUMP"
     }

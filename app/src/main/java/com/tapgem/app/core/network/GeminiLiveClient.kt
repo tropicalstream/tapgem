@@ -79,6 +79,16 @@ class GeminiLiveClient(
                 "bicycling) starts TapGem's own turn-by-turn from the glasses' position: the route is drawn on the " +
                 "map with the current step; read the tool result aloud (it holds the first step). 'Take me to X on " +
                 "the way to Y' / 'stop at X first' → query=Y via=X (the route goes through X, then on to Y). Then " +
+                "\"… WITH MINIMAP\" / 'minimap' / 'compact directions' → add minimap=true as well: a small HUD window with a " +
+                "3D turn arrow, distance, ETA and a heading-up minimap instead of the big map (themes: fallout, synthwave, " +
+                "hiking, running — 'drive to X with minimap in synthwave' → theme=synthwave; 'switch the HUD to fallout' / " +
+                "'hiking theme' → widget action=update theme=…; 'full map' / 'show the big map' → update minimap=false; " +
+                "'north up' / 'heading up' / 'follow my head' / 'course up' → update orientation=north|heading|course|auto; " +
+                "'bigger / smaller arrow' → update arrow=large|small|normal; 'zoom in / out' on the HUD → navigate nav=zoom_in|zoom_out, " +
+                "'auto zoom' → nav=zoom_auto, 'zoom to 400 feet' → update zoom=near|mid|far|wide|region; 'metric' / 'miles' → update units=metric|us. " +
+                "'Run / jog to X' → travel_mode=walking activity=running; 'hike to X' → walking activity=hiking (the activity picks the " +
+                "minimap and its theme for that trip only; a theme the user names always wins). " +
+                "'What's next / how far / my ETA?' → widget action=list and read the navigation line). " +
                 "'next step' / 'previous step' / 'repeat' / 'stop navigation' → widget action=navigate " +
                 "nav=next|prev|repeat|stop on that map; 'zoom in / zoom out / recenter' on it → nav=in|out|center " +
                 "(exactly ONE call per request — a single call already zooms two levels; 'a lot' / 'all the way' → " +
@@ -122,6 +132,11 @@ class GeminiLiveClient(
                 "and ASK whether to build it — e.g. \"There's no golf game yet; want me to make one?\" — then " +
                 "call app_builder create only after the user says yes, or when they explicitly asked to " +
                 "make/build/create it. Never build or substitute something the user only asked to open.\n" +
+                "- IRC (\"open IRC / chat / connect to Libera, EFnet, OCF\", \"join #ocf\", \"leave the channel\", \"change my " +
+                "nick to …\", \"what did they say\") → the irc tool, never a web page. Dictated messages (\"tell them …\", " +
+                "\"say … in the channel\", \"reply …\") → irc say with the text VERBATIM (no paraphrase, no added " +
+                "punctuation flourishes). That only STAGES it: read the staged words back exactly and ask \"send it?\"; " +
+                "on yes → irc confirm, otherwise irc cancel. Never send a chat message without that confirmation.\n" +
                 "- \"Bookmark this / save the checkers game for later / keep this window\" → bookmark action=save " +
                 "(the active window unless one is named). \"Open my checkers bookmark / bring back the radio\" → " +
                 "bookmark action=open name=<it>. \"Keep / bookmark / save this wallpaper (background)\" → bookmark " +
@@ -193,6 +208,13 @@ class GeminiLiveClient(
                 .put("mimeType", "image/jpeg")
                 .put("data", Base64.getEncoder().encodeToString(jpeg))
             return socket.send(JSONObject().put("realtimeInput", JSONObject().put("video", frame)).toString())
+        }
+
+        /** A text turn from the client side — used for navigation cues the model should voice. */
+        fun sendClientText(text: String): Boolean {
+            if (text.isBlank()) return false
+            val turn = JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", text)))
+            return socket.send(JSONObject().put("clientContent", JSONObject().put("turns", JSONArray().put(turn)).put("turnComplete", true)).toString())
         }
 
         fun sendToolResponse(callId: String, functionName: String, result: String): Boolean {
@@ -433,6 +455,12 @@ class GeminiLiveClient(
                 "directions" to "map: true for navigation/directions to the place.",
                 "travel_mode" to "map directions: driving|walking|bicycling|transit.",
                 "via" to "map directions: stop(s) to route through first, comma-separated ('Glenview Taqueria').",
+                "minimap" to "map directions: true = the compact navigation HUD (3D turn arrow, ETA, heading-up minimap); false = the full map. update: switch view.",
+                "theme" to "navigation HUD: fallout | synthwave | hiking | running | auto.",
+                "orientation" to "navigation HUD minimap: auto | heading (where you look) | course (direction of travel) | north.",
+                "arrow" to "navigation HUD turn arrow: small | normal | large.",
+                "activity" to "map directions: running | hiking when the user says run/jog/hike to — picks that HUD theme for this trip only.",
+                "units" to "navigation HUD: us (feet, miles) | metric.",
                 "style" to "map: google (default) | simple (clean offline-style tile map).",
                 "title" to "add: display title. Other actions: identifies the widget (does NOT rename).",
                 "new_title" to "update: rename the widget.",
@@ -447,7 +475,7 @@ class GeminiLiveClient(
                 "seconds" to "clock: true|false — show seconds / a second hand.",
                 "date" to "clock: true|false — show the date.",
                 "zones" to "clock: world-clock cities or zone ids, comma-separated ('Tokyo, London'; 'local' = here). add_zone / remove_zone edit the list.",
-                "zoom" to "map style=simple: 1 (world) to 18 (street); default 13.") + geometryProps + mapOf(
+                "zoom" to "map style=simple: 1 (world) to 18 (street); default 13. Navigation HUD minimap: auto | near (200 ft) | mid (400 ft) | far (0.15 mi) | wide (0.3 mi) | region (0.6 mi).") + geometryProps + mapOf(
                 "dx" to "move: horizontal delta px.", "dy" to "move: vertical delta px.",
                 "scale" to "resize: multiply size (1.5 bigger, 0.7 smaller).",
                 "refresh_seconds" to "0 = never; e.g. 300 for every 5 minutes.",
@@ -458,7 +486,7 @@ class GeminiLiveClient(
                 "autoplay" to "video/audio add: true/false.", "loop" to "video/audio: true/false.",
                 "muted" to "video/audio: true/false.",
                 "page" to "pdf: 1-based page.", "chapter" to "epub: 1-based chapter.",
-                "nav" to "navigate: next|prev|page|chapter|play|pause|mute|unmute|loop|reload|url|seek | navigation: start|next|prev|repeat|stop.",
+                "nav" to "navigate: next|prev|page|chapter|play|pause|mute|unmute|loop|reload|url|seek | navigation: start|next|prev|repeat|stop | map/HUD: zoom_in|zoom_out|zoom_auto|center.",
                 "value" to "navigate: page/chapter number, seconds, or url.")))
         .put(decl("web",
             "Operate a web page or app widget like a user would. Every action's result reports the page " +
@@ -515,6 +543,19 @@ class GeminiLiveClient(
             mapOf("action" to "open|list|create|update", "name" to "App name (also the widget title).",
                 "description" to "create: what it should do and look like; update: what to change.",
                 "rebuild" to "create: true to build a fresh version even though one is saved.") + geometryProps))
+        .put(decl("irc",
+            "The IRC chat window (a retro-terminal client). open/connect: put it on the desktop and connect " +
+                "(server=libera|efnet|ocf; default Libera.Chat, default nick gomie_). join/part a channel. nick: " +
+                "change the nick. say: STAGE a message to the current (or named) channel — it is NOT sent; the " +
+                "reply gives you the exact words: read them back and ask the user to confirm, then call confirm " +
+                "(or cancel). read: the last messages in a channel so you can tell the user what people said. " +
+                "status: connection, channels, who is in a channel. switch: show a channel. theme: the look " +
+                "(amber, green, scanlines, pixel, apple2, vintage, dos, ibm3278, futuristic — cool-retro-term styles).",
+            mapOf("action" to "open|connect|disconnect|join|part|nick|say|confirm|cancel|read|status|switch|theme",
+                "server" to "libera | efnet | ocf (irc.ocf.berkeley.edu).", "nick" to "Nickname.",
+                "channel" to "Channel like #ocf (the # is optional), or a person's nick for a private message.",
+                "text" to "say: the message, exactly as the user dictated it.", "count" to "read: how many lines (default 8).",
+                "theme" to "theme: one of the theme names.") + geometryProps))
         .put(decl("media",
             "Find media files on the glasses by name/type ('vacation', 'tolkien', 'podcast'). find returns " +
                 "matches with paths; open finds and adds the best match as a widget in one step.",

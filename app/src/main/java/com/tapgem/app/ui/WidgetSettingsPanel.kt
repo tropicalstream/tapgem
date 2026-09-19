@@ -57,6 +57,7 @@ class WidgetSettingsPanel(context: Context) : FrameLayout(context) {
         while (column.childCount > 1) column.removeViewAt(1)
         when (w.type) {
             WidgetType.CLOCK -> clockRows(w)
+            WidgetType.MAP -> if (w.state["nav"] == "on") navRows(w)
             WidgetType.LIVE, WidgetType.TICKER -> refreshRow(w)
             else -> {}
         }
@@ -92,6 +93,36 @@ class WidgetSettingsPanel(context: Context) : FrameLayout(context) {
                 val next = if (key in zones) zones.filter { it != key }.ifEmpty { listOf("local") } else (zones + key).take(6)
                 edit { it.withState("zones" to next.joinToString(",")) }
             })
+    }
+
+    /** Turn-by-turn windows: the compact HUD or the full map, its theme, and which way the minimap points. */
+    private fun navRows(w: Widget) {
+        val hud = w.state["view"] == "hud"
+        row("View", listOf("Minimap HUD" to "hud", "Full map" to "map"),
+            selected = { key -> (key == "hud") == hud },
+            tap = { key -> com.tapgem.app.core.tools.WidgetOps.rememberHud(context, key == "hud", null); edit { it.withState("view" to (if (key == "hud") "hud" else "")) } })
+        if (!hud) return
+        val theme = w.state["theme"].orEmpty()
+        row("Theme", listOf("Auto" to "") + com.tapgem.app.core.tools.WidgetOps.HUD_THEMES.map { (k, label) -> label to k }, wrap = true,
+            selected = { key -> key == theme },
+            tap = { key -> com.tapgem.app.core.tools.WidgetOps.rememberHud(context, null, key); edit { it.withState("theme" to key) } })
+        val orient = w.state["orient"].orEmpty()
+        row("Map", listOf("Auto" to "", "Heading up" to "heading", "Course up" to "course", "North up" to "north"), wrap = true,
+            selected = { key -> key == orient },
+            tap = { key -> edit { it.withState("orient" to key) } })
+        val metric = w.state["units"]?.let { it == "metric" } ?: !com.tapgem.app.core.network.Router.usUnits()
+        val zoom = w.state["mzoom"].orEmpty()
+        val zoomLabels = if (metric) listOf("60 m", "120 m", "250 m", "500 m", "1 km") else listOf("200 ft", "400 ft", "0.15 mi", "0.3 mi", "0.6 mi")
+        row("Zoom", listOf("Auto" to "") + com.tapgem.app.core.tools.WidgetOps.HUD_ZOOMS.zip(zoomLabels) { k, l -> l to k }, wrap = true,
+            selected = { key -> key == zoom },
+            tap = { key -> edit { it.withState("mzoom" to key, "mzoomCmd" to "") } })
+        val arrow = w.state["arrow"].orEmpty()
+        row("Arrow", listOf("Small" to "small", "Normal" to "", "Large" to "large"),
+            selected = { key -> key == arrow },
+            tap = { key -> edit { it.withState("arrow" to key) } })
+        row("Units", listOf("ft / mi" to "us", "m / km" to "metric"),
+            selected = { key -> (key == "metric") == metric },
+            tap = { key -> edit { it.withState("units" to key) } })
     }
 
     private fun refreshRow(w: Widget) {

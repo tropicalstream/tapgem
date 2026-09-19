@@ -18,6 +18,7 @@ object WorldClocks {
         "nyc" to "America/New_York", "new york city" to "America/New_York", "manhattan" to "America/New_York", "boston" to "America/New_York",
         "miami" to "America/New_York", "washington" to "America/New_York", "toronto" to "America/Toronto", "eastern" to "America/New_York", "est" to "America/New_York", "edt" to "America/New_York",
         "la" to "America/Los_Angeles", "san francisco" to "America/Los_Angeles", "sf" to "America/Los_Angeles", "seattle" to "America/Los_Angeles", "oakland" to "America/Los_Angeles",
+        "berkeley" to "America/Los_Angeles", "san jose" to "America/Los_Angeles", "portland" to "America/Los_Angeles", "san diego" to "America/Los_Angeles", "las vegas" to "America/Los_Angeles",
         "san diego" to "America/Los_Angeles", "vancouver" to "America/Vancouver", "pacific" to "America/Los_Angeles", "pst" to "America/Los_Angeles", "pdt" to "America/Los_Angeles",
         "denver" to "America/Denver", "phoenix" to "America/Phoenix", "mountain" to "America/Denver", "mst" to "America/Denver",
         "dallas" to "America/Chicago", "houston" to "America/Chicago", "central" to "America/Chicago", "cst" to "America/Chicago", "mexico city" to "America/Mexico_City",
@@ -31,7 +32,8 @@ object WorldClocks {
         "tel aviv" to "Asia/Jerusalem", "jerusalem" to "Asia/Jerusalem", "riyadh" to "Asia/Riyadh", "tehran" to "Asia/Tehran", "karachi" to "Asia/Karachi",
         "delhi" to "Asia/Kolkata", "new delhi" to "Asia/Kolkata", "bangalore" to "Asia/Kolkata", "india" to "Asia/Kolkata", "ist" to "Asia/Kolkata", "kolkata" to "Asia/Kolkata",
         "bangkok" to "Asia/Bangkok", "jakarta" to "Asia/Jakarta", "manila" to "Asia/Manila", "kuala lumpur" to "Asia/Kuala_Lumpur", "hanoi" to "Asia/Ho_Chi_Minh", "ho chi minh" to "Asia/Ho_Chi_Minh",
-        "shanghai" to "Asia/Shanghai", "beijing" to "Asia/Shanghai", "china" to "Asia/Shanghai", "taipei" to "Asia/Taipei", "seoul" to "Asia/Seoul", "korea" to "Asia/Seoul",
+        "shanghai" to "Asia/Shanghai", "beijing" to "Asia/Shanghai", "china" to "Asia/Shanghai",
+        "shenzhen" to "Asia/Shanghai", "guangzhou" to "Asia/Shanghai", "hangzhou" to "Asia/Shanghai", "chengdu" to "Asia/Shanghai", "wuhan" to "Asia/Shanghai", "nanjing" to "Asia/Shanghai", "chongqing" to "Asia/Shanghai", "tianjin" to "Asia/Shanghai", "taipei" to "Asia/Taipei", "seoul" to "Asia/Seoul", "korea" to "Asia/Seoul",
         "japan" to "Asia/Tokyo", "jst" to "Asia/Tokyo", "osaka" to "Asia/Tokyo", "melbourne" to "Australia/Melbourne", "brisbane" to "Australia/Brisbane", "perth" to "Australia/Perth",
         "aest" to "Australia/Sydney", "auckland" to "Pacific/Auckland", "new zealand" to "Pacific/Auckland", "wellington" to "Pacific/Auckland",
         "zulu" to "UTC", "gmt+0" to "UTC", "greenwich" to "UTC", "local" to "", "here" to "", "home" to "", "my time" to ""
