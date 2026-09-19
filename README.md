@@ -320,6 +320,40 @@ Default nick `gomie_`; networks Libera.Chat, EFnet and OCF Berkeley (`irc.ocf.be
 assistant reads them back and asks "send it?" — only your yes transmits (the window shows the same
 staged line with send / cancel buttons, and the input box works too: `/join`, `/nick`, `/msg`, `/me`).
 
+**Discord — "open Discord", "switch to #general on the Berkeley server", "tell them …".** The same
+retro-terminal window for your own Discord account (`discord.html`, `core/irc/DiscordClient.kt`),
+done the way third-party terminal clients like Discordo do it: the account's auth token, the
+real-time gateway over a WebSocket, messages over the REST API. **Discord's terms forbid third-party
+clients on user accounts and accounts have been suspended for it — the login screen says so; use
+it knowing that.** Log in by pasting the account **token** in the window (a keyboard over scrcpy works; the screen
+says where the web app keeps it). There is deliberately no password login: a password login
+through Discord's API from an unknown client gets the new token revoked immediately
+(`4003 Not authenticated` on the gateway) and the account pushed into a forced password reset —
+that happened on the first try. The token
+is stored app-private on the glasses and never logged; "log out" forgets it. Servers are tabs,
+channels a second row; no join/part on Discord. Voice: switch channel, list servers/channels,
+"what's new in #general", and dictated messages go through the same stage → read back → "send it?"
+gate as IRC.
+
+**Interpreter — "translate what they're saying", "I need Japanese", "both ways".** A live speech
+interpreter (`interpreter.html`, `core/livex/`) on Google's dedicated translation model,
+`gemini-3.5-live-translate-preview`: a continuous stream, not turns — it starts speaking the
+translation while the sentence is still going (about 3 s behind) and shows both transcripts,
+labelled with the language it detected. Three modes: **Listen** (the room → your language, in the
+glasses' speaker; speech already in your language stays silent), **Speak** (you → their language,
+out loud for them), **Both** (two directions at once off the one microphone — whoever talks gets
+translated the other way, nobody presses anything). 70+ languages, chosen by voice or a tap; the
+source language is always auto-detected, the target is yours to pick. The interpreter and the
+tutor take the microphone from the assistant: asking for one ends the assistant's turn and starts
+it; tapping the desktop to talk to the assistant stops it.
+
+**Tutor — "teach me Spanish, beginner, ordering coffee".** A spoken language lesson
+(`tutor.html`) on the turn-based agent model, built around what good tutors do: comprehensible
+input just above your CEFR level, no interruptions, recasts inside the reply, explicit
+correction cards *after* your turn (said → better → why), a vocabulary tray with spaced review of
+the words you slipped on, scenario role-play, and an end-of-lesson summary. Level, language and
+scenario are chips on the window or a sentence to the assistant; the tray and your level persist.
+
 **YouTube Music and video in a window.** music.youtube.com's player page is laid out for a
 phone held upright — it reserves 408 px under the media for the controls and the Up next / Lyrics
 strip — so in a 640×418 window the music video (or the album art) came out 10 px tall. TapGem
@@ -459,7 +493,7 @@ macOS voice you can run the whole loop hands-free: start the session, then
 Tools: `desktop` (describe/arrange/new/save/load/delete/list/rename/set_mode/undo/clear/apps/wallpapers),
 `widget` (add/update/remove/move/resize/front/list/navigate/refresh),
 `web` (search/inspect/read/click/type/press/scroll/play/pause/url/back/forward/reload),
-`theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update), `irc` (connect/join/part/nick/say/confirm/read/status/theme),
+`theme` (set/list), `wallpaper` (set/clear), `app_builder` (create/update), `irc` (connect/join/part/nick/say/confirm/read/status/theme), `discord` (open/servers/channels/switch/say/confirm/read/status/theme/logout), `interpreter` (start/stop/set/read/status/languages), `tutor` (start/stop/set/status),
 `media` (find/open), `bookmark` (save/open/list/delete/show/hide).
 
 ---

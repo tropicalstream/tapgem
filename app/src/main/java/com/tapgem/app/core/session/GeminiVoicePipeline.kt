@@ -69,6 +69,7 @@ class GeminiVoicePipeline(context: Context) {
     @Volatile private var lastConversationActivityMs = 0L
     @Volatile private var lastBargeDiagMs = 0L
     @Volatile private var dropLateOutputUntilMs = 0L
+    @Volatile private var endAfterReply = false     // a tool asked for the mic: stop once the current reply has been spoken
     private val toolCallsInFlight = AtomicInteger(0)
     private val cancelledToolIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val caption = StringBuilder()
@@ -103,6 +104,9 @@ class GeminiVoicePipeline(context: Context) {
         lastToolKey = null
         ConversationContext.reset()
         Log.i(TAG, "activate(): starting session")
+        endAfterReply = false
+        com.tapgem.app.core.livex.MicOwner.stopAssistant = { requestEndAfterReply() }
+        com.tapgem.app.core.livex.MicOwner.assistantStarting()
         SessionStats.startSession()
         synchronized(caption) { caption.setLength(0); captionFresh = true }
         cancelledToolIds.clear()
@@ -133,9 +137,42 @@ class GeminiVoicePipeline(context: Context) {
         onSessionEnded?.invoke()
     }
 
+    /**
+     * Hand the microphone over (interpreter / tutor) without cutting the assistant off: the session ends
+     * after the reply that follows the tool call has been played out, or after a generous fallback.
+     */
+    fun requestEndAfterReply() {
+        if (!isActive()) return
+        if (endAfterReply) return
+        endAfterReply = true
+        val epoch = activeSessionEpoch
+        Thread({
+            val deadline = SystemClock.uptimeMillis() + END_AFTER_REPLY_MAX_MS
+            while (SystemClock.uptimeMillis() < deadline && endAfterReply && isSessionEpochCurrent(epoch)) { try { Thread.sleep(200) } catch (_: InterruptedException) { return@Thread } }
+            if (endAfterReply && isSessionEpochCurrent(epoch)) { Log.i(TAG, "endAfterReply: fallback timeout"); shutdown("handing the microphone over") }
+        }, "end-after-reply").also { it.isDaemon = true; it.start() }
+    }
+    private fun endAfterReplyIfQuiet(epoch: Long) {
+        if (!endAfterReply) return
+        Thread({
+            // The turn may complete before the reply's audio has started playing; give speech a moment to
+            // begin, then wait for it to go quiet.
+            var quietSince = 0L; var spoke = false
+            val started = SystemClock.uptimeMillis(); val deadline = started + END_AFTER_REPLY_MAX_MS
+            while (SystemClock.uptimeMillis() < deadline && isSessionEpochCurrent(epoch)) {
+                val now = SystemClock.uptimeMillis()
+                if (audioPlayer.isActivelySpeaking(windowMs = 600L)) { spoke = true; quietSince = 0L } else if (quietSince == 0L) quietSince = now
+                if (quietSince != 0L && now - quietSince >= (if (spoke) 500L else 3_000L)) break
+                try { Thread.sleep(100) } catch (_: InterruptedException) { return@Thread }
+            }
+            if (endAfterReply && isSessionEpochCurrent(epoch)) { endAfterReply = false; shutdown("handing the microphone over") }
+        }, "end-after-reply-quiet").also { it.isDaemon = true; it.start() }
+    }
+
     fun shutdown(reason: String? = null, error: Boolean = false) {
         synchronized(sessionLock) {
             invalidateSessionEpoch()
+            endAfterReply = false
             Log.i(TAG, "shutdown(reason=$reason)")
             silenceWatchdogJob?.cancel(); silenceWatchdogJob = null
             screenFeedJob?.cancel(); screenFeedJob = null
@@ -153,6 +190,7 @@ class GeminiVoicePipeline(context: Context) {
         }
         runCatching { audioPlayer.release() }
         SessionStats.endSession()
+        com.tapgem.app.core.livex.MicOwner.assistantStopped()
         HudStateBridge.update {
             it.copy(phase = VoicePhase.IDLE,
                 connection = if (error) ConnectionStatus.ERROR else ConnectionStatus.IDLE,
@@ -305,6 +343,7 @@ class GeminiVoicePipeline(context: Context) {
             dropLateOutputUntilMs = SystemClock.uptimeMillis() + LATE_OUTPUT_DROP_MS
             synchronized(caption) { captionFresh = true }
             if (liveSessionReady) HudStateBridge.update { it.copy(phase = VoicePhase.LISTENING) }
+            endAfterReplyIfQuiet(epoch)
         }
 
         override fun onError(message: String) {
@@ -551,6 +590,7 @@ class GeminiVoicePipeline(context: Context) {
         private const val SILENCE_END_MS = 20_000L
         private const val SILENCE_WATCHDOG_TICK_MS = 250L
         private const val LATE_OUTPUT_DROP_MS = 500L
+        private const val END_AFTER_REPLY_MAX_MS = 15_000L
         private const val USER_SPEECH_LEVEL = 0.12f
         private const val BARGE_BASE_LEVEL = 0.13f
         private const val BARGE_ECHO_REJECT = 0.20f

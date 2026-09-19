@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Interpreter</title><!-- state lives in TapGemInterp; not instrumented (window.__tgReg) -->
+<style>
+/* Waveguide-first: near-black ground (black = transparent on the glasses), two phosphor colours —
+   what was heard in cool white, what was translated in warm amber — big type, no chrome. */
+:root{--bg:#04060a;--fg:#e8eef6;--dim:#6b7686;--in:#dfe7f2;--out:#ffc766;--live:#39d98a;--warn:#ff6b6b;--font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;overflow:hidden}
+body{display:flex;flex-direction:column}
+#top{flex:none;display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid #1a2230}
+#mode{display:flex;gap:4px}
+.pill{border:1px solid #2a3547;border-radius:14px;padding:3px 10px;color:var(--dim);font-size:13px;cursor:pointer;white-space:nowrap}
+.pill.on{color:#04060a;background:var(--fg);border-color:var(--fg)}
+#langs{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:14px}
+#langs .lang{border:1px solid #2a3547;border-radius:6px;padding:3px 8px;cursor:pointer;color:var(--fg)}
+#langs .arrow{color:var(--dim)}
+#go{flex:none;border:1px solid var(--live);color:var(--live);background:transparent;border-radius:6px;padding:4px 12px;font:inherit;font-size:14px;cursor:pointer}
+#go.on{background:var(--live);color:#04060a}
+#meter{height:3px;background:#1a2230;flex:none}#meter i{display:block;height:100%;width:0;background:var(--live);transition:width .08s linear}
+#feed{flex:1;overflow-y:auto;padding:8px 12px 4px}
+.row{margin:0 0 10px;line-height:1.3}
+.row .who{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:1px}
+.row .in{color:var(--in);font-size:17px}
+.row .out{color:var(--out);font-size:21px;font-weight:600}
+.row.live .out,.row.live .in{opacity:.75}
+.row.live .out:after,.row.live .in:after{content:"▍";animation:bl 1s steps(2) infinite;color:var(--live)}
+@keyframes bl{to{opacity:0}}
+#status{flex:none;display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid #1a2230;font-size:12px;color:var(--dim)}
+#status .dot{width:8px;height:8px;border-radius:50%;background:#2a3547}#status .dot.live{background:var(--live);box-shadow:0 0 8px var(--live)}#status .dot.conn{background:var(--out)}
+#status .sp{margin-left:auto;color:var(--out);visibility:hidden}#status .sp.on{visibility:visible}
+#picker{display:none;position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(4,6,10,.97);padding:10px;overflow:auto;z-index:5}
+#picker.on{display:block}#picker h3{margin:4px 0 8px;font-size:13px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+#picker .grid{display:flex;flex-wrap:wrap;gap:6px}#picker .grid .pill{font-size:14px;color:var(--fg)}
+#picker input{width:100%;background:transparent;border:1px solid #2a3547;color:var(--fg);font:inherit;padding:6px 8px;margin-bottom:8px;outline:none}
+#hint{padding:18px 14px;color:var(--dim);font-size:15px;line-height:1.45}
+#hint b{color:var(--fg)}
+</style></head>
+<body>
+<div id="top">
+  <div id="mode"><span class="pill" data-m="listen">Listen</span><span class="pill" data-m="speak">Speak</span><span class="pill" data-m="conversation">Both</span></div>
+  <div id="langs"><span class="lang" id="lmine">English</span><span class="arrow" id="arrow">→</span><span class="lang" id="ltheirs">Spanish</span></div>
+  <button id="go">start</button>
+</div>
+<div id="meter"><i id="lvl"></i></div>
+<div id="feed"><div id="hint"><b>Listen</b> — what people around you say, in your language, in your ear.<br><b>Speak</b> — what you say, in theirs, out loud.<br><b>Both</b> — a two-way conversation, no buttons.<br><br>Say “translate what they're saying” or “I need Japanese”, or tap a language.</div></div>
+<div id="status"><span class="dot" id="dot"></span><span id="stext">off</span><span id="lat"></span><span class="sp" id="sp">◉ translating</span></div>
+<div id="picker"><input id="q" placeholder="type to filter languages…"><h3 id="ptitle">language</h3><div class="grid" id="pgrid"></div></div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)}, B=window.TapGemInterp||null;
+var S={status:'off',mode:'listen',mine:'en',theirs:'es',mineName:'English',theirsName:'Spanish',langs:[],seq:0,partial:{},pick:null,firstAt:0,since:0};
+function cmd(o){try{return B?B.cmd(JSON.stringify(o)):'no bridge'}catch(e){return String(e)}}
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+function who(e){var mine=S.mineName,theirs=S.theirsName,L=e.langName||'';
+  if(e.kind==='in')return 'heard'+(L?' · '+L:'');
+  return (e.dir==='in'?'for you · ':'for them · ')+(L||(e.dir==='in'?mine:theirs))}
+function rowHtml(e,live){return '<div class="row'+(live?' live':'')+'" id="'+(live?'live-'+e.dir+'-'+e.kind:'')+'"><div class="who">'+esc(who(e))+'</div><div class="'+(e.kind==='in'?'in':'out')+'">'+esc(e.text)+'</div></div>'}
+function feedAdd(e){var f=$('feed');$('hint')&&$('hint').remove();var live=$('live-'+e.dir+'-'+e.kind);if(live)live.remove();
+  var d=document.createElement('div');d.innerHTML=rowHtml(e,false);f.appendChild(d.firstChild);while(f.childNodes.length>120)f.removeChild(f.firstChild);f.scrollTop=f.scrollHeight}
+function partial(dir,kind,text,langName){var f=$('feed');$('hint')&&$('hint').remove();var id='live-'+dir+'-'+kind,el=$(id);
+  if(!text){if(el)el.remove();return}
+  if(!el){var d=document.createElement('div');d.innerHTML=rowHtml({dir:dir,kind:kind,text:text,langName:langName},true);f.appendChild(d.firstChild)}else{el.querySelector('.'+(kind==='in'?'in':'out')).textContent=text;if(langName)el.querySelector('.who').textContent=who({dir:dir,kind:kind,langName:langName})}
+  if(kind==='in'&&!S.heardAt)S.heardAt=Date.now();if(kind==='out'&&S.heardAt&&!S.firstAt){S.firstAt=(Date.now()-S.heardAt)/1000;render()}
+  f.scrollTop=f.scrollHeight}
+function render(){document.querySelectorAll('#mode .pill').forEach(function(p){p.classList.toggle('on',p.dataset.m===S.mode)});
+  $('lmine').textContent=S.mineName;$('ltheirs').textContent=S.theirsName;
+  $('arrow').textContent=S.mode==='listen'?'←':S.mode==='speak'?'→':'⇄';
+  $('go').textContent=S.status==='off'?'start':'stop';$('go').classList.toggle('on',S.status!=='off');
+  $('dot').className='dot '+(S.status==='live'?'live':S.status==='connecting'?'conn':'');
+  $('stext').textContent=S.status==='live'?'live · '+(S.mode==='conversation'?'two directions':S.mode):S.status==='connecting'?'connecting…':'off';
+  $('lat').textContent=S.firstAt?' · speech → translation '+S.firstAt.toFixed(1)+' s':''}
+function load(){if(!B)return;var s;try{s=JSON.parse(B.snapshot(String(S.seq)))}catch(e){return}
+  S.status=s.status;S.mode=s.mode;S.mine=s.mine;S.theirs=s.theirs;S.mineName=s.mineName;S.theirsName=s.theirsName;S.langs=s.langs||S.langs;S.since=s.since;
+  (s.entries||[]).forEach(function(e){if(e.seq>S.seq){S.seq=e.seq;feedAdd(e)}});render()}
+window.__lxEvent=function(js){var o;try{o=JSON.parse(js)}catch(e){return}
+  if(o.type==='entry'){S.seq=Math.max(S.seq,o.entry.seq);feedAdd(o.entry);render()}
+  else if(o.type==='partial'){partial(o.dir,o.kind,o.text,o.langName)}
+  else if(o.type==='status'){S.status=o.status;if(o.status!=='live'){S.firstAt=0;S.heardAt=0}if(o.status==='off'&&o.text&&o.text!=='stopped')partial('in','in','');render();if(o.text&&o.text!=='stopped'&&o.status==='off')feedAdd({dir:'in',kind:'in',text:'— '+o.text+' —'})}
+  else if(o.type==='config'){load()}
+  else if(o.type==='cleared'){$('feed').innerHTML=''}
+  else if(o.type==='error'){feedAdd({dir:'in',kind:'in',text:'⚠ '+o.text})}};
+document.querySelectorAll('#mode .pill').forEach(function(p){p.onclick=function(){cmd({op:'set',mode:p.dataset.m});S.mode=p.dataset.m;render()}});
+$('go').onclick=function(){if(S.status==='off'){var r=cmd({op:'start'});if(r==='after assistant')feedAdd({dir:'in',kind:'in',text:'— starting once the assistant finishes —'})}else cmd({op:'stop'})};
+function openPicker(which){S.pick=which;$('ptitle').textContent=which==='mine'?'my language':'their language';$('q').value='';fillPicker('');$('picker').classList.add('on');$('q').focus()}
+function fillPicker(q){var g=$('pgrid');g.innerHTML='';q=q.toLowerCase();S.langs.filter(function(l){return !q||l.name.toLowerCase().indexOf(q)>=0||l.code.toLowerCase().indexOf(q)>=0}).forEach(function(l){
+  var b=document.createElement('span');b.className='pill'+((S.pick==='mine'?S.mine:S.theirs)===l.code?' on':'');b.textContent=l.name;b.onclick=function(){var o={op:'set'};o[S.pick]=l.code;cmd(o);$('picker').classList.remove('on');setTimeout(load,300)};g.appendChild(b)})}
+$('lmine').onclick=function(){openPicker('mine')};$('ltheirs').onclick=function(){openPicker('theirs')};$('q').oninput=function(){fillPicker($('q').value)};
+$('picker').onclick=function(e){if(e.target===this)this.classList.remove('on')};
+if(!B){$('feed').innerHTML='<div id="hint">TapGemInterp bridge missing — this page only works inside a TapGem window.</div>'}
+load();
+setInterval(function(){if(!B)return;try{var s=JSON.parse(B.snapshot('999999999'));$('lvl').style.width=Math.min(100,Math.round(s.level*180))+'%';$('sp').classList.toggle('on',!!s.speaking);if(s.status!==S.status||s.mode!==S.mode||s.mine!==S.mine||s.theirs!==S.theirs)load()}catch(e){}},150);
+})();
+</script>
+</body></html>

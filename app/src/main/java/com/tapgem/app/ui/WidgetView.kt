@@ -494,6 +494,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
         runCatching { videoSurface?.release() }; videoSurface = null; textureView = null
         exitFullscreen(); stopHeading(); roadsCell = null; com.tapgem.app.core.bridge.NavCueBridge.forget(widget.id)
         ircListener?.let { com.tapgem.app.core.irc.IrcClient.removeListener(it) }; ircListener = null
+        discordListener?.let { com.tapgem.app.core.irc.DiscordClient.removeListener(it) }; discordListener = null
+        interpListener?.let { com.tapgem.app.core.livex.Interpreter.removeListener(it) }; interpListener = null
+        tutorListener?.let { com.tapgem.app.core.livex.Tutor.removeListener(it) }; tutorListener = null
         runCatching { webView?.stopLoading(); webView?.loadUrl("about:blank"); webView?.destroy() }; webView = null
         synchronized(this) { runCatching { pdfRenderer?.close() }; pdfRenderer = null }
         runCatching { pdfFd?.close() }; pdfFd = null
@@ -1087,6 +1090,27 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
         }
         if (kind == Kind.APP) wv.addJavascriptInterface(JsBridge(), "TapGem")
+        if (kind == Kind.APP && widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.INTERPRETER)) {
+            wv.addJavascriptInterface(InterpreterBridge(), "TapGemInterp")
+            interpListener?.let { com.tapgem.app.core.livex.Interpreter.removeListener(it) }
+            val l = com.tapgem.app.core.livex.Interpreter.Listener { o -> val js = "window.__lxEvent && __lxEvent(${JSONObject.quote(o.toString())})"; main.post { if (webView === wv) wv.evaluateJavascript(js, null) } }
+            interpListener = l; com.tapgem.app.core.livex.Interpreter.addListener(l)
+        }
+        if (kind == Kind.APP && widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.TUTOR)) {
+            wv.addJavascriptInterface(TutorBridge(), "TapGemTutor")
+            tutorListener?.let { com.tapgem.app.core.livex.Tutor.removeListener(it) }
+            val l = com.tapgem.app.core.livex.Tutor.Listener { o -> val js = "window.__lxEvent && __lxEvent(${JSONObject.quote(o.toString())})"; main.post { if (webView === wv) wv.evaluateJavascript(js, null) } }
+            tutorListener = l; com.tapgem.app.core.livex.Tutor.addListener(l)
+        }
+        if (kind == Kind.APP && widget.source.endsWith(com.tapgem.app.core.tools.DiscordTool.APP_FILE)) {
+            wv.addJavascriptInterface(DiscordBridge(), "TapGemDiscord")
+            discordListener?.let { com.tapgem.app.core.irc.DiscordClient.removeListener(it) }
+            val l = com.tapgem.app.core.irc.DiscordClient.Listener { o ->
+                val js = "window.__dcEvent && __dcEvent(${JSONObject.quote(o.toString())})"
+                main.post { if (webView === wv) wv.evaluateJavascript(js, null) }
+            }
+            discordListener = l; com.tapgem.app.core.irc.DiscordClient.addListener(l)
+        }
         if (kind == Kind.APP && widget.source.endsWith(com.tapgem.app.core.tools.IrcTool.APP_FILE)) {
             wv.addJavascriptInterface(IrcBridge(), "TapGemIrc")
             ircListener?.let { com.tapgem.app.core.irc.IrcClient.removeListener(it) }
@@ -1158,6 +1182,56 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     /** Tiny bridge exposed to vibe-coded apps as window.TapGem. */
     private var ircListener: com.tapgem.app.core.irc.IrcClient.Listener? = null
+    private var discordListener: com.tapgem.app.core.irc.DiscordClient.Listener? = null
+    private var interpListener: com.tapgem.app.core.livex.Interpreter.Listener? = null
+    private var tutorListener: com.tapgem.app.core.livex.Tutor.Listener? = null
+
+    inner class InterpreterBridge {
+        @JavascriptInterface fun snapshot(since: String): String = com.tapgem.app.core.livex.Interpreter.snapshot(since.toLongOrNull() ?: 0L).toString()
+        @JavascriptInterface fun cmd(json: String): String {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"; val i = com.tapgem.app.core.livex.Interpreter
+            return when (o.optString("op")) {
+                "start" -> { i.configure(o.optString("mode").ifBlank { null }, o.optString("mine").ifBlank { null }, o.optString("theirs").ifBlank { null }); if (com.tapgem.app.core.livex.MicOwner.whenMicFree { i.start() }) "ok" else "after assistant" }
+                "stop" -> { i.stop(); "ok" }
+                "set" -> { i.configure(o.optString("mode").ifBlank { null }, o.optString("mine").ifBlank { null }, o.optString("theirs").ifBlank { null }); "ok" }
+                "clear" -> { i.clear(); "ok" }
+                else -> "unknown op"
+            }
+        }
+    }
+    inner class TutorBridge {
+        @JavascriptInterface fun snapshot(since: String): String = com.tapgem.app.core.livex.Tutor.snapshot(since.toLongOrNull() ?: 0L).toString()
+        @JavascriptInterface fun cmd(json: String): String {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"; val t = com.tapgem.app.core.livex.Tutor
+            return when (o.optString("op")) {
+                "start" -> { t.configure(o.optString("language").ifBlank { null }, o.optString("native").ifBlank { null }, o.optString("level").ifBlank { null }, o.optString("scenario").ifBlank { null }); if (com.tapgem.app.core.livex.MicOwner.whenMicFree { t.start() }) "ok" else "after assistant" }
+                "stop" -> { t.stop(); "ok" }
+                "set" -> { t.configure(o.optString("language").ifBlank { null }, o.optString("native").ifBlank { null }, o.optString("level").ifBlank { null }, o.optString("scenario").ifBlank { null }); "ok" }
+                "say" -> { t.say(o.optString("text")); "ok" }
+                else -> "unknown op"
+            }
+        }
+    }
+
+    /** The Discord page's window onto the shared session; credentials pass straight through, never logged. */
+    inner class DiscordBridge {
+        @JavascriptInterface fun snapshot(since: String): String = com.tapgem.app.core.irc.DiscordClient.snapshot(since.toLongOrNull() ?: 0L).toString()
+        @JavascriptInterface fun cmd(json: String): String {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"
+            val c = com.tapgem.app.core.irc.DiscordClient
+            return when (o.optString("op")) {
+                "token" -> { c.useToken(o.optString("token")); "ok" }
+                "connect" -> { c.connect(); "ok" }
+                "disconnect" -> { c.disconnect(); "ok" }
+                "logout" -> { c.logout(); "ok" }
+                "current" -> { val id = o.optString("channel"); c.setCurrent(id); Thread { c.history(id) }.start(); "ok" }
+                "say" -> { Thread { c.say(o.optString("channel"), o.optString("text")) }.start(); "ok" }
+                "confirm" -> { val p = c.pending ?: return "nothing"; c.pending = null; Thread { c.say(p.first, p.second) }.start(); "ok" }
+                "cancel" -> { c.pending = null; "ok" }
+                else -> "unknown op"
+            }
+        }
+    }
 
     /** The IRC page's window onto the shared connection (see IrcClient / IrcTool). */
     inner class IrcBridge {

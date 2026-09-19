@@ -79,6 +79,9 @@ class TapGemApp : Application() {
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES)
         runCatching { com.ffalcon.mercury.android.sdk.MercurySDK.init(this) }
         DesktopBridge.init(this)
+        com.tapgem.app.core.irc.DiscordClient.init(this)
+        com.tapgem.app.core.livex.Interpreter.init(this)
+        com.tapgem.app.core.livex.Tutor.init(this)
         WidgetRefreshEngine.start(this)
         runCatching {
             ContextCompat.registerReceiver(this, keyReceiver, IntentFilter(ApiKeyStore.ACTION_SET_API_KEY),

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tutor</title><!-- state lives in TapGemTutor; not instrumented (window.__tgReg) -->
+<style>
+:root{--bg:#04060a;--fg:#e8eef6;--dim:#6b7686;--you:#dfe7f2;--tutor:#9ad7ff;--fix:#ffc766;--ok:#39d98a;--font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;overflow:hidden}
+body{display:flex;flex-direction:column}
+#top{flex:none;display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #1a2230;font-size:14px}
+.chip{border:1px solid #2a3547;border-radius:6px;padding:3px 8px;cursor:pointer;color:var(--fg);white-space:nowrap}
+.chip.dim{color:var(--dim)}
+#go{margin-left:auto;border:1px solid var(--ok);color:var(--ok);background:transparent;border-radius:6px;padding:4px 12px;font:inherit;font-size:14px;cursor:pointer}
+#go.on{background:var(--ok);color:#04060a}
+#main{flex:1;display:flex;min-height:0}
+#chat{flex:1;overflow-y:auto;padding:8px 10px}
+.t{margin:0 0 8px;max-width:92%;line-height:1.3;font-size:17px}
+.t.you{margin-left:auto;text-align:right;color:var(--you)}
+.t.tutor{color:var(--tutor);font-size:19px}
+.t .w{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.t.live{opacity:.7}.t.live .x:after{content:"▍";animation:bl 1s steps(2) infinite}
+@keyframes bl{to{opacity:0}}
+#side{flex:none;width:230px;border-left:1px solid #1a2230;display:flex;flex-direction:column;min-height:0}
+#side h4{margin:6px 8px 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+#fixes{flex:1;overflow-y:auto;padding:0 8px}
+.fix{border-left:3px solid var(--fix);padding:3px 6px;margin:0 0 6px;font-size:13px;line-height:1.3}
+.fix .s{color:var(--dim);text-decoration:line-through}.fix .b{color:var(--fix);font-weight:600;font-size:15px}.fix .y{color:var(--dim)}
+#vocab{flex:none;max-height:38%;overflow-y:auto;padding:0 8px 6px;border-top:1px solid #1a2230}
+.v{display:flex;justify-content:space-between;gap:6px;font-size:13px;padding:2px 0}.v .w{color:var(--fg)}.v .m{color:var(--dim);text-align:right}.v .due{color:var(--fix)}
+#bottom{flex:none;display:flex;gap:8px;align-items:center;padding:4px 10px;border-top:1px solid #1a2230;font-size:12px;color:var(--dim)}
+#meter{flex:1;height:3px;background:#1a2230}#meter i{display:block;height:100%;width:0;background:var(--ok);transition:width .08s linear}
+#summary{display:none;flex:none;padding:8px 10px;border-top:1px solid var(--fix);color:var(--fix);font-size:14px;line-height:1.35}#summary.on{display:block}
+#picker{display:none;position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(4,6,10,.97);padding:10px;overflow:auto;z-index:5}
+#picker.on{display:block}#picker h3{margin:4px 0 8px;font-size:13px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+#picker .grid{display:flex;flex-wrap:wrap;gap:6px}#picker .grid .chip{font-size:14px}
+#picker input{width:100%;background:transparent;border:1px solid #2a3547;color:var(--fg);font:inherit;padding:6px 8px;margin-bottom:8px;outline:none}
+#hint{padding:16px 12px;color:var(--dim);font-size:15px;line-height:1.45}#hint b{color:var(--fg)}
+</style></head>
+<body>
+<div id="top"><span class="chip" id="clang">Spanish</span><span class="chip" id="clevel">A2</span><span class="chip dim" id="cscen">free conversation</span><button id="go">start lesson</button></div>
+<div id="main">
+  <div id="chat"><div id="hint"><b>How it works</b> — the tutor speaks mostly in the language you're learning, just above your level, never interrupts, and fixes what matters <i>after</i> you've finished. Corrections and new words land on the right and come back later for practice.<br><br>Say “teach me Japanese at beginner level, ordering coffee”, or tap the chips.</div></div>
+  <div id="side"><h4>corrections</h4><div id="fixes"></div><h4>words</h4><div id="vocab"></div></div>
+</div>
+<div id="summary"></div>
+<div id="bottom"><span id="stext">off</span><div id="meter"><i id="lvl"></i></div><span id="sp"></span></div>
+<div id="picker"><input id="q" placeholder="type to filter…"><h3 id="ptitle"></h3><div class="grid" id="pgrid"></div></div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)}, B=window.TapGemTutor||null;
+var S={status:'off',language:'es',languageName:'Spanish',level:'A2',scenario:'free conversation',langs:[],seq:0,pick:null};
+var LEVELS=[['A1','beginner'],['A2','elementary'],['B1','intermediate'],['B2','upper-intermediate'],['C1','advanced'],['C2','mastery']];
+var SCEN=['free conversation','ordering coffee','asking for directions','checking into a hotel','at the pharmacy','a job interview','meeting a neighbour','shopping at a market','talking about your weekend','describing your work'];
+function cmd(o){try{return B?B.cmd(JSON.stringify(o)):'no bridge'}catch(e){return String(e)}}
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+function turn(t,live){var c=$('chat');$('hint')&&$('hint').remove();var id='live-'+t.who,el=$(id);
+  if(live){if(!t.text){if(el)el.remove();return}if(!el){el=document.createElement('div');el.id=id;el.className='t live '+t.who;el.innerHTML='<div class="w">'+(t.who==='you'?'you':'tutor')+'</div><div class="x"></div>';c.appendChild(el)}el.querySelector('.x').textContent=t.text}
+  else{if(el)el.remove();var d=document.createElement('div');d.className='t '+t.who;d.innerHTML='<div class="w">'+(t.who==='you'?'you':'tutor')+'</div><div class="x">'+esc(t.text)+'</div>';c.appendChild(d);while(c.childNodes.length>80)c.removeChild(c.firstChild)}
+  c.scrollTop=c.scrollHeight}
+function fix(f){var d=document.createElement('div');d.className='fix';d.innerHTML='<div class="s">'+esc(f.said)+'</div><div class="b">'+esc(f.better)+'</div><div class="y">'+esc(f.why)+'</div>';$('fixes').appendChild(d);$('fixes').scrollTop=$('fixes').scrollHeight}
+function vocab(list){var v=$('vocab');v.innerHTML='';var now=Date.now();list.slice().reverse().forEach(function(w){var d=document.createElement('div');d.className='v';d.innerHTML='<span class="w'+(w.due&&w.due<=now?' due':'')+'">'+esc(w.word)+'</span><span class="m">'+esc(w.meaning)+(w.hits?' ✓'+w.hits:'')+'</span>';v.appendChild(d)})}
+function render(){$('clang').textContent=S.languageName;$('clevel').textContent=S.level;$('cscen').textContent=S.scenario;
+  $('go').textContent=S.status==='off'?'start lesson':'end lesson';$('go').classList.toggle('on',S.status!=='off');
+  $('stext').textContent=S.status==='live'?'● lesson live':S.status==='connecting'?'○ connecting…':'○ off'}
+function load(full){if(!B)return;var s;try{s=JSON.parse(B.snapshot(String(full?0:S.seq)))}catch(e){return}
+  S.status=s.status;S.language=s.language;S.languageName=s.languageName;S.level=s.level;S.scenario=s.scenario;S.langs=s.langs||S.langs;
+  if(full){$('chat').querySelectorAll('.t').forEach(function(e){e.remove()});$('fixes').innerHTML='';S.seq=0;(s.corrections||[]).forEach(fix)}
+  (s.turns||[]).forEach(function(t){if(t.seq>S.seq){S.seq=t.seq;turn(t,false)}});vocab(s.vocab||[]);
+  $('summary').classList.toggle('on',!!s.summary);$('summary').textContent=s.summary||'';render()}
+window.__lxEvent=function(js){var o;try{o=JSON.parse(js)}catch(e){return}
+  if(o.type==='turn'){S.seq=Math.max(S.seq,o.turn.seq);turn(o.turn,false)}
+  else if(o.type==='partial'){turn({who:o.who,text:o.text},true)}
+  else if(o.type==='correction'){fix(o.correction)}
+  else if(o.type==='vocab'){load(false)}
+  else if(o.type==='summary'){$('summary').textContent=o.text;$('summary').classList.add('on')}
+  else if(o.type==='status'){if(o.status==='connecting')load(true);else{S.status=o.status;render()};if(o.status==='off'&&o.text&&o.text!=='stopped')turn({who:'tutor',text:'— '+o.text+' —'},false)}
+  else if(o.type==='config'){load(false)}
+  else if(o.type==='error'){turn({who:'tutor',text:'⚠ '+o.text},false)}};
+$('go').onclick=function(){if(S.status==='off'){var r=cmd({op:'start'});if(r==='after assistant')turn({who:'tutor',text:'— starting once the assistant finishes —'},false)}else cmd({op:'stop'})};
+function pick(kind){S.pick=kind;$('q').value='';$('ptitle').textContent=kind;fill('');$('picker').classList.add('on');if(kind==='language')$('q').focus()}
+function fill(q){var g=$('pgrid');g.innerHTML='';q=q.toLowerCase();var items=S.pick==='language'?S.langs.map(function(l){return [l.code,l.name]}):S.pick==='level'?LEVELS:SCEN.map(function(x){return [x,x]});
+  items.filter(function(it){return !q||it[1].toLowerCase().indexOf(q)>=0}).forEach(function(it){var b=document.createElement('span');b.className='chip';b.textContent=S.pick==='level'?it[0]+' · '+it[1]:it[1];
+    b.onclick=function(){var o={op:'set'};o[S.pick]=it[0];cmd(o);$('picker').classList.remove('on');setTimeout(function(){load(false)},300)};g.appendChild(b)})}
+$('clang').onclick=function(){pick('language')};$('clevel').onclick=function(){pick('level')};$('cscen').onclick=function(){pick('scenario')};
+$('picker').onclick=function(e){if(e.target===this)this.classList.remove('on')};
+if(!B){$('chat').innerHTML='<div id="hint">TapGemTutor bridge missing — this page only works inside a TapGem window.</div>'}
+load(true);
+setInterval(function(){if(!B)return;try{var s=JSON.parse(B.snapshot('999999999'));$('lvl').style.width=Math.min(100,Math.round(s.level_*180))+'%';$('sp').textContent=s.speaking?'◉ tutor speaking':'';if(s.status!==S.status)load(false)}catch(e){}},150);
+})();
+</script>
+</body></html>

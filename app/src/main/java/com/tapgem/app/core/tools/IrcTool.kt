@@ -7,6 +7,7 @@ import com.tapgem.app.core.model.WidgetType
 import com.tapgem.app.core.store.DesktopStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -26,7 +27,13 @@ class IrcTool(private val context: Context) : AiTool {
         fun installApp(context: Context): File {
             val f = appFile()
             val html = context.assets.open("irc.html").bufferedReader().readText()
-            if (!f.exists() || f.readText() != html) { f.parentFile?.mkdirs(); f.writeText(html) }
+            if (!f.exists() || f.readText() != html) {
+                f.parentFile?.mkdirs(); f.writeText(html)
+                // a window already showing the old copy re-reads the file
+                DesktopBridge.current().widgets.filter { it.type == WidgetType.APP && it.source == f.absolutePath }.forEach { w ->
+                    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runCatching { com.tapgem.app.core.bridge.WebCommandBus.execute(w.id, com.tapgem.app.core.bridge.WebCommandBus.Command("reload", emptyMap())) } }
+                }
+            }
             return f
         }
     }
@@ -34,8 +41,8 @@ class IrcTool(private val context: Context) : AiTool {
     private fun window() = DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.APP && it.source.endsWith(APP_FILE) }
 
     private suspend fun ensureWindow(args: Args): String {
-        if (window() != null) return ""
         val f = installApp(context)
+        if (window() != null) return ""
         val a = HashMap<String, String>(); args.str("anchor", "position")?.let { a["anchor"] = it }
         if (args.str("size") != null) a["size"] = args.str("size")!! else { a["w"] = "624"; a["h"] = "420"; a.putIfAbsent("anchor", "top left") }
         WidgetOps.add(context, Args(a), forcedType = WidgetType.APP, forcedSource = f.absolutePath, forcedTitle = "IRC")

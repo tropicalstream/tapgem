@@ -136,7 +136,12 @@ class GeminiLiveClient(
                 "nick to …\", \"what did they say\") → the irc tool, never a web page. Dictated messages (\"tell them …\", " +
                 "\"say … in the channel\", \"reply …\") → irc say with the text VERBATIM (no paraphrase, no added " +
                 "punctuation flourishes). That only STAGES it: read the staged words back exactly and ask \"send it?\"; " +
-                "on yes → irc confirm, otherwise irc cancel. Never send a chat message without that confirmation.\n" +
+                "on yes → irc confirm, otherwise irc cancel. Never send a chat message without that confirmation. " +
+                "Discord (\"open Discord\", \"switch to #general on the Berkeley server\", \"what's new in general\") → the " +
+                "discord tool with the SAME stage → read back → confirm rule for anything dictated.\n" +
+                "- \"Translate what they're saying / interpret / I need Spanish\" → interpreter start (listen for hearing others, " +
+                "speak for being understood, conversation for both). \"Teach me French / practise Japanese / language lesson\" → " +
+                "tutor start. Both take the microphone from you: after calling them say ONE short sentence and stop talking.\n" +
                 "- \"Bookmark this / save the checkers game for later / keep this window\" → bookmark action=save " +
                 "(the active window unless one is named). \"Open my checkers bookmark / bring back the radio\" → " +
                 "bookmark action=open name=<it>. \"Keep / bookmark / save this wallpaper (background)\" → bookmark " +
@@ -556,6 +561,30 @@ class GeminiLiveClient(
                 "channel" to "Channel like #ocf (the # is optional), or a person's nick for a private message.",
                 "text" to "say: the message, exactly as the user dictated it.", "count" to "read: how many lines (default 8).",
                 "theme" to "theme: one of the theme names.") + geometryProps))
+        .put(decl("discord",
+            "The Discord chat window (same retro look as IRC, the user's own account). open/connect: put it on " +
+                "the desktop and connect (login happens in the window by typing). servers: list servers. channels: list " +
+                "channels (server=…). switch: show a channel (channel=…, server=… when ambiguous) — Discord has no " +
+                "join/part, channels are always there. say: STAGE a message to the current (or named) channel — NOT " +
+                "sent; read the words back, ask to confirm, then confirm (or cancel). read: last messages. status. " +
+                "theme (same names as irc). logout forgets the token.",
+            mapOf("action" to "open|connect|disconnect|logout|servers|channels|switch|say|confirm|cancel|read|status|theme",
+                "channel" to "Channel name (with or without #) or a DM person's name.", "server" to "Server (guild) name to disambiguate.",
+                "text" to "say: the message, exactly as dictated.", "count" to "read: how many lines.", "theme" to "Theme name.") + geometryProps))
+        .put(decl("interpreter",
+            "Live speech interpreter window (a separate, continuous translation model — it takes the microphone, so " +
+                "it runs after your turn ends). start: mode=listen (what people around the user say → the user's " +
+                "language, in their ear), speak (what the user says → their_language, aloud for the other person), " +
+                "conversation (both directions automatically). set: change languages/mode. stop. read: what was " +
+                "translated. languages: the 70+ supported. open: just the window.",
+            mapOf("action" to "open|start|stop|set|read|status|languages", "mode" to "listen|speak|conversation",
+                "my_language" to "The user's language (name or code), default English.", "their_language" to "The other language (name or code).") + geometryProps))
+        .put(decl("tutor",
+            "Language-lesson window (a separate tutoring session on the microphone; runs after your turn ends). start: " +
+                "begin a spoken lesson (language, level A1–C2 or beginner/intermediate/advanced, scenario like 'ordering " +
+                "coffee' or 'job interview'). stop: end it. set: change settings. status: progress, corrections, vocabulary.",
+            mapOf("action" to "open|start|stop|set|status", "language" to "Language to learn.", "native" to "The user's own language (default English).",
+                "level" to "CEFR level or beginner/intermediate/advanced.", "scenario" to "Role-play scenario or topic.") + geometryProps))
         .put(decl("media",
             "Find media files on the glasses by name/type ('vacation', 'tolkien', 'podcast'). find returns " +
                 "matches with paths; open finds and adds the best match as a widget in one step.",
