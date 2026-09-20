@@ -26,7 +26,21 @@ object Router {
      */
     class Step(val lat: Double, val lon: Double, val text: String, val distM: Double, val durS: Double,
                val type: String = "", val modifier: String = "", val bearingBefore: Double = Double.NaN, val bearingAfter: Double = Double.NaN,
-               val exit: Int = 0, val name: String = "")
+               val exit: Int = 0, val name: String = "",
+               /** Road designation ("I 880"), exit number ("4A") and what the sign points at
+                *  ("Downtown, North First Street"). On a ramp OSRM leaves [name] empty and puts
+                *  everything here, which is why freeway exits used to show nothing at all. */
+               val ref: String = "", val exits: String = "", val destinations: String = "") {
+        /** What to put on the sign: the exit number if there is one, else the road number. */
+        val shield: String get() = when {
+            exits.isNotBlank() -> "Exit $exits"
+            ref.isNotBlank() -> ref
+            else -> ""
+        }
+        /** Where that exit goes, trimmed to the part a driver reads at speed. */
+        val toward: String get() = destinations.substringAfter(':').trim()
+            .split(',').map { it.trim() }.filter { it.isNotBlank() }.take(2).joinToString(", ")
+    }
     /** An intermediate stop ("Glenview Taqueria on the way to school"). */
     class Via(val lat: Double, val lon: Double, val label: String)
     class Route(val coords: List<DoubleArray>, val steps: List<Step>, val distM: Double, val durS: Double, val mode: String, val dest: String,
@@ -90,6 +104,9 @@ object Router {
                 if (!s.bearingBefore.isNaN()) o.put("bb", s.bearingBefore)
                 if (!s.bearingAfter.isNaN()) o.put("ba", s.bearingAfter)
                 if (s.exit > 0) o.put("exit", s.exit)
+                if (s.ref.isNotBlank()) o.put("ref", s.ref)
+                if (s.exits.isNotBlank()) o.put("exits", s.exits)
+                if (s.destinations.isNotBlank()) o.put("dst", s.destinations)
                 if (s.name.isNotBlank()) o.put("name", s.name)
                 a.put(o) } })
             .put("via", JSONArray().also { a -> via.forEach { v -> a.put(JSONObject().put("lat", v.lat).put("lon", v.lon).put("label", v.label)) } })
@@ -102,7 +119,8 @@ object Router {
                 val coords = o.getJSONArray("coords").let { a -> List(a.length()) { i -> val c = a.getJSONArray(i); doubleArrayOf(c.getDouble(0), c.getDouble(1)) } }
                 val steps = o.getJSONArray("steps").let { a -> List(a.length()) { i -> val st = a.getJSONObject(i)
                     Step(st.getDouble("lat"), st.getDouble("lon"), st.getString("text"), st.getDouble("dist"), st.getDouble("dur"),
-                        st.optString("type"), st.optString("mod"), st.optDouble("bb", Double.NaN), st.optDouble("ba", Double.NaN), st.optInt("exit", 0), st.optString("name")) } }
+                        st.optString("type"), st.optString("mod"), st.optDouble("bb", Double.NaN), st.optDouble("ba", Double.NaN), st.optInt("exit", 0), st.optString("name"),
+                        st.optString("ref"), st.optString("exits"), st.optString("dst")) } }
                 val via = o.optJSONArray("via")?.let { a -> List(a.length()) { i -> val v = a.getJSONObject(i); Via(v.getDouble("lat"), v.getDouble("lon"), v.optString("label")) } } ?: emptyList()
                 Route(coords, steps, o.getDouble("dist"), o.getDouble("dur"), o.optString("mode", "foot"), o.optString("dest"), via,
                     o.optString("drivingSide").takeIf { it.isNotBlank() })
@@ -145,7 +163,8 @@ object Router {
                         if (stop != null && man.optString("type") == "arrive") text = text.replace("your destination", stop.label) + " — then continue to ${if (l + 1 < via.size) via[l + 1].label else dest}"
                         steps += Step(loc.getDouble(1), loc.getDouble(0), text, st.optDouble("distance", 0.0), st.optDouble("duration", 0.0),
                             man.optString("type"), man.optString("modifier"), man.optDouble("bearing_before", Double.NaN), man.optDouble("bearing_after", Double.NaN),
-                            man.optInt("exit", 0), st.optString("name"))
+                            man.optInt("exit", 0), st.optString("name"),
+                            st.optString("ref"), st.optString("exits"), st.optString("destinations"))
                     }
                 }
                 Route(coords, steps, route.optDouble("distance", 0.0), route.optDouble("duration", 0.0), mode, dest, via, drivingSide)
@@ -192,6 +211,22 @@ object Router {
 
     private fun instruction(step: JSONObject, man: JSONObject, mode: String): String {
         val name = step.optString("name").takeIf { it.isNotBlank() }
+            ?: step.optString("ref").takeIf { it.isNotBlank() }   // ramps have no street name, only a road number
+        val exitNo = step.optString("exits").takeIf { it.isNotBlank() }
+        // OSRM writes the sign as "road: places" ("I 880 South: San Jose"), or just places
+        // ("Downtown, North First Street"). Say both — the road number is half of how a sign is read.
+        val toward = step.optString("destinations").takeIf { it.isNotBlank() }?.let { d ->
+            val road = d.substringBefore(':', "").trim().takeIf { it.isNotBlank() && d.contains(':') }
+            val places = d.substringAfter(':').trim()
+                .split(',').map { it.trim() }.filter { it.isNotBlank() }
+                .let { if (it.size > 3) it.take(3) else it }
+                .joinToString(" and ")
+            when {
+                places.isNotBlank() && road != null -> "$places on $road"
+                places.isNotBlank() -> places
+                else -> road
+            }
+        }?.takeIf { it.isNotBlank() }
         val type = man.optString("type"); val mod = man.optString("modifier")
         val turn = when (mod) {
             "sharp left" -> "sharp left"; "slight left" -> "slightly left"; "left" -> "left"
@@ -205,11 +240,12 @@ object Router {
             "arrive" -> "Arrive at your destination" + when (mod) { "left" -> ", on the left"; "right" -> ", on the right"; else -> "" }
             "turn" -> if (turn == "straight") "Continue straight$onto" else if (turn == "around") "Make a U-turn$onto" else "Turn $turn$onto"
             "new name", "continue" -> "Continue$onto"
-            "merge" -> "Merge $turn$onto"
-            "fork" -> "Keep $turn at the fork$onto"
+            "merge" -> "Merge $turn$onto" + (toward?.let { " toward $it" } ?: "")
+            "fork" -> "Keep $turn at the fork" + (exitNo?.let { " for exit $it" } ?: onto) + (toward?.let { " toward $it" } ?: "")
             "end of road" -> "At the end of the road turn $turn$onto"
-            "on ramp" -> "Take the ramp $turn$onto"
-            "off ramp" -> "Take the exit $turn$onto"
+            "on ramp" -> "Take the ramp $turn" + (toward?.let { " toward $it" } ?: onto)
+            "off ramp" -> (if (exitNo != null) "Take exit $exitNo" else "Take the exit $turn") +
+                (toward?.let { " toward $it" } ?: onto) + (if (exitNo != null && toward == null && name != null) " onto $name" else "")
             "roundabout", "rotary" -> "At the roundabout take exit ${man.optInt("exit", 1)}$onto"
             "exit roundabout", "exit rotary" -> "Exit the roundabout$onto"
             "notification" -> "Continue$on"

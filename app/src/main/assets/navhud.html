@@ -149,6 +149,12 @@ html[data-mode="tall"] #main{flex-direction:column;align-items:stretch}
 html[data-mode="tall"] #left{flex:none}
 html[data-mode="tall"] #mini{align-self:center;margin-top:4px}
 html[data-mode="tall"] #instr{margin-top:4px}
+.shield{display:inline-block;margin-right:6px;padding:0 5px;border:1px solid var(--accent);border-radius:3px;
+  font-weight:700;font-size:.82em;line-height:1.35;color:var(--accent);vertical-align:2%;white-space:nowrap}
+.toward{display:block;font-size:.66em;opacity:.78;margin-top:1px;line-height:1.2;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-theme="fallout"] .shield{border-radius:0}
+html[data-theme="synthwave"] .shield{box-shadow:0 0 5px var(--accent)}
 html[data-theme="fallout"] #root{text-transform:uppercase}
 html[data-theme="fallout"] #root:before,html[data-theme="fallout"] #root:after,html[data-theme="fallout"] #main:before,html[data-theme="fallout"] #main:after{content:"";position:absolute;width:12px;height:12px;border:2px solid var(--frame);pointer-events:none;z-index:4}
 html[data-theme="fallout"] #root:before{left:2px;top:2px;border-right:none;border-bottom:none}
@@ -245,6 +251,7 @@ courseHold: { deg: null, t: 0 },
 roads: [], org: null, lay: { mode: 'mini', W: 340, H: 192, A: 80, d: 143, miniOn: true, s: 1, fs: 1 },
 counters: { groundDraws: 0, overlayDraws: 0, arrowDraws: 0, headingAccepted: 0, headingIgnored: 0 },
 timers: {}, stripPage: 0, arrivedAt: 0, startT: 0, split: { last: 0, text: '', until: 0 }, sun: null, sunAt: null,
+kcal: 0, kcalT: 0, weightKg: 70,
 lastStateJson: '', lastStateT: 0, coarseHintT: 0, lastRoadsRedraw: 0
 };
 var T = {};
@@ -404,7 +411,10 @@ var xy = new Array(n), cum = new Array(n); cum[0] = 0;
 for (var i = 0; i < n; i++) { xy[i] = toXY(coords[i][1], coords[i][0]); if (i) cum[i] = cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]); }
 var steps = (r.steps || []).map(function (s) {
 return { lat: num(s.lat, 0), lon: num(s.lon, 0), text: s.text || '', dist: num(s.dist, 0), dur: num(s.dur, 0), type: s.type || '', mod: s.mod || s.modifier || '',
-bb: s.bb != null ? num(s.bb, NaN) : num(s.bearingBefore, NaN), ba: s.ba != null ? num(s.ba, NaN) : num(s.bearingAfter, NaN), exit: num(s.exit, 0), name: s.name || '' };
+bb: s.bb != null ? num(s.bb, NaN) : num(s.bearingBefore, NaN), ba: s.ba != null ? num(s.ba, NaN) : num(s.bearingAfter, NaN), exit: num(s.exit, 0), name: s.name || '',
+/* Highway fields: `exit` is the roundabout number, these are the freeway sign. Dropping them
+   here is what left motorway exits blank no matter what the router sent. */
+exits: s.exits || '', ref: s.ref || '', dst: s.dst || s.destinations || '' };
 });
 var stepAt = steps.map(function (s) { var p = toXY(s.lat, s.lon), b = 0, bd = 1e18; for (var j = 0; j < n; j++) { var d = (xy[j][0] - p[0]) * (xy[j][0] - p[0]) + (xy[j][1] - p[1]) * (xy[j][1] - p[1]); if (d < bd) { bd = d; b = j; } } return b; });
 var via = (r.via || []).map(function (v, k) { var p = toXY(num(v.lat, 0), num(v.lon, 0)); var b = 0, bd = 1e18; for (var j = 0; j < n; j++) { var d = (xy[j][0] - p[0]) * (xy[j][0] - p[0]) + (xy[j][1] - p[1]) * (xy[j][1] - p[1]); if (d < bd) { bd = d; b = j; } } return { lat: v.lat, lon: v.lon, label: v.label || ('Stop ' + (k + 1)), xy: p, idx: b, n: k + 1 }; });
@@ -455,6 +465,15 @@ return '';
 function classify(i) {
 var R = S.route, st = R.steps[i], nx = R.steps[i + 1], lht = (R.drivingSide || S.env.drivingSide) === 'left';
 var type = st.type || '', mod = st.mod || '', s = side(mod), g = { key: 'straight', verb: 'Continue', name: line2Of(st), side: s, exit: 0, theta: 0, via: 0 };
+/* A ramp carries no street name: OSRM puts the exit number in `exits`, the road in `ref` and the
+   sign text in `dst` ("I 880 South: San Jose"). Without these a freeway exit showed nothing. */
+g.shield = st.exits ? 'Exit ' + st.exits : (st.ref || '');
+(function () {
+  var d = String(st.dst || ''), road = d.indexOf(':') >= 0 ? d.split(':')[0].trim() : '';
+  var places = d.split(':').pop().split(',').map(function (x) { return x.trim(); }).filter(Boolean).slice(0, 3).join(', ');
+  g.toward = places && road ? places + ' · ' + road : (places || road);
+})();
+if (!g.name && st.ref) g.name = st.ref;
 var last = i === R.steps.length - 1;
 switch (type) {
 case 'depart': g.key = 'depart'; g.verb = 'Head ' + (isNaN(st.ba) ? 'out' : CARD[Math.round(n360(st.ba) / 45) % 8]); break;
@@ -468,7 +487,8 @@ case 'end of road': if (s) { g.key = 'end_' + s; g.verb = 'Turn ' + s + ' at the
 case 'fork': g.key = s ? 'fork_' + s : 'straight'; g.verb = s ? 'Keep ' + s : 'Continue'; break;
 case 'merge': g.key = s ? 'merge_' + s : 'straight'; g.verb = s ? 'Merge ' + s : 'Merge'; break;
 case 'on ramp': g.key = s ? 'ramp_on_' + s : (lht ? 'slight_left' : 'slight_right'); g.verb = s ? 'Ramp ' + s : 'Take the ramp'; break;
-case 'off ramp': g.key = s ? 'ramp_off_' + s : (lht ? 'slight_left' : 'slight_right'); g.verb = s ? 'Exit ' + s : 'Take the exit'; break;
+case 'off ramp': g.key = s ? 'ramp_off_' + s : (lht ? 'slight_left' : 'slight_right');
+g.verb = st.exits ? 'Take exit ' + st.exits : (s ? 'Exit ' + s : 'Take the exit'); break;
 case 'roundabout': case 'rotary':
 g.key = 'roundabout'; g.exit = st.exit || 0; g.verb = 'Exit ' + (g.exit || 1);
 var th = { 1: 90, 2: 0, 3: -90 }[g.exit]; if (th == null) th = g.exit >= 4 ? 180 : 0; if (lht) th = -th;
@@ -510,6 +530,30 @@ if (S.flags.offRoute && S.fix) { var p = S.drawPos || toXY(S.fix.lat, S.fix.lon)
 if (S.offLine > 60 || coarse) { if (S.fix) return { m: haversine(S.fix.lat, S.fix.lon, st.lat, st.lon), coarse: true }; }
 return { m: Math.max(0, R.cum[R.stepAt[S.focus]] - al), coarse: false };
 }
+/* Energy burned, integrated over time rather than derived from distance alone: the same mile
+   costs more at a jog than a stroll, and standing at a crossing still costs something. METs are
+   the compendium's walking/running/cycling values; kcal/min = MET * 3.5 * kg / 200. Body mass is
+   a guess (70 kg) until told otherwise, so treat it as an estimate, which is all it can be. */
+function metFor(v, mk) {
+  if (v < 0.3) return 1.3;                                   // standing
+  var mph = v * 2.236936;
+  if (mk === 'bicycling') return mph < 10 ? 4.0 : mph < 12 ? 6.8 : mph < 14 ? 8.0 : mph < 16 ? 10.0 : mph < 20 ? 12.0 : 15.8;
+  if (mk === 'driving') return 1.3;
+  if (mph >= 5) {                                            // running
+    return mph < 6 ? 8.3 : mph < 7 ? 9.8 : mph < 8 ? 11.0 : mph < 9 ? 11.8 : mph < 10 ? 12.8 : 14.5;
+  }
+  return mph < 2.0 ? 2.0 : mph < 2.8 ? 2.9 : mph < 3.2 ? 3.3 : mph < 3.7 ? 3.8 : mph < 4.2 ? 5.0 : 7.0;
+}
+function accrueKcal(t) {
+  if (!S.startT) { S.kcalT = t; return; }
+  if (!S.kcalT) { S.kcalT = t; return; }
+  var dtMin = (t - S.kcalT) / 60000;
+  S.kcalT = t;
+  if (dtMin <= 0 || dtMin > 0.5) return;                     // a long gap means the page was asleep
+  S.kcal += metFor(speedNow(), modeKey()) * 3.5 * S.weightKg / 200 * dtMin;
+}
+function kcalText() { return (S.kcal < 10 ? S.kcal.toFixed(1) : String(Math.round(S.kcal))) + ' kcal'; }
+
 function speedNow() { var f = S.fix; if (!f || f.speed == null) return 0; if (now() - f.t > 20000) return 0; return Math.max(0, f.speed); }
 function thresholds() {
 var v = speedNow(), m = S.route ? S.route.mode : S.mode;
@@ -887,7 +931,13 @@ var g = focusGlyph(), last = S.focus === R.steps.length - 1;
 if (S.flags.arrived) instr.innerHTML = (g.side ? 'on the ' + g.side + ' · ' : '') + '<b>' + esc(R.dest || g.name || 'Destination') + '</b>';
 else if (S.flags.rerouting) instr.innerHTML = 'Rerouting…';
 else if (g.key.indexOf('arrive') === 0) instr.innerHTML = (g.via ? 'Stop ' + g.via + ' ' : 'Arrive ') + (g.name ? '<b>' + esc(g.name) + '</b>' : '') + (g.side ? ' · ' + g.side : '');
-else instr.innerHTML = esc(g.verb) + (g.name ? (g.key === 'depart' ? ' <b>' : ' onto <b>') + esc(g.name) + '</b>' : '');
+else {
+  var isRamp = g.key.indexOf('ramp_') === 0 || g.key === 'merge_left' || g.key === 'merge_right';
+  /* On a ramp the sign is the useful part: show the shield and what it points at, not "onto —". */
+  var head = esc(g.verb) + (g.name && !(isRamp && g.shield) ? (g.key === 'depart' ? ' <b>' : ' onto <b>') + esc(g.name) + '</b>' : '');
+  var badge = (g.shield && g.verb.indexOf(g.shield) < 0) ? '<span class="shield">' + esc(g.shield) + '</span>' : '';
+  instr.innerHTML = badge + head + (g.toward ? '<span class="toward">toward ' + esc(g.toward) + '</span>' : '');
+}
 var nx = S.focus + 1 < R.steps.length ? classify(S.focus + 1) : null, t = now();
 then.className = ''; then.classList.remove('force');
 if (S.flags.offRoute && !S.flags.arrived) { then.textContent = 'Off route'; then.className = 'warn force'; }
@@ -924,7 +974,8 @@ var flash = S.split.until > t;
 strip.innerHTML = '<span class="cell pace"><span class="lb">Pace</span><span class="v">' + (pace || '—') + '</span></span>' +
 '<span class="cell"><span class="lb">ETA</span><span class="v">' + (rem ? fmtClock(rem.eta) : '—') + '</span></span>' +
 '<span class="cell' + (flash ? ' flash' : '') + '"><span class="lb">' + (flash ? 'Split' : 'Done') + '</span><span class="v">' + (flash ? S.split.text : dd[0] + ' ' + dd[1]) + '</span></span>' +
-(S.lay.mode === 'large' ? '<span class="cell"><span class="lb">Elapsed</span><span class="v">' + els + '</span></span>' : '') + gpsHtml();
+(S.lay.mode === 'large' ? '<span class="cell"><span class="lb">Elapsed</span><span class="v">' + els + '</span></span>' : '') +
+'<span class="cell"><span class="lb">Burn</span><span class="v">' + kcalText() + '</span></span>' + gpsHtml();
 return;
 }
 items.push('<span class="it glyph">' + MODE_SVG[mk] + '</span>');
@@ -932,17 +983,25 @@ if (S.stripPage === 1) {
 if (pace) it('pace', pace);
 it('src', '<span class="lb">GPS</span> ' + esc(f && f.src ? f.src : (f ? 'phone' : '—')));
 var e2 = S.startT ? Math.floor((t - S.startT) / 1000) : 0; it('el', '<span class="lb">Elapsed</span> ' + Math.floor(e2 / 60) + ':' + (e2 % 60 < 10 ? '0' : '') + e2 % 60);
+/* Only where it means anything: a car burns the driver nothing worth reporting. */
+if (mk !== 'driving') it('kcal', '<span class="lb">Burn</span> ' + kcalText());
 } else if (S.flags.arrived && R) { it('tot', fmtDist(R.total, false).join(' ')); it('tot2', fmtDur(R.dur)); }
-else if (S.lay.mode === 'compact') { if (rem) it('rem', fmtDist(rem.m, false).join(' ')); }
+else if (S.lay.mode === 'compact') { if (rem) it('rem', fmtDist(rem.m, false).join(' ')); if (mk !== 'driving') it('kcal', kcalText()); }
 else if (rem) {
 it('eta', '<span class="lb">ETA</span> ' + fmtClock(rem.eta)); it('rem', fmtDist(rem.m, false).join(' ')); it('time', fmtDur(rem.s));
 if (pace) it('pace', pace);
+/* On foot or on a bike the burn belongs on the page you are already looking at, not behind a
+   toggle. A driver burns nothing worth reporting, so it stays off for driving. */
+if (mk !== 'driving') it('kcal', fo ? kcalText().replace(' kcal', ' KCAL') : '<span class="lb">Burn</span> ' + kcalText());
 if (S.theme === 'hiking' && S.sun && S.sun.set) { var sunset = S.sun.set, dusk = S.sun.dusk, eta = rem.eta; if (eta >= sunset - 7200000) { var cls = eta > dusk ? 'danger' : eta > sunset ? 'warn' : '', left = sunset - t; it('extra ' + cls, SUN_SVG + '<span class="lb">sets</span> ' + fmtClock(sunset) + (left > 0 ? ' · ' + fmtDur(left / 1000) : '')); } }
 }
 if (S.flags.rerouted) it('rr', 'Rerouted');
 var lbl = $('olabel');
 strip.innerHTML = items.join('<span class="sep">·</span>') + gpsHtml();
-var order = ['extra', 'pace', 'time', 'rem', 'eta'], guard = 0;
+/* Drop order when the strip overflows. Burn sits behind pace and duration but ahead of distance
+   and ETA: it is the number the walker asked to see, and it was being hidden first in every
+   theme whose strip ran long. */
+var order = ['extra', 'rr', 'pace', 'time', 'kcal', 'rem', 'eta'], guard = 0;
 while (strip.scrollWidth > strip.clientWidth + 1 && guard < order.length) {
 var el2 = strip.querySelector('.it.' + order[guard]); guard++; if (!el2) continue; el2.classList.add('hide');
 var sep = el2.previousElementSibling; if (sep && sep.classList.contains('sep')) sep.classList.add('hide'); else { sep = el2.nextElementSibling; if (sep && sep.classList.contains('sep')) sep.classList.add('hide'); }
@@ -996,6 +1055,7 @@ S.fixes++;
 // Speed from position deltas only for good fixes that moved further than their own accuracy; jitter is not motion.
 if (f.speed == null && prev && prev.lat != null && S.fixState === 'good') { var mv = haversine(prev.lat, prev.lon, f.lat, f.lon), dts = Math.max(1, (f.t - prev.t) / 1000); if (mv > Math.max(f.acc || 0, prev.acc || 0) && mv / dts < 30) f.speed = Math.round(mv / dts * 10) / 10; else f.derivedStill = true; }
 if (f.speed != null && f.speed >= 0.5 && S.fixState === 'good') { S.movingFixes++; S.obsSpeed = S.obsSpeed ? S.obsSpeed * .7 + f.speed * .3 : f.speed; } else S.movingFixes = 0;
+accrueKcal(t);
 if (!S.org) setOrigin(f.lat, f.lon);
 var p = toXY(f.lat, f.lon), jumpFrom = S.drawPos;
 if (S.route) {
@@ -1073,7 +1133,7 @@ api('setRoute', function (r) {
 r = parse(r); if (!r || !r.coords || !r.coords.length) { S.route = null; S.focus = 0; S.step = 0; S.D = null; relayout(); return 'ignored: no coords'; }
 var wasRoute = !!S.route, R = prepRoute(r); if (!R) return 'ignored: empty';
 S.route = R; S.mode = R.mode; S.focus = 0; S.step = 0; S.phase = 'far'; S.phaseFocus = -1; S.told = {}; ROOT.setAttribute('data-phase', 'far');
-S.along = null; S.nearIdx = 0; S.offLine = 0; S.reck = { along: null, t: 0 }; S.drawPos = null; S.D = null; S.lapSegs = null; S.startT = now(); S.split = { last: 0, text: '', until: 0 };
+S.along = null; S.nearIdx = 0; S.offLine = 0; S.reck = { along: null, t: 0 }; S.drawPos = null; S.D = null; S.lapSegs = null; S.startT = now(); S.split = { last: 0, text: '', until: 0 }; S.kcal = 0; S.kcalT = now();
 S.flags.arrived = false; S.arrivedAt = 0; S.zoom.pinned = false; S.zoom.first = true; S.zoom.lastChange = 0;
 if (S.fix) { var p = toXY(S.fix.lat, S.fix.lon); S.drawPos = p; var pr = project(p[0], p[1]); S.nearIdx = pr.idx; S.along = pr.along; S.offLine = pr.off; }
 computeFocus(); decideOrientation(true); autoZoom(false); refresh();
