@@ -31,6 +31,56 @@ object GeminiRest {
      * Generation (apps, live cards, prompt widgets) stays on [TEXT_MODEL], which is better at it.
      */
     const val READ_MODEL = "gemini-3.5-flash-lite"
+
+    /**
+     * A voice that is not the conversation. The Live model ends a spoken turn after a paragraph,
+     * so it cannot read a book; this speaks whatever it is handed. Measured on the glasses' key:
+     * ~1000 characters costs about 26s to generate and yields about 65s of speech, so generation
+     * runs comfortably ahead of playback and passages can be prepared while the last one plays.
+     */
+    const val SPEECH_MODEL = "gemini-2.5-flash-preview-tts"
+
+    /** 24 kHz mono PCM16 — what [SPEECH_MODEL] returns, and what the reader plays. */
+    const val SPEECH_RATE_HZ = 24_000
+
+    /** Raw PCM for [text], or a failure. Voices are Gemini's prebuilt set; Kore reads plainly. */
+    fun speak(context: Context, text: String, voice: String = "Kore"): Result<ByteArray> =
+        callAudio(context, text, voice)
+
+    private fun callAudio(context: Context, text: String, voice: String): Result<ByteArray> = runCatching {
+        val key = ApiKeyStore.resolve(context)?.trim()?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("No Gemini API key")
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("role", "user")
+                .put("parts", JSONArray().put(JSONObject().put("text", text)))))
+            .put("generationConfig", JSONObject()
+                .put("responseModalities", JSONArray().put("AUDIO"))
+                .put("speechConfig", JSONObject().put("voiceConfig",
+                    JSONObject().put("prebuiltVoiceConfig", JSONObject().put("voiceName", voice)))))
+        val req = Request.Builder()
+            .url("$BASE$SPEECH_MODEL:generateContent")
+            .header("x-goog-api-key", key)
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        audioHttp.newCall(req).execute().use { resp ->
+            val raw = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IllegalStateException("speech HTTP ${resp.code}: ${raw.take(140)}")
+            val part = JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)
+                ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
+                ?: throw IllegalStateException("No audio in reply")
+            val inline = part.optJSONObject("inlineData") ?: part.optJSONObject("inline_data")
+                ?: throw IllegalStateException("No audio part")
+            Base64.decode(inline.optString("data"), Base64.DEFAULT)
+        }
+    }
+
+    /** Speech takes far longer than text: a minute of audio is ~26s of generation. */
+    private val audioHttp by lazy {
+        http.newBuilder()
+            .callTimeout(java.time.Duration.ofSeconds(180))
+            .readTimeout(java.time.Duration.ofSeconds(180))
+            .build()
+    }
     const val IMAGE_MODEL = "gemini-3.1-flash-image"
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 

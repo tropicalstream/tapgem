@@ -1785,7 +1785,7 @@ class WebTool(private val context: Context) : AiTool {
         private const val EPUB_LIMIT = 400_000
     }
 
-    private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
+    private val actions = setOf("search", "inspect", "read", "read_aloud", "stop_reading", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
 
     override suspend fun execute(args: Args): Result<String> {
         val action = when (args.action) {
@@ -1798,6 +1798,8 @@ class WebTool(private val context: Context) : AiTool {
             "refresh" -> "reload"
             "look", "list", "elements", "see" -> "inspect"
             "text", "content", "summarize" -> "read"
+            "read_out", "read_to_me", "narrate", "aloud" -> "read_aloud"
+            "stop_read", "stop_aloud", "quiet" -> "stop_reading"
             "stop" -> "pause"
             "resume", "start" -> "play"
             else -> args.action
@@ -1805,7 +1807,7 @@ class WebTool(private val context: Context) : AiTool {
         if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use search, inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
         val named = args.str("target", "id", "title", "widget", "name") != null
         val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
-        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
+        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read", "read_aloud", "stop_reading")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
             return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")
         }
         DesktopBridge.setActive(w.id)
@@ -1831,6 +1833,31 @@ class WebTool(private val context: Context) : AiTool {
             return WidgetTool(context).execute(Args(mapOf("action" to "navigate", "id" to w.id, "nav" to (if (dir.startsWith("out")) "out" else "in")) + (args.str("amount", "levels")?.let { mapOf("value" to it) } ?: emptyMap())))
         }
         if (action == "read") return Result.success(readPage(w, args))
+        if (action == "stop_reading") {
+            com.tapgem.app.core.read.BookReader.stop()
+            return Result.success("Stopped reading.")
+        }
+        if (action == "read_aloud") {
+            // The app reads, not the conversation: the Live model ends a turn after a paragraph.
+            // The whole book, not the chapter in view: reading aloud should carry on past a
+            // chapter end rather than stopping there, and the first "chapter" of an epub is
+            // usually a title page that finishes in five seconds.
+            // A book is read as one run of text with the chapter offsets alongside, so the reader
+            // can open the chapter it has reached instead of leaving the page where it started.
+            val book = if (w.type == WidgetType.EPUB) epubBook(w) else null
+            val text = book?.first
+                ?: WebCommandBus.execute(w.id, WebCommandBus.Command("read",
+                    mapOf("cap" to "400000")), timeoutMs = 30_000L)
+            if (text.isBlank()) return Result.success("Nothing to read in \"${w.title}\".")
+            val resume = args.bool("continue", "more", "next") == true
+            val from = (if (resume) w.state["readAt"]?.toIntOrNull() else args.int("from")) ?: 0
+            com.tapgem.app.core.read.BookReader.start(context, w.id, text, from,
+                chapters = book?.second ?: emptyList(),
+                onProgress = { at, _ -> DesktopBridge.mutateWidget(w.id) { it.withState("readAt" to at.toString()) } },
+                onDone = { msg -> HudStateBridge.notice(msg) })
+            return Result.success("Reading \"${w.title}\" aloud now — say stop to end it. " +
+                "Do not read anything yourself; the glasses are speaking it.")
+        }
         val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
         // A search that landed on whichever window happened to be active: say which site answered,
         // so "restaurants near X" typed into Radio Garden is recognised as the wrong tool, not a result.
@@ -1898,6 +1925,20 @@ class WebTool(private val context: Context) : AiTool {
         }
         sb.take(EPUB_LIMIT).toString().trim()
     }.onFailure { Log.w("WebTool", "epub read failed: ${it.message}") }.getOrDefault("")
+
+    /** The whole book as one run of text, with the offset each chapter starts at. */
+    private fun epubBook(w: Widget): Pair<String, List<Int>>? = runCatching {
+        val chapters = EpubUnpacker.chapters(context, File(w.source))
+        if (chapters.isEmpty()) return null
+        val sb = StringBuilder()
+        val starts = ArrayList<Int>(chapters.size)
+        for (f in chapters) {
+            starts += sb.length
+            sb.append(stripHtml(f.readText())).append("\n\n")
+            if (sb.length > EPUB_LIMIT) break
+        }
+        sb.toString().trim() to starts
+    }.onFailure { Log.w("WebTool", "epub book read failed: ${it.message}") }.getOrNull()
 
     /** Chapter files are XHTML; the words are all that is wanted. */
     private fun stripHtml(html: String): String = html
