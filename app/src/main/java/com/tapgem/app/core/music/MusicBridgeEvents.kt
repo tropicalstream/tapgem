@@ -25,4 +25,7 @@ object MusicBridgeEvents {
     fun emitSkin(installed: JSONObject) = emit(JSONObject().put("type", "skin").put("skin", installed))
 
     fun emitVisualizer(mode: String) = emit(JSONObject().put("type", "visualizer").put("mode", mode))
+
+    /** "what's up next" — bring the queue into view instead of only reading it out. */
+    fun emitQueue() = emit(JSONObject().put("type", "queue"))
 }

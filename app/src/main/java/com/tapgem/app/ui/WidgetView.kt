@@ -1272,6 +1272,13 @@ class WidgetView(context: Context) : FrameLayout(context) {
                     else m.play(m.search(o.optString("query").ifBlank { null }))
                 }
                 "playAll" -> m.play(m.library())
+                // Tapping a row in the Queue tab means "go to this one", not "throw the rest away".
+                // The plain play op replaces the queue with a single track, which would empty the
+                // very list being tapped, so jumping keeps the queue and moves the index.
+                "jump" -> m.queueSnapshot().let { q ->
+                    val i = o.optInt("index", -1)
+                    if (i in q.indices) m.play(q, i) else "not in the queue"
+                }
                 "toggle" -> m.toggle()
                 "pause" -> m.pause()
                 "resume" -> m.resume()

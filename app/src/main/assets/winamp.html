@@ -52,6 +52,7 @@ body.compact #stage{padding:0}
 </div>
 <div id="tabs">
   <span class="tab on" data-t="lib">Library</span>
+  <span class="tab" data-t="queue">Queue</span>
   <span class="tab" data-t="skins">Skins</span>
   <span class="tab" data-t="vis">Visualiser</span>
 </div>
@@ -185,7 +186,7 @@ function wearSkin(id){
    the much shorter Visualiser, and its controls sit above the visible area — the tab looks empty
    and broken. Reset on a tab CHANGE only: renderPanel also runs for in-tab refreshes (state
    ticks, skin results) where yanking the list back to the top mid-scroll would be worse. */
-var lastPanelTab='', visPicked=false;
+var lastPanelTab='', visPicked=false, lastQueueIndex=-2;
 function renderPanel(){
   var p=$('panel');
   if(S.tab!==lastPanelTab){p.scrollTop=0;lastPanelTab=S.tab}
@@ -199,6 +200,20 @@ function renderPanel(){
     var f=$('find'); if(f)f.oninput=function(){var q=f.value.toLowerCase();
       [].forEach.call(p.querySelectorAll('.row'),function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)>=0?'':'none'})};
     [].forEach.call(p.querySelectorAll('.row'),function(r){r.onclick=function(){cmd({op:'play',id:+r.dataset.id});setTimeout(pull,250)}});
+  } else if(S.tab==='queue'){
+    /* The queue already rides along on every state pull (state() sends it with the current index),
+       so this is a view of data the page was already holding — nothing extra to fetch. */
+    var q=S.state.queue||[], at=(typeof S.state.index==='number'?S.state.index:-1);
+    if(!q.length){p.innerHTML='<div class="hint"><b>Nothing queued.</b><br>Play an album or a track and it will line up here.</div>';return}
+    p.innerHTML=q.map(function(t,i){
+      return '<div class="row'+(i===at?' on':'')+'" data-i="'+i+'"><span class="n">'+(i===at?'▶':(i+1))+'</span>'+
+        '<span class="ti">'+esc(t.title)+' <span class="ar">'+esc(t.artist||'')+'</span></span>'+
+        '<span class="du">'+(t.duration?mmss(t.duration):'')+'</span></div>'}).join('')+
+      /* state() caps the queue it ships at 60; say so rather than quietly showing a short list. */
+      (S.state.queueSize>q.length?'<div class="hint">… and '+(S.state.queueSize-q.length)+' more further down the queue.</div>':'');
+    [].forEach.call(p.querySelectorAll('.row'),function(r){
+      r.onclick=function(){cmd({op:'jump',index:+r.dataset.i});setTimeout(pull,250)}});
+    var cur=p.querySelector('.row.on'); if(cur&&cur.scrollIntoView)cur.scrollIntoView({block:'nearest'});
   } else if(S.tab==='skins'){
     p.innerHTML='<input id="find" placeholder="search skins — e.g. space, neon, retro">'+
       '<div id="grid">'+(S.skins.length?S.skins.map(function(s){
@@ -274,6 +289,9 @@ function pull(){
   $('sright').textContent=(st.queueSize?st.queueSize+' queued':'')+(st.shuffle?' · shuffle':'')+(st.repeat&&st.repeat!=='off'?' · repeat '+st.repeat:'');
   $('fbt').textContent=t.title||'Nothing playing'; $('fba').textContent=t.artist?t.artist+(t.album?' · '+t.album:''):'—';
   $('fbi').style.width=(st.duration?Math.min(100,(st.position/st.duration*100)):0)+'%';
+  /* Move the queue's ▶ when the track changes. Only on an actual change — re-rendering the list
+     every second would fight anyone scrolling it. */
+  if(S.tab==='queue'&&st.index!==lastQueueIndex){lastQueueIndex=st.index;renderPanel()}
   renderSkin();
 }
 function loadLibrary(){ if(!B)return; try{S.tracks=JSON.parse(B.library(''))||[]}catch(e){S.tracks=[]} }
@@ -283,6 +301,7 @@ window.__muEvent=function(js){
   if(o.type==='state'){S.state=o;renderSkin();pull();if(S.tab==='lib')renderPanel()}
   else if(o.type==='skins'){S.skins=o.results||[];S.tab='skins';syncTabs();setPanelOpen(true);renderPanel()}
   else if(o.type==='skin'){applySkin(o.skin)}
+  else if(o.type==='queue'){S.tab='queue';syncTabs();setPanelOpen(true);renderPanel()}
   else if(o.type==='visualizer'){S.vis=o.mode;S.tab='vis';syncTabs();fitScale();setPanelOpen(true);renderPanel()}
   else if(o.type==='error'){$('stext').textContent=o.text||'error'}
 };

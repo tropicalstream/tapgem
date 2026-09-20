@@ -145,7 +145,9 @@ class MusicTool(private val context: Context) : AiTool {
                     (if (MusicPlayer.shuffle) " · shuffle" else "") + (if (MusicPlayer.repeat != "off") " · repeat ${MusicPlayer.repeat}" else ""))
             }
 
-            "up_next", "queue_list" -> {
+            "up_next", "queue_list", "queue_view", "show_queue" -> {
+                window(args, expanded = true)
+                com.tapgem.app.core.music.MusicBridgeEvents.emitQueue()
                 val q = MusicPlayer.queueSnapshot()
                 Result.success(if (q.isEmpty()) "Queue empty." else "Up next:\n${lines(q.take(10))}")
             }
