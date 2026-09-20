@@ -510,7 +510,13 @@ class GeminiLiveClient(
                 "enter (opens the box if it hides behind an icon) — it searches within that site only, e.g. " +
                 "songs on Spotify, stations on Radio Garden; it is NOT a web search. Places, restaurants, " +
                 "'near me' → widget add type=map; facts → widget add type=live. inspect: full numbered list of buttons, links, fields, rows and media, " +
-                "including ones below the fold. read: what the page says — the WHOLE page is read, not just the " +
+                "including ones below the fold. read_aloud: READ THE BOOK OR PAGE OUT LOUD, word by word, in the " +
+                "glasses' own voice, with each word lit in a Read-along window as it is spoken — for anyone who " +
+                "wants to be read to or to follow the text. Use it for \"read this to me\", \"read the book " +
+                "aloud\", \"start reading from the beginning\" (from=0), \"keep reading\" (continue=true). " +
+                "It keeps going by itself until stop_reading. After calling it say ONE short sentence and " +
+                "then stay silent — the glasses are speaking, not you. stop_reading: \"stop reading\", \"stop\", " +
+                "\"that's enough\". read: what the page says — the WHOLE page is read, not just the " +
                 "top of it, and comes back condensed, so use it freely on long articles. Pass query to ask " +
                 "something specific of the page (\"what does it say about X\") instead of reading it all. click: the item whose " +
                 "visible text/label matches target_text, or index from the last list. type: put text into " +
@@ -519,7 +525,9 @@ class GeminiLiveClient(
                 "up|down|left|right|top|bottom, amount px (default 300). zoom: direction in|out (Google Maps zooms " +
                 "the map; other pages scale). play / pause: the page's media, " +
                 "verified by sound. url: open a URL in the same widget. back, forward, reload.",
-            mapOf("action" to "search|inspect|read|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
+            mapOf("action" to "search|inspect|read|read_aloud|stop_reading|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
+                "from" to "read_aloud: character offset to start from; 0 = the very beginning. Omit to resume where it left off.",
+                "continue" to "read_aloud: true = carry on from where it stopped last time.",
                 "target" to "Widget id/title; defaults to the most recent web or app widget.",
                 "target_text" to "click: visible text, aria-label or placeholder of the element.",
                 "index" to "click: number from the last inspect.",
