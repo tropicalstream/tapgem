@@ -241,10 +241,34 @@ class DesktopHostView @JvmOverloads constructor(
     fun updateHover(x: Float, y: Float) {
         val hit = widgetViewAt(x, y)
         for (v in views.values) v.cursorOver = (v === hit)
+        applyHoverGrow()
+    }
+
+    /**
+     * Give a window room while the cursor is on it, and take it back when the cursor leaves.
+     *
+     * Deliberately a view-level change: the stored widget keeps the size its owner chose, so being
+     * hovered is never written to the desktop and a rebind from the model simply snaps it back to
+     * resting. Skipped mid-drag so it cannot fight a move or resize already in progress.
+     */
+    private fun applyHoverGrow() {
+        if (interaction != null) return
+        for (v in views.values) {
+            val want = v.hoverGrow ?: continue
+            val m = v.widget
+            if (v.cursorOver) {
+                val w = maxOf(m.w, want.first).coerceAtMost(Logical.WIDTH)
+                val h = maxOf(m.h, want.second).coerceAtMost(Logical.HEIGHT - Logical.CONTENT_TOP)
+                // Grow down and right from where it sits; pull back on screen only if it must.
+                val x = m.x.coerceIn(0, max(0, Logical.WIDTH - w))
+                val y = m.y.coerceIn(Logical.CONTENT_TOP, max(Logical.CONTENT_TOP, Logical.HEIGHT - h))
+                place(v, x, y, w, h)
+            } else place(v, m.x, m.y, m.w, m.h)
+        }
     }
 
     /** The cursor went away (idle timeout, voice took over): every auto frame goes bare again. */
-    fun clearHover() { for (v in views.values) v.cursorOver = false }
+    fun clearHover() { for (v in views.values) v.cursorOver = false; applyHoverGrow() }
 
     fun beginMove(v: WidgetView, cursorX: Float, cursorY: Float, quiet: Boolean = false) {
         focus(v.widget.id)
@@ -319,8 +343,18 @@ class DesktopHostView @JvmOverloads constructor(
         v.alpha = v.widget.style.opacity
         val lp = v.layoutParams as LayoutParams
         val x = lp.leftMargin; val y = lp.topMargin; val w = lp.width; val h = lp.height
-        DesktopBridge.mutateWidget(it.id) { f -> f.copy(x = x, y = y, w = w, h = h) }
-        Log.d(TAG, "${it.kind} committed ${it.id} → ($x,$y) ${w}x$h")
+        // A hover-grown window is bigger than its owner asked for while the cursor is on it.
+        // Dragging one would otherwise commit that borrowed size as its real one, so a move keeps
+        // the stored size and only a deliberate resize changes it.
+        val borrowed = v.hoverGrow != null && v.cursorOver && it.kind == Kind.MOVE
+        DesktopBridge.mutateWidget(it.id) { f ->
+            if (borrowed) f.copy(x = x, y = y) else f.copy(x = x, y = y, w = w, h = h)
+        }
+        // Report what was actually stored, not the on-screen size — a hover-grown window commits
+        // its resting size and logging the borrowed one made a correct move look like a bug.
+        val cw = if (borrowed) v.widget.w else w
+        val ch = if (borrowed) v.widget.h else h
+        Log.d(TAG, "${it.kind} committed ${it.id} → ($x,$y) ${cw}x$ch")
         return true
     }
 

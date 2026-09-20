@@ -399,6 +399,16 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun contentTop(): Int = if (chromeVisible() && !widget.style.chromeAuto) TITLE_H else 0
 
     /**
+     * How big this window has to be before its hover-revealed controls have anywhere to appear,
+     * or null if it never grows. The music player is the case: left at skin height there is no
+     * room for the section switch, so reaching for it grows the window and leaving puts it back.
+     * This is a floor, never a shrink — a player already larger keeps the size it has.
+     */
+    val hoverGrow: Pair<Int, Int>?
+        get() = if (widget.type == WidgetType.APP &&
+                    widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.MUSIC)) 430 to 330 else null
+
+    /**
      * The cursor is over this window. Auto-mode frames use it, and a page can opt in by defining
      * `window.__tgHover` — the music player reveals its section switch and panel that way, so the
      * window is just the skin until you reach for it. The software cursor never reaches the page
