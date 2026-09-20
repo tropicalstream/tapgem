@@ -12,7 +12,14 @@ object NavCueBridge {
     @Volatile var speaker: ((String) -> Unit)? = null
     private val states = ConcurrentHashMap<String, String>()
 
-    fun cue(text: String) { speaker?.invoke(text) }
+    /**
+     * With a Live session open the assistant speaks the cue in its own voice. Without one the
+     * platform synthesiser does, so navigation is never silent just because nobody is talking.
+     */
+    fun cue(text: String) {
+        val s = speaker
+        if (s != null) s.invoke(text) else com.tapgem.app.core.nav.NavAnnouncer.speak(text)
+    }
     fun state(widgetId: String, json: String) { states[widgetId] = json }
     fun stateOf(widgetId: String): String? = states[widgetId]
     fun forget(widgetId: String) { states.remove(widgetId) }

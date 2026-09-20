@@ -78,7 +78,11 @@ object MicSource {
  * the translate model has no echo cancellation; without this, a translated sentence comes straight back
  * in as new speech and loops.
  */
-class LiveAudioSession(private val context: Context, val tag: String, private val setup: JSONObject, private val halfDuplex: Boolean = false, private val listener: (JSONObject) -> Unit) {
+class LiveAudioSession(private val context: Context, val tag: String, private val setup: JSONObject, private val halfDuplex: Boolean = false,
+                      /** Speech only: never attach the microphone, so the session is one-way and
+                       *  cannot collide with whoever owns the mic. Used for spoken navigation. */
+                      private val useMic: Boolean = true,
+                      private val listener: (JSONObject) -> Unit) {
     companion object {
         private const val TAG = "LiveAudioSession"
         private const val URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -124,7 +128,7 @@ class LiveAudioSession(private val context: Context, val tag: String, private va
     }
 
     private fun handle(o: JSONObject) {
-        if (o.has("setupComplete")) { ready = true; MicSource.add(sink); emit(JSONObject().put("type", "ready")); return }
+        if (o.has("setupComplete")) { ready = true; if (useMic) MicSource.add(sink); emit(JSONObject().put("type", "ready")); return }
         val sc = o.optJSONObject("serverContent")
         if (sc != null) {
             sc.optJSONObject("inputTranscription")?.let { emit(JSONObject().put("type", "in").put("text", it.optString("text")).put("lang", it.optString("languageCode")).put("final", it.optBoolean("finished"))) }
@@ -162,8 +166,8 @@ class LiveAudioSession(private val context: Context, val tag: String, private va
     private fun send(o: JSONObject) { ws?.send(o.toString()) }
     fun isPlaying() = player.isActivelySpeaking()
     private fun emit(o: JSONObject) { listener(o.put("session", tag)) }
-    private fun finish(why: String) { if (closed) return; closed = true; ready = false; live -= this; MicSource.remove(sink); runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", why)) }
-    fun close() { if (closed) return; closed = true; ready = false; live -= this; MicSource.remove(sink); runCatching { ws?.close(1000, "bye") }; ws = null; runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", "stopped")) }
+    private fun finish(why: String) { if (closed) return; closed = true; ready = false; live -= this; if (useMic) MicSource.remove(sink); runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", why)) }
+    fun close() { if (closed) return; closed = true; ready = false; live -= this; if (useMic) MicSource.remove(sink); runCatching { ws?.close(1000, "bye") }; ws = null; runCatching { player.release() }; emit(JSONObject().put("type", "closed").put("text", "stopped")) }
 }
 
 /**

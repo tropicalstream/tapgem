@@ -443,15 +443,23 @@ class MainActivity : AppCompatActivity() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         fun render() {
             val caps = runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()
+            val onWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            // Off Wi-Fi the data is riding the paired phone, so show that phone's carrier and bars
+            // rather than a label about a radio these glasses do not have. Wi-Fi still wins when it
+            // is the live transport, and anything unavailable falls back to the plain label.
+            val borrowed = if (!onWifi) com.tapgem.app.core.bridge.PhoneLink.label() else null
             val (text, color) = when {
+                borrowed != null -> borrowed to 0xFF7FDBFF.toInt()
                 caps == null -> "⊘" to 0xFFFF5252.toInt()
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi" to 0xFF9FE6B0.toInt()
+                onWifi -> "Wi-Fi" to 0xFF9FE6B0.toInt()
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cell" to 0xFF7FDBFF.toInt()
                 else -> "Net" to 0xFF9FE6B0.toInt()
             }
             uiHandler.post { tv.text = text; tv.setTextColor(color) }
         }
         render()
+        // The phone pushes its signal only when it changes, so repaint on its events too.
+        runCatching { com.tapgem.app.core.bridge.PhoneLink.start(this) { render() } }
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) = render()
             override fun onLost(network: Network) = render()
