@@ -7,6 +7,15 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      Raises Settings.Secure.long_press_timeout while TapGem is in front, so the launcher's
+      global input monitor stops firing the system menu under a window drag (see LongPressGuard).
+      signature|privileged|development — cannot be granted by the app, only handed over once:
+        adb shell pm grant com.tapgem.app android.permission.WRITE_SECURE_SETTINGS
+      Ungranted it is simply inert, and revoking it is the off switch.
+    -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

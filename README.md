@@ -6,6 +6,33 @@
 > model can mis-hear or mis-place things, and generated apps run whatever code
 > the model wrote. Nothing here is fit for anything consequential.
 
+> ## ⚠️ It slows the whole device's long-press while it is running
+> **This is a deliberate compromise, not a bug.** Holding the right temple is how
+> you grab, move and resize windows here — but the launcher watches temple input
+> *ahead of every app* (a global input monitor that can take a gesture away
+> mid-drag) and throws up the system menu after a 700 ms hold. No app can outrank
+> or block that. The only thing that moves it is `long_press_timeout`, a
+> **device-wide** setting, so while TapGem is in the foreground it is raised from
+> **700 ms to 4 s** and restored the moment TapGem is not in front.
+>
+> The cost: while TapGem is up, *every* app's long-press needs 4 s — text
+> selection and the like will feel sluggish if you switch away without
+> backgrounding TapGem first. The system menu still works, it just wants a
+> deliberate hold. See `core/system/LongPressGuard.kt`.
+>
+> **Opt in** — it does nothing at all unless you hand it the permission yourself:
+> ```
+> adb shell pm grant com.tapgem.app android.permission.WRITE_SECURE_SETTINGS
+> ```
+> **Getting the normal 700 ms back** — background TapGem and it restores itself.
+> If it was killed mid-session the value is left raised; TapGem repairs it on next
+> launch, or you can simply **reboot the glasses** (measured: boot puts it back to
+> 700 and TapGem does not auto-start), or set it by hand:
+> ```
+> adb shell settings put secure long_press_timeout 700
+> ```
+> **Turn it off for good** with `adb shell pm revoke com.tapgem.app android.permission.WRITE_SECURE_SETTINGS`.
+
 A **voice-designed desktop for the RayNeo X3 Pro**. One tiny app, one job: you
 talk to **Gemini 3.8 Live** and it builds, arranges, styles and maintains a
 heads-up display *or* a full-window desktop out of widgets — text, clocks,

@@ -83,6 +83,9 @@ class TapGemApp : Application() {
         com.tapgem.app.core.livex.Interpreter.init(this)
         com.tapgem.app.core.livex.Tutor.init(this)
         com.tapgem.app.core.media.ModelStore.init(this)
+        // If the last session was killed mid-drag the whole device is left with a slow
+        // long-press; put it back before anything else runs.
+        com.tapgem.app.core.system.LongPressGuard.restoreIfLeftRaised(this)
         com.tapgem.app.core.music.MusicPlayer.init(this)
         com.tapgem.app.core.music.SkinStore.init(this)
         WidgetRefreshEngine.start(this)
