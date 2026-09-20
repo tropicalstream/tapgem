@@ -252,13 +252,23 @@ object WidgetOps {
         val bgRaw = args.str("bg_color", "background", "bg"); val fgRaw = args.str("text_color", "color")
         if (ColorUtil.isUnknown(bgRaw)) warnings?.add("I don't know the colour \"$bgRaw\" — use a hex code or a common name")
         if (ColorUtil.isUnknown(fgRaw)) warnings?.add("I don't know the colour \"$fgRaw\" — use a hex code or a common name")
+        // The frame has three states, so the word wins over the boolean when one was spoken.
+        val chromeArg = args.str("chrome", "title_bar", "frame")?.trim()?.lowercase()
+            ?.let { w -> when {
+                w in setOf("auto", "hover", "on_hover", "onhover", "auto_hide", "autohide") -> "auto"
+                w in setOf("false", "off", "no", "none", "hide", "hidden") -> "off"
+                w in setOf("true", "on", "yes", "show", "shown") -> "on"
+                else -> null
+            } }
         return base.copy(
             bgColor = ColorUtil.parse(bgRaw) ?: base.bgColor,
             textColor = ColorUtil.parse(fgRaw) ?: base.textColor,
             opacity = args.float("opacity")?.let { if (it > 1f) it / 100f else it }?.coerceIn(0.05f, 1f) ?: base.opacity,
             cornerRadius = args.int("corner_radius", "corner") ?: base.cornerRadius,
             fontSize = args.float("font_size", "text_size")?.coerceIn(6f, 96f) ?: base.fontSize,
-            chrome = args.bool("chrome", "title_bar") ?: base.chrome
+            chrome = chromeArg?.let { it != "off" } ?: args.bool("chrome", "title_bar") ?: base.chrome,
+            // "hide the frame until I point at it" — the third state the plain boolean cannot carry.
+            chromeAuto = chromeArg?.let { it == "auto" } ?: base.chromeAuto
         )
     }
 
@@ -1616,9 +1626,22 @@ class MediaTool(private val context: Context) : AiTool {
             return Result.success("I don't have a 3D-model source configured — only what is already on the glasses. " +
                 "Adding one needs a free Poly Pizza API key on the device (poly.pizza), which I can't sign up for myself.")
         }
-        val hits = com.tapgem.app.core.media.ModelStore.search(query)
-        val pick = hits.firstOrNull()
-            ?: return Result.success("No CC0 model matched \"$query\" on Poly Pizza.")
+        // Most of the archive — everything inherited from Google Poly — is CC-BY, so searching CC0
+        // only reports "nothing found" for models that plainly exist. Search everything and rank by
+        // how well the title actually answers the question, because a CC0 "Astronaut" is not a
+        // better answer than a CC-BY "International Space Station". Licence only breaks a tie.
+        val q = query.trim().lowercase()
+        val hits = com.tapgem.app.core.media.ModelStore.search(query, ccbyToo = true, limit = 12)
+        val pick = hits.maxWithOrNull(compareBy({ m ->
+            val t = m.title.trim().lowercase()
+            when {
+                t == q -> 4
+                t.contains(q) || q.contains(t) -> 3
+                q.split(' ').count { it.length > 2 && t.contains(it) } > 0 -> 2
+                else -> 1
+            }
+        }, { m -> if (m.licence.startsWith("CC0", true)) 1 else 0 }))
+            ?: return Result.success("No model matched \"$query\" on Poly Pizza.")
         val file = com.tapgem.app.core.media.ModelStore.fetch(pick)
             ?: return Result.success("Found \"${pick.title}\" but the download failed.")
         WidgetOps.add(context, args, forcedType = WidgetType.MODEL3D, forcedSource = file.absolutePath, forcedTitle = pick.title)
@@ -1626,7 +1649,8 @@ class MediaTool(private val context: Context) : AiTool {
         // said once, plainly, rather than presented as settled.
         val note = if (pick.title.lowercase() != query.trim().lowercase())
             " (closest match — if this depicts something copyrighted, the file's licence covers the uploader's work, not that design.)" else ""
-        return Result.success("Added \"${pick.title}\" (${pick.licence}) from Poly Pizza.$note")
+        val by = if (pick.licence.startsWith("CC-BY", true) && pick.creator.isNotBlank()) " by ${pick.creator}" else ""
+        return Result.success("Added \"${pick.title}\"$by (${pick.licence}) from Poly Pizza.$note")
     }
 }
 

@@ -491,7 +491,7 @@ class GeminiLiveClient(
                 "text_color" to "Hex or color name.", "bg_color" to "Hex or color name.",
                 "opacity" to "0.1-1.", "font_size" to "Text size px (e.g. 14, 22).",
                 "corner_radius" to "Panel corner radius px.",
-                "chrome" to "true/false: show the title bar.",
+                "chrome" to "true/false: show the title bar. \"auto\" hides the frame until the cursor is over the window.",
                 "autoplay" to "video/audio add: true/false.", "loop" to "video/audio: true/false.",
                 "muted" to "video/audio: true/false.",
                 "page" to "pdf: 1-based page.", "chapter" to "epub: 1-based chapter.",

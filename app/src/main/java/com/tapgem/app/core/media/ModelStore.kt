@@ -24,7 +24,7 @@ import java.net.URLEncoder
 object ModelStore {
     private const val TAG = "ModelStore"
     private const val KEY_FILE_NAME = "poly_pizza_api_key.txt"
-    private const val API = "https://api.poly.pizza"
+    private const val API = "https://api.poly.pizza/v1.1"   // the bare host 404s on every route
 
     private lateinit var appContext: Context
     private val cacheDir get() = File(appContext.filesDir, "models").apply { mkdirs() }
