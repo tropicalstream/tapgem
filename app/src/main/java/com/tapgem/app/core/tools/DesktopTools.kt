@@ -1591,12 +1591,42 @@ class MediaTool(private val context: Context) : AiTool {
                 if (path != null) WidgetOps.add(context, args, forcedType = type ?: WidgetType.forExtension(path.substringAfterLast('.', "")), forcedSource = path)
                 else {
                     val hit = MediaScanner.find(context, query, type).firstOrNull()
-                        ?: return@withContext Result.success("No files match \"${query ?: ""}\".")
-                    WidgetOps.add(context, args, forcedType = hit.type, forcedSource = hit.path)
+                    if (hit != null) WidgetOps.add(context, args, forcedType = hit.type, forcedSource = hit.path)
+                    // Nothing on the glasses by that name: for a 3D model, try fetching one rather
+                    // than just reporting failure — MediaScanner never looks past local storage.
+                    else if (type == WidgetType.MODEL3D && !query.isNullOrBlank()) fetchModel(context, query, args)
+                    else Result.success("No files match \"${query ?: ""}\".")
                 }
+            }
+            "search_online", "find_model", "fetch_model" -> {
+                if (query.isNullOrBlank()) return@withContext Result.success("What model?")
+                fetchModel(context, query, args)
             }
             else -> Result.failure(IllegalArgumentException("Unknown media action '${args.action}'."))
         }
+    }
+
+    /**
+     * Poly Pizza, on request: search, download the best match, add it. Gated on a key the user
+     * has to obtain themselves (see ModelStore) — with no key this says so plainly instead of a
+     * bare "not found", since the two cases mean different things to fix.
+     */
+    private suspend fun fetchModel(context: Context, query: String, args: Args): Result<String> {
+        if (!com.tapgem.app.core.media.ModelStore.hasKey()) {
+            return Result.success("I don't have a 3D-model source configured — only what is already on the glasses. " +
+                "Adding one needs a free Poly Pizza API key on the device (poly.pizza), which I can't sign up for myself.")
+        }
+        val hits = com.tapgem.app.core.media.ModelStore.search(query)
+        val pick = hits.firstOrNull()
+            ?: return Result.success("No CC0 model matched \"$query\" on Poly Pizza.")
+        val file = com.tapgem.app.core.media.ModelStore.fetch(pick)
+            ?: return Result.success("Found \"${pick.title}\" but the download failed.")
+        WidgetOps.add(context, args, forcedType = WidgetType.MODEL3D, forcedSource = file.absolutePath, forcedTitle = pick.title)
+        // A licence on the upload does not license a copyrighted design it happens to depict —
+        // said once, plainly, rather than presented as settled.
+        val note = if (pick.title.lowercase() != query.trim().lowercase())
+            " (closest match — if this depicts something copyrighted, the file's licence covers the uploader's work, not that design.)" else ""
+        return Result.success("Added \"${pick.title}\" (${pick.licence}) from Poly Pizza.$note")
     }
 }
 

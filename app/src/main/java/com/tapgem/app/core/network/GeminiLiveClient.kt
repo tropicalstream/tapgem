@@ -606,7 +606,12 @@ class GeminiLiveClient(
                 "level" to "CEFR level or beginner/intermediate/advanced.", "scenario" to "Role-play scenario or topic.") + geometryProps))
         .put(decl("media",
             "Find media files on the glasses by name/type ('vacation', 'tolkien', 'podcast'). find returns " +
-                "matches with paths; open finds and adds the best match as a widget in one step.",
+                "matches with paths; open finds and adds the best match as a widget in one step. For type=model3d, " +
+                "open also tries fetching a CC0 3D model from the internet when nothing local matches — it either " +
+                "adds one or says plainly that no model source is configured (that needs the user's own setup, not " +
+                "something to keep retrying). A model named after something copyrighted (a film ship, a game " +
+                "character) is a fan upload wearing a licence that does not cover the design itself; say so once " +
+                "if it comes up, don't just present it as free to use.",
             mapOf("action" to "find|open", "query" to "Words from the file name.",
                 "type" to "image|video|audio|pdf|epub|model3d|text|any.",
                 "path" to "open: exact path if already known.",
