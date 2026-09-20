@@ -1537,12 +1537,21 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 val dir = (cmd.arg("direction", "value") ?: "down").lowercase(Locale.US)
                 val amount = cmd.arg("amount")?.toDoubleOrNull()?.toInt() ?: 300
                 if (!jsOn) {
+                    // A fraction keeps an ebook's page under the passage being read aloud, so the
+                    // reader follows the words instead of being left on the page it started from.
+                    val frac = cmd.arg("fraction")?.toDoubleOrNull()
+                    if (frac != null) {
+                        val span = (wv.contentHeight * wv.scale - wv.height).coerceAtLeast(0f)
+                        wv.scrollTo(0, (span * frac.coerceIn(0.0, 1.0)).toInt())
+                        done("Showing that part of \"$title\".")
+                    } else {
                     when (dir) {
                         "up" -> wv.scrollBy(0, -amount); "down" -> wv.scrollBy(0, amount)
                         "top" -> wv.scrollTo(0, 0); "bottom" -> wv.pageDown(true)
                         "left" -> wv.scrollBy(-amount, 0); "right" -> wv.scrollBy(amount, 0)
                     }
                     done("Scrolled $dir in \"$title\".")
+                    }
                 } else js(wv, "__tg.scroll(${jsStr(dir)}, $amount)") { r -> main.postDelayed({ finish(wv, r ?: "Scrolled $dir.", done) }, 250L) }
             }
             "eval" -> if (!com.tapgem.app.BuildConfig.DEBUG || !jsOn) done("Not available.") else js(wv, "(function(){ return ${cmd.arg("js") ?: "null"}; })()") { done(it ?: "null") }
