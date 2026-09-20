@@ -1777,6 +1777,12 @@ class WebTool(private val context: Context) : AiTool {
     companion object {
         /** A page this short is its own summary: hand it over untouched, no second call. */
         private const val SHORT_PAGE = 1_200
+
+        /** "Read this" returns the words themselves up to here — a few minutes of speech. */
+        private const val VERBATIM_LIMIT = 6_000
+
+        /** How much of a book to hand the reader at once; roughly 100k tokens. */
+        private const val EPUB_LIMIT = 400_000
     }
 
     private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
@@ -1847,22 +1853,63 @@ class WebTool(private val context: Context) : AiTool {
      */
     private suspend fun readPage(w: Widget, args: Args): String {
         val focus = args.str("query", "question", "about", "find", "text")
-        // 400k characters is roughly 100k tokens — a tenth of the reader's window, and enough for a
-        // whole book. Measured: a 163k-character Gutenberg page came back intact, and at 120k the
-        // answer to a question about its last chapter had been cut off.
-        val raw = WebCommandBus.execute(w.id, WebCommandBus.Command("read", mapOf("cap" to "400000")),
-            timeoutMs = 30_000L)
-        if (raw.length <= SHORT_PAGE || raw.startsWith("\"")) return raw
-        val system = "You are reading a web page aloud for someone wearing AR glasses. Answer from " +
-            "the text you are given and nothing else; if it does not say, say so. No preamble, no " +
-            "markdown, no bullet characters. Keep it under 120 words unless asked for detail."
-        val ask = if (focus.isNullOrBlank()) "Summarise what this page says."
-                  else "From this page, answer: $focus"
+        val raw = if (w.type == WidgetType.EPUB) epubText(w, whole = !focus.isNullOrBlank())
+                  else WebCommandBus.execute(w.id, WebCommandBus.Command("read", mapOf("cap" to "400000")),
+                      timeoutMs = 30_000L)
+        if (raw.isBlank()) return "Nothing to read in \"${w.title}\"."
+
+        // "Read this" means read it, not tell me about it. Anything short enough to be spoken comes
+        // back as it was written; only a wall of text gets condensed, and only then is it worth a
+        // second call. A question is different — that is always answered rather than recited.
+        if (focus.isNullOrBlank() && raw.length <= VERBATIM_LIMIT) return raw
+        if (focus.isNullOrBlank() && raw.length <= SHORT_PAGE) return raw
+
+        val system = "You are reading for someone wearing AR glasses. Use only the text given; if it " +
+            "does not say, say so. No preamble, no markdown, no bullet characters."
+        val ask = if (focus.isNullOrBlank())
+            "Summarise this, then say roughly how long it is so the listener knows what was skipped."
+        else "From this text, answer: $focus"
         return GeminiRest.generateText(context, "$ask\n\n---\n$raw", system = system,
             model = GeminiRest.READ_MODEL)
             // Reading failed, but the text is in hand — a truncated page beats no page.
-            .getOrElse { raw.take(SHORT_PAGE) + "\n\n(Couldn't condense this; showing the start.)" }
+            .getOrElse { raw.take(VERBATIM_LIMIT) + "\n\n(Couldn't condense this; showing the start.)" }
     }
+
+    /**
+     * An ebook's words, taken from the unpacked chapter files rather than the page showing them.
+     *
+     * The reader renders a chapter with JavaScript off, so the usual read — which asks the page for
+     * its own text — was refused outright and ebooks could not be read at all. The files are right
+     * there and hold the whole book, so ask them instead: the chapter on screen for "read this",
+     * and everything for a question, since the answer is rarely in the chapter you happen to be on.
+     */
+    private fun epubText(w: Widget, whole: Boolean): String = runCatching {
+        val chapters = EpubUnpacker.chapters(context, File(w.source))
+        if (chapters.isEmpty()) return ""
+        val at = (w.state["chapter"]?.toIntOrNull() ?: 0).coerceIn(0, chapters.size - 1)
+        val take = if (whole) chapters else listOf(chapters[at])
+        val sb = StringBuilder()
+        if (whole) sb.append("Book: ").append(w.title).append(" (").append(chapters.size).append(" chapters)\n\n")
+        else sb.append(w.title).append(" — chapter ").append(at + 1).append(" of ").append(chapters.size).append("\n\n")
+        for (f in take) {
+            sb.append(stripHtml(f.readText()))
+            sb.append("\n\n")
+            if (sb.length > EPUB_LIMIT) break
+        }
+        sb.take(EPUB_LIMIT).toString().trim()
+    }.onFailure { Log.w("WebTool", "epub read failed: ${it.message}") }.getOrDefault("")
+
+    /** Chapter files are XHTML; the words are all that is wanted. */
+    private fun stripHtml(html: String): String = html
+        .replace(Regex("(?is)<(script|style)[^>]*>.*?</\\1>"), " ")
+        .replace(Regex("(?i)<(br|/p|/div|/h[1-6])[^>]*>"), "\n")
+        .replace(Regex("<[^>]+>"), " ")
+        .replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", "\"")
+        .replace("&#39;", "'").replace("&lsquo;", "'").replace("&rsquo;", "'")
+        .replace("&ldquo;", "\"").replace("&rdquo;", "\"").replace("&mdash;", "—")
+        .replace(Regex("[ \\t]{2,}"), " ")
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
 
     /** Registrable-ish host for "same site" checks: www./m./open. prefixes dropped. */
     private fun hostOf(url: String): String = runCatching { java.net.URL(url).host }.getOrDefault("")
