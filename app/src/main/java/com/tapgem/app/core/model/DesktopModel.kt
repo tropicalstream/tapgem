@@ -134,7 +134,13 @@ data class WidgetStyle(
     val cornerRadius: Int? = null,
     val fontSize: Float? = null,
     /** Show the title bar / close glyph. Null = follow the desktop mode. */
-    val chrome: Boolean? = null
+    val chrome: Boolean? = null,
+    /**
+     * Auto-hiding frame: the window shows only its content until the cursor comes over it, then the
+     * title bar and resize grip fade in. Overrides [chrome] while set. Meant for HUD use, where a
+     * frame around every window is chart junk over the real world but still has to be reachable.
+     */
+    val chromeAuto: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         bgColor?.let { put("bg", ColorUtil.hex(it)) }
@@ -143,6 +149,7 @@ data class WidgetStyle(
         cornerRadius?.let { put("corner", it) }
         fontSize?.let { put("font", it.toDouble()) }
         chrome?.let { put("chrome", it) }
+        if (chromeAuto) put("chromeAuto", true)
     }
 
     companion object {
@@ -154,7 +161,8 @@ data class WidgetStyle(
                 opacity = o.optDouble("opacity", 1.0).toFloat().coerceIn(0.05f, 1f),
                 cornerRadius = if (o.has("corner")) o.optInt("corner") else null,
                 fontSize = if (o.has("font")) o.optDouble("font").toFloat() else null,
-                chrome = if (o.has("chrome")) o.optBoolean("chrome") else null
+                chrome = if (o.has("chrome")) o.optBoolean("chrome") else null,
+                chromeAuto = o.optBoolean("chromeAuto", false)
             )
         }
     }

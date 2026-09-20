@@ -202,8 +202,15 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    override fun onPause() { super.onPause(); host.pauseMedia(); DesktopBridge.saveNow() }
-    override fun onResume() { super.onResume(); host.resumeMedia(); hideKeyboard() }
+    override fun onPause() {
+        super.onPause(); host.pauseMedia(); DesktopBridge.saveNow()
+        // Hand the temple hold back to the system the moment we are not the one using it.
+        com.tapgem.app.core.system.LongPressGuard.restore(this)
+    }
+    override fun onResume() {
+        super.onResume(); host.resumeMedia(); hideKeyboard()
+        com.tapgem.app.core.system.LongPressGuard.raise(this)
+    }
 
     /**
      * Nothing on the glasses ever wants a soft keyboard. WebViews never take
@@ -290,7 +297,7 @@ class MainActivity : AppCompatActivity() {
             uiHandler.postDelayed({ ev(MotionEvent.ACTION_UP, x1, y1, t0) }, delay + 40L)
         }
         when (p.firstOrNull()?.lowercase()) {
-            "cursor" -> if (n.size >= 2) { cursorX = n[0]; cursorY = n[1]; setCursorVisible(true); updateCursorView(); edgeScroller.onCursor(cursorX, cursorY) }
+            "cursor" -> if (n.size >= 2) { cursorX = n[0]; cursorY = n[1]; setCursorVisible(true); updateCursorView(); host.updateHover(cursorX, cursorY); edgeScroller.onCursor(cursorX, cursorY) }
             "swipe" -> if (n.size >= 4) stroke(n[0], n[1], n[2], n[3], 0L)
             "holddrag" -> if (n.size >= 4) stroke(n[0], n[1], n[2], n[3], LONG_PRESS_MS + 250L)
             "tap" -> if (n.size >= 2) { val t0 = SystemClock.uptimeMillis(); ev(MotionEvent.ACTION_DOWN, n[0], n[1], t0); uiHandler.postDelayed({ ev(MotionEvent.ACTION_UP, n[0], n[1], t0) }, 60L) }
@@ -958,6 +965,7 @@ class MainActivity : AppCompatActivity() {
         cursorY = (cursorY + dy).coerceIn(0f, maxH - 1f)
         setCursorVisible(true)
         updateCursorView()
+        host.updateHover(cursorX, cursorY)
         if (host.interactionActive) host.updateInteraction(cursorX, cursorY)
         else edgeScroller.onCursor(cursorX, cursorY)
     }
@@ -974,6 +982,8 @@ class MainActivity : AppCompatActivity() {
             uiHandler.removeCallbacks(hideCursorRunnable); uiHandler.postDelayed(hideCursorRunnable, CURSOR_IDLE_HIDE_MS); return
         }
         if (!visible && ::edgeScroller.isInitialized) edgeScroller.stop()
+        // The frame belongs to the cursor: when it idles away, auto windows go back to bare content.
+        if (!visible) host.clearHover()
         cursorShown = visible
         cursor.visibility = if (visible) View.VISIBLE else View.GONE
         uiHandler.removeCallbacks(hideCursorRunnable)

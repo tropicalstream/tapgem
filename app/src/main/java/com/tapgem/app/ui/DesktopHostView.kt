@@ -233,9 +233,23 @@ class DesktopHostView @JvmOverloads constructor(
         return null
     }
 
+    /**
+     * Auto-hiding frames follow the cursor: the window under it wears its chrome, every other one
+     * drops back to bare content. Driven from the same cursor stream as the edge scroller, so this
+     * costs one hit-test per cursor move and nothing at all when no window is in auto mode.
+     */
+    fun updateHover(x: Float, y: Float) {
+        val hit = widgetViewAt(x, y)
+        for (v in views.values) v.cursorOver = (v === hit)
+    }
+
+    /** The cursor went away (idle timeout, voice took over): every auto frame goes bare again. */
+    fun clearHover() { for (v in views.values) v.cursorOver = false }
+
     fun beginMove(v: WidgetView, cursorX: Float, cursorY: Float, quiet: Boolean = false) {
         focus(v.widget.id)
         interaction = Interaction(v.widget.id, Kind.MOVE, (cursorX - v.left).toInt(), (cursorY - v.top).toInt())
+        v.pinChrome = true
         v.alpha = 0.75f
         if (!quiet) onNotice?.invoke("Moving \"${v.widget.title}\" — tap to place")
     }
@@ -243,6 +257,7 @@ class DesktopHostView @JvmOverloads constructor(
     fun beginResize(v: WidgetView, quiet: Boolean = false) {
         focus(v.widget.id)
         interaction = Interaction(v.widget.id, Kind.RESIZE, 0, 0)
+        v.pinChrome = true
         v.alpha = 0.75f
         if (!quiet) onNotice?.invoke("Resizing \"${v.widget.title}\" — tap to set")
     }
@@ -300,6 +315,7 @@ class DesktopHostView @JvmOverloads constructor(
         interaction = null
         val v = views[it.id] ?: return true
         if (it.kind == Kind.CONTENT) { SyntheticInput.dragEnd(v, it.downTime, it.lastX, it.lastY); return true }
+        v.pinChrome = false
         v.alpha = v.widget.style.opacity
         val lp = v.layoutParams as LayoutParams
         val x = lp.leftMargin; val y = lp.topMargin; val w = lp.width; val h = lp.height

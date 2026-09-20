@@ -303,7 +303,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     fun edgeAt(localX: Float, localY: Float): EdgeHit? {
         if (!widget.type.isScrollable || widget.type == WidgetType.PDF) return null
         if (isOnResizeHandle(localX, localY) || (chromeVisible() && localY < TITLE_H)) return null
-        val top = if (chromeVisible()) TITLE_H else 0
+        val top = contentTop()
         val h = height - top; val w = width
         if (h < EDGE_BAND_V * 3 || w < EDGE_BAND_H * 3) return null
         val ly = localY - top
@@ -368,7 +368,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     /** A thin accent line along the edge that is currently auto-scrolling. */
     fun setEdgeGlow(edge: EdgeScroller.Edge?) {
         if (edge == null) { edgeGlow.visibility = GONE; return }
-        val top = if (chromeVisible()) TITLE_H else 0
+        val top = contentTop()
         val lp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         when (edge) {
             EdgeScroller.Edge.TOP -> { lp.height = 3; lp.gravity = Gravity.TOP; lp.topMargin = top }
@@ -388,10 +388,33 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     // ── chrome & style ─────────────────────────────────────────────
 
-    /** Title bar + ✕ + corner handle are how windows are dragged, closed and resized: always on unless the user hides them. */
-    private fun chromeVisible(): Boolean = widget.style.chrome ?: true
+    /**
+     * Title bar + ✕ + corner handle are how windows are dragged, closed and resized: always on
+     * unless the user hides them, or — in auto mode — until the cursor comes over the window.
+     */
+    private fun chromeVisible(): Boolean =
+        if (widget.style.chromeAuto) cursorOver || pinChrome else widget.style.chrome ?: true
 
+    /** Where the body starts: a fixed frame reserves its strip, an auto frame floats over it. */
+    private fun contentTop(): Int = if (chromeVisible() && !widget.style.chromeAuto) TITLE_H else 0
+
+    /** The cursor is over this window. Only auto-mode windows care. */
+    var cursorOver: Boolean = false
+        set(v) { if (field != v) { field = v; if (widget.style.chromeAuto) applyChrome() } }
+
+    /** Held on through a move/resize so an auto frame cannot vanish mid-drag if the cursor runs past the edge. */
+    var pinChrome: Boolean = false
+        set(v) { if (field != v) { field = v; if (widget.style.chromeAuto) applyChrome() } }
+
+    /**
+     * Auto mode must reveal the frame without moving the content. Shifting the body down by
+     * [TITLE_H] on hover would relayout the window, and for a page that means a full reflow — twice
+     * per frame, because the binocular layout draws every view once per eye. So an auto frame is
+     * floated over the top of the content and only its visibility changes; a fixed frame still
+     * reserves its strip exactly as before.
+     */
     private fun applyChrome() {
+        val auto = widget.style.chromeAuto
         val show = chromeVisible()
         titleBar.visibility = if (show) VISIBLE else GONE
         titleText.text = if (widget.onTop) "⬆ ${widget.title}" else widget.title
@@ -401,9 +424,16 @@ class WidgetView(context: Context) : FrameLayout(context) {
         closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, 12f)
         settingsBtn.setTextColor(ColorUtil.withAlpha(theme.accent, 0.85f))
         settingsBtn.setTextSize(TypedValue.COMPLEX_UNIT_PX, 12f)
-        titleBar.setBackgroundColor(ColorUtil.withAlpha(theme.accent, if (active) 0.42f else if (mode == DesktopMode.HUD) 0.16f else 0.22f))
-        (content.layoutParams as LayoutParams).topMargin = if (show) TITLE_H else 0
-        content.requestLayout()
+        // Floating over the content, the bar needs to read as a layer above it, not part of it.
+        titleBar.setBackgroundColor(ColorUtil.withAlpha(theme.accent,
+            if (auto) 0.55f else if (active) 0.42f else if (mode == DesktopMode.HUD) 0.16f else 0.22f))
+        val topM = if (show && !auto) TITLE_H else 0
+        val lp = content.layoutParams as LayoutParams
+        if (lp.topMargin != topM) { lp.topMargin = topM; content.requestLayout() }
+        if (auto && show) { bringChildToFront(titleBar); bringChildToFront(handle) }
+        // Nothing but the content when the cursor is elsewhere. Hit-testing still finds the corner,
+        // so a window is never unreachable — coming near it is what brings the grip back.
+        handle.visibility = if (auto && !show) GONE else VISIBLE
         handle.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             setColor(ColorUtil.withAlpha(theme.accent, if (show) 0.8f else 0.45f))
@@ -742,7 +772,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun renderPdfPage(iv: ImageView, foot: TextView) {
         val r = pdfRenderer ?: return
         val idx = (widget.state["page"]?.toIntOrNull() ?: 0).coerceIn(0, r.pageCount - 1)
-        val w = widget.w.coerceAtLeast(64); val h = (widget.h - TITLE_H).coerceAtLeast(64)
+        val w = widget.w.coerceAtLeast(64); val h = (widget.h - contentTop()).coerceAtLeast(64)
         val gen = contentGen
         Thread({
             val bmp = runCatching {

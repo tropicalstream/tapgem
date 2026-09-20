@@ -131,7 +131,21 @@ class WidgetSettingsPanel(context: Context) : FrameLayout(context) {
             tap = { key -> edit { it.copy(refreshSec = key.toInt()) } })
     }
 
+    /**
+     * The frame itself: keep it, drop it, or let it follow the cursor. Auto is the HUD-friendly one —
+     * bare content until you reach for the window, which is when you need the bar and the grip.
+     */
+    private fun frameRow(w: Widget) {
+        val mode = if (w.style.chromeAuto) "auto" else if (w.style.chrome == false) "off" else "on"
+        row("Frame", listOf("Show" to "on", "On hover" to "auto", "Hide" to "off"),
+            selected = { key -> key == mode },
+            tap = { key ->
+                edit { it.copy(style = it.style.copy(chrome = key != "off", chromeAuto = key == "auto")) }
+            })
+    }
+
     private fun commonRows(w: Widget) {
+        frameRow(w)
         val textual = w.type == WidgetType.TEXT || w.type == WidgetType.LIVE || w.type == WidgetType.TICKER || w.type == WidgetType.CLOCK
         val opacityPct = (w.style.opacity * 100).toInt()
         val items = ArrayList<Pair<String, String>>()
