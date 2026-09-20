@@ -160,7 +160,11 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
                 text = t.label; textSize = 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            t.badge?.let { b -> addView(TextView(context).apply { text = b; textSize = 9f; setTextColor(accent); setPadding(4, 0, 0, 0) }) }
+            // The badge earns its place over the title: it says why a tile cannot be removed.
+            t.badge?.let { b -> addView(TextView(context).apply {
+                text = b; textSize = 9f; setTextColor(accent); setPadding(4, 0, 0, 0)
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            }) }
         }, LayoutParams(LayoutParams.MATCH_PARENT, if (small) 18 else LABEL_H, Gravity.BOTTOM))
         if (t.selected && small) f.addView(TextView(context).apply { text = "✓"; textSize = 10f; setTextColor(accent); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt()) }, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { topMargin = 2; marginEnd = 5 })
         if (t.deletable) f.addView(TextView(context).apply {

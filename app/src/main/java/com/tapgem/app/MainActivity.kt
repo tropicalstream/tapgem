@@ -618,8 +618,18 @@ class MainActivity : AppCompatActivity() {
                 val tiles = ArrayList<LibraryPanel.Tile>()
                 if (cur.wallpaper.kind != com.tapgem.app.core.model.WallpaperKind.NONE && all.none { it.key == curKey && it.bookmark != null })
                     tiles += LibraryPanel.Tile("keep", "Keep this", "+", Library.thumbFor(cur.wallpaper), dashed = true)
-                tiles += all.map { e -> LibraryPanel.Tile("wp:" + e.key, e.title, "▦", e.thumb, e.wallpaper.colors.takeIf { it.isNotEmpty() && e.thumb == null }?.toIntArray(),
-                    selected = e.key == curKey, deletable = e.inUseBy.isEmpty(), badge = if (e.bookmark != null) "kept" else null) }
+                tiles += all.map { e ->
+                    // A wallpaper a desktop is using has no ✕, and without saying so the tile just
+                    // looks broken — especially when the desktop holding it is one you have not
+                    // opened in weeks. Name it instead: that is both the reason and the fix.
+                    val held = e.inUseBy.firstOrNull()?.let { first ->
+                        if (e.inUseBy.size > 1) "on $first +${e.inUseBy.size - 1}" else "on $first"
+                    }
+                    LibraryPanel.Tile("wp:" + e.key, e.title, "▦", e.thumb,
+                        e.wallpaper.colors.takeIf { it.isNotEmpty() && e.thumb == null }?.toIntArray(),
+                        selected = e.key == curKey, deletable = e.inUseBy.isEmpty(),
+                        badge = held ?: if (e.bookmark != null) "kept" else null)
+                }
                 tiles += LibraryPanel.Tile("none", "None", "∅", dashed = true, selected = cur.wallpaper.kind == com.tapgem.app.core.model.WallpaperKind.NONE)
                 val themes = com.tapgem.app.core.model.Themes.ALL.map { t ->
                     LibraryPanel.Tile("theme:" + t.name, t.name.replaceFirstChar { it.uppercase() }, "", swatch = intArrayOf(t.panel or 0xFF000000.toInt(), t.accent), selected = t.name == cur.theme.name)
