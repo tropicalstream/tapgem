@@ -877,7 +877,12 @@ class MainActivity : AppCompatActivity() {
                     val ax = avgX(ev); val ay = avgY(ev)
                     val dx = (ax - twoFingerLastX) * SCROLL_GAIN; val dy = (ay - twoFingerLastY) * SCROLL_GAIN
                     twoFingerLastX = ax; twoFingerLastY = ay
-                    if (dx != 0f || dy != 0f) host.scrollContentBy(cursorX, cursorY, dx, dy)
+                    // An open drawer sits over the desktop and is what the fingers mean; only when
+                    // it does not take the scroll does this fall through to the window underneath.
+                    if (dx != 0f || dy != 0f) {
+                        val took = dy != 0f && drawers.any { it.visibility == View.VISIBLE && it.scrollByDelta(-dy) }
+                        if (!took) host.scrollContentBy(cursorX, cursorY, dx, dy)
+                    }
                     lastTrackpadX = ev.x; lastTrackpadY = ev.y
                     return
                 }

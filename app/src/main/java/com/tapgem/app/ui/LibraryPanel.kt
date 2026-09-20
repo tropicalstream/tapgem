@@ -8,6 +8,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import com.tapgem.app.core.model.Canvas
 import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -44,6 +45,11 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
 
     private var accent = 0xFF64D2FF.toInt()
     private val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    /** Only the sections scroll; the header and its ✕ stay where they are. */
+    private val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val scroller = android.widget.ScrollView(context).apply {
+        isFillViewport = false; overScrollMode = OVER_SCROLL_NEVER; isVerticalScrollBarEnabled = true
+    }
     private val header = TextView(context)
     private val hint = TextView(context)
 
@@ -65,8 +71,30 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         column.addView(top, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         hint.apply { setTextColor(0xFF8FA6B8.toInt()); textSize = 10.5f; setPadding(2, 2, 2, 0); maxWidth = TILE_W * 4 + 24; minWidth = TILE_W * 3; visibility = GONE }
         column.addView(hint)
-        addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))   // fill the frame: text lines use the full width
+        scroller.addView(body, android.widget.FrameLayout.LayoutParams(
+            LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        column.addView(scroller, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         visibility = GONE
+    }
+
+    /**
+     * The drawer grew taller than the glasses: with three sections the last one ("Sites") fell off
+     * the bottom with nothing to say it was there. Measuring the contents against the room actually
+     * left below the strip lets the scroller take over once they no longer fit, and changes nothing
+     * for a drawer that does.
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val cap = maxOf(120, Canvas.HEIGHT - TOP_MARGIN - 8)
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
+    }
+
+    /** Scroll by a wheel/two-finger delta; true when it actually moved. */
+    fun scrollByDelta(dy: Float): Boolean {
+        val before = scroller.scrollY
+        scroller.scrollBy(0, dy.toInt())
+        return scroller.scrollY != before
     }
 
     /** Rebuild: [title], [sections] in order, an optional [hint] line under the header. */
@@ -74,18 +102,19 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         this.accent = accent
         header.text = title
         hint.text = hintText ?: ""; hint.visibility = if (hintText.isNullOrBlank()) GONE else VISIBLE
-        while (column.childCount > 2) column.removeViewAt(2)
+        body.removeAllViews()
+        scroller.scrollTo(0, 0)
         for (s in sections) {
             if (s.tiles.isEmpty()) continue
-            column.addView(TextView(context).apply {
+            body.addView(TextView(context).apply {
                 text = s.title.uppercase(); setTextColor(0xFF8FA6B8.toInt()); textSize = 9.5f; letterSpacing = 0.12f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); setPadding(2, 8, 2, 2)
             })
             val grid = GridLayout(context).apply { columnCount = s.cols; useDefaultMargins = false }
             val shown = s.tiles.take(s.cols * s.maxRows)
             shown.forEach { t -> grid.addView(tile(t, s.tileW, s.tileH), GridLayout.LayoutParams().apply { width = s.tileW; height = s.tileH; setMargins(4, 4, 4, 4) }) }
-            column.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-            if (s.tiles.size > shown.size) column.addView(TextView(context).apply {
+            body.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            if (s.tiles.size > shown.size) body.addView(TextView(context).apply {
                 text = "+${s.tiles.size - shown.size} more — say its name"; setTextColor(0xFF8FA6B8.toInt()); textSize = 10f; setPadding(6, 0, 2, 2)
             })
         }
@@ -144,6 +173,8 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
     }
 
     companion object {
+        /** Where setupDrawers pins the panel; the scroll cap is measured from it. */
+        const val TOP_MARGIN = 70
         const val TILE_W = 116
         const val TILE_H = 96
         const val LABEL_H = 22
