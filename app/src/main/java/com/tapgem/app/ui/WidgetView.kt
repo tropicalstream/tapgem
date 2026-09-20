@@ -398,9 +398,19 @@ class WidgetView(context: Context) : FrameLayout(context) {
     /** Where the body starts: a fixed frame reserves its strip, an auto frame floats over it. */
     private fun contentTop(): Int = if (chromeVisible() && !widget.style.chromeAuto) TITLE_H else 0
 
-    /** The cursor is over this window. Only auto-mode windows care. */
+    /**
+     * The cursor is over this window. Auto-mode frames use it, and a page can opt in by defining
+     * `window.__tgHover` — the music player reveals its section switch and panel that way, so the
+     * window is just the skin until you reach for it. The software cursor never reaches the page
+     * as a real mouse event, so this is the only way a page can know.
+     */
     var cursorOver: Boolean = false
-        set(v) { if (field != v) { field = v; if (widget.style.chromeAuto) applyChrome() } }
+        set(v) {
+            if (field == v) return
+            field = v
+            if (widget.style.chromeAuto) applyChrome()
+            runCatching { webView?.evaluateJavascript("window.__tgHover && __tgHover($v)", null) }
+        }
 
     /** Held on through a move/resize so an auto frame cannot vanish mid-drag if the cursor runs past the edge. */
     var pinChrome: Boolean = false

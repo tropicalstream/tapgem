@@ -146,7 +146,10 @@ class MusicTool(private val context: Context) : AiTool {
             }
 
             "up_next", "queue_list", "queue_view", "show_queue" -> {
-                window(args, expanded = true)
+                // Deliberately not expanded: the window is the owner's to size. Asking what is
+                // next answers out loud either way, and on a player left at skin height there is
+                // no room for a panel to appear in.
+                window(args, expanded = false)
                 com.tapgem.app.core.music.MusicBridgeEvents.emitQueue()
                 val q = MusicPlayer.queueSnapshot()
                 Result.success(if (q.isEmpty()) "Queue empty." else "Up next:\n${lines(q.take(10))}")
