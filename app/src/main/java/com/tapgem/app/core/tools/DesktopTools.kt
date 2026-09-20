@@ -1388,6 +1388,21 @@ class WallpaperTool(private val context: Context) : AiTool {
     override val name = "wallpaper"
 
     /**
+     * Paint a window as it currently looks into the wallpaper folder. Captured at the canvas width
+     * and the window's own proportions, so nothing is letterboxed; the wallpaper view crops to fill
+     * from there. A window smaller than the canvas is being enlarged, so it will look soft.
+     */
+    private fun captureWindow(w: Widget): File? = runCatching {
+        val shot = DesktopBridge.windowShot ?: return null
+        val h = (Canvas.WIDTH.toLong() * w.h / maxOf(1, w.w)).toInt().coerceIn(120, 2048)
+        val bmp = shot(w.id, Canvas.WIDTH, h) ?: return null
+        val f = File(DesktopStore.wallpapersDir, "wp_${System.currentTimeMillis()}.png")
+        f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bmp.recycle()
+        f.takeIf { it.length() > 0 }
+    }.onFailure { Log.w("WallpaperTool", "window capture failed: ${it.message}") }.getOrNull()
+
+    /**
      * Take a copy of an existing picture into the wallpaper folder. A copy rather than a reference
      * because the original may be a download, which is treated as scratch and swept within
      * minutes; the wallpaper folder only sweeps what nothing refers to.
@@ -1425,15 +1440,20 @@ class WallpaperTool(private val context: Context) : AiTool {
                 val ref = args.str("image", "from", "source", "photo", "picture", "use_image")
                 val adoptedFrom: Widget? = when {
                     ref != null && !WidgetOps.isUrl(ref) && !ref.startsWith("/") ->
-                        DesktopBridge.resolveWidget(ref, "image")?.takeIf { it.type == WidgetType.IMAGE }
+                        DesktopBridge.resolveWidget(ref)
                     ref == null && desc == null && colors.isEmpty() && kind == null ->
                         DesktopBridge.activeWidgetId?.let { DesktopBridge.current().widget(it) }
-                            ?.takeIf { it.type == WidgetType.IMAGE }
                     else -> null
                 }
+                // A picture widget has a file worth using at full quality. Anything else — a page,
+                // an app, a map — has no file, but it does have what it is showing, so paint the
+                // window itself. "Make this my wallpaper" then means the same thing whatever the
+                // window happens to be.
                 val adopted: String? = when {
                     ref != null && (WidgetOps.isUrl(ref) || ref.startsWith("/")) -> ref
-                    else -> adoptedFrom?.source?.takeIf { it.isNotBlank() }
+                    adoptedFrom?.type == WidgetType.IMAGE -> adoptedFrom.source.takeIf { it.isNotBlank() }
+                    adoptedFrom != null -> captureWindow(adoptedFrom)?.absolutePath
+                    else -> null
                 }
                 val adoptedName = adoptedFrom?.title?.takeIf { it.isNotBlank() }
                 val wp: Wallpaper
@@ -1448,7 +1468,8 @@ class WallpaperTool(private val context: Context) : AiTool {
                     // wallpaper" should keep the photo; only "paint a wallpaper based on this" asks
                     // for a new one, and that arrives as a description instead.
                     adopted != null -> {
-                        val f = adoptImage(adopted)
+                        val already = adopted.startsWith(DesktopStore.wallpapersDir.absolutePath)
+                        val f = (if (already) File(adopted) else adoptImage(adopted))
                             ?: return@withContext Result.success("Couldn't read that image to use as a wallpaper.")
                         wp = Wallpaper(WallpaperKind.IMAGE, imagePath = f.absolutePath,
                             description = adoptedName ?: "your picture")

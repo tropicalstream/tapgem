@@ -159,11 +159,12 @@ class GeminiLiveClient(
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
                 "- Wallpaper/background requests: wallpaper action=set with a vivid visual description " +
                 "(this also switches to desktop mode). Themes: theme action=set.\n" +
-                "- Careful with pictures already on screen: \"make this/that my wallpaper\", \"use this photo as " +
-                "the background\" mean use THAT picture as it is → wallpaper action=set image=focused, with NO " +
-                "description. Only paint a new one when the wording asks for it — \"make a wallpaper BASED ON " +
+                "- Careful with anything already on screen: \"make this/that my wallpaper\", \"use this image as " +
+                "the background\" mean use WHAT IS THERE → wallpaper action=set image=focused, with NO " +
+                "description. This works for any window, not only picture ones — a web page or app is captured " +
+                "as it looks. Only paint a new one when the wording asks for it — \"make a wallpaper BASED ON " +
                 "this\", \"in the style of\", \"inspired by\" → wallpaper action=set description=<what to paint>. " +
-                "Reusing is the default reading when someone points at a picture.\n" +
+                "Reusing is the default reading whenever someone points at something on screen.\n" +
                 "- Update times (\"refresh every 10 minutes\") → refresh_seconds. \"Undo\" → desktop " +
                 "action=undo. \"Show my apps / open the app drawer\" → desktop action=apps; \"show wallpapers / " +
                 "show themes\" → desktop action=wallpapers (the drawer lists every wallpaper and the theme presets).\n" +
@@ -547,8 +548,9 @@ class GeminiLiveClient(
             "Desktop background. set with description → an image is painted from the words (switches to " +
                 "desktop mode). Or kind=gradient/color with colors (comma-separated hex or names). clear = none.",
             mapOf("action" to "set|clear",
-                "image" to "Use a picture that already exists, unchanged: \"focused\" for the window in focus, " +
-                    "or a widget title, or a path/URL. Never send this together with description.",
+                "image" to "Use what is already on screen, not a new painting: \"focused\" for the window in " +
+                    "focus, or a widget title, or a path/URL. A picture window uses its own file; any other " +
+                    "window (a page, an app, a map) is captured as it looks. Never send with description.",
                 "description" to "Only to PAINT A NEW picture. Leave empty when reusing one.",
                 "kind" to "image|gradient|color|none.", "colors" to "Comma-separated colors for gradient/color.")))
         .put(decl("app_builder",

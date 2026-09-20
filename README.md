@@ -132,6 +132,30 @@ focused field — letters, backspace, arrows, Enter — with no on-screen
 keyboard ever appearing. Tap the field first (cursor tap or "click on the
 search box"), then type.
 
+### Two modes: HUD and desktop
+
+TapGem has one job in two looks, and the same windows live in both.
+
+| | **HUD** | **Desktop** |
+|---|---|---|
+| Background | Black — which the glasses render as **transparent**, so the room shows through | Your wallpaper |
+| Windows | Small, unobtrusive panels | The full workspace |
+| Wallpaper | Never drawn | Drawn |
+
+HUD is for looking *through*: nothing behind the widgets, so they float over
+whatever you are actually doing. Desktop is for looking *at*: a backdrop, and
+room to arrange things on it. Every window keeps its title bar and resize corner
+either way — HUD is not a stripped-down mode, just an unlit one.
+
+**Switching:** **tap the left arm**, or say *"switch to HUD mode"* / *"desktop
+mode"*. The left-arm tap is a single tap, so it is easy to hit by accident — if
+your wallpaper suddenly vanishes and everything is floating on black, that is
+what happened, and the same tap brings it back.
+
+Switching to HUD **hides** the wallpaper, it does not discard it: it returns
+untouched when you switch back. That is also why painting or setting a wallpaper
+moves you to desktop mode on its own — there would be nothing to see otherwise.
+
 ### The strip
 
 Left: three **drawers**, one icon each, one look — dark glass, titled sections
@@ -146,6 +170,13 @@ of tiles, a ✕, tap outside to close:
 - **Bookmarks** (ribbon) — saved pages and windows that aren't apps: a video, a
   PDF at its page, a map, a note; see *Bookmarks* below. The three drawers never
   show the same thing twice.
+Point at something and say *"make this my wallpaper"* and you get **that thing,
+as it is** — a picture window uses its own file at full quality, and any other
+window (a page, an app, a map) is captured as it looks right now, whole window
+and all. Ask for one *based on* / *in the style of* / *inspired by* what is on
+screen and it paints a new one instead. Whatever the shape, it is cropped from
+the centre to fill the glasses, so nothing is letterboxed.
+
 - **Wallpapers & themes** (picture) — every wallpaper on the glasses, titled by
   the words it was painted from, the current one ringed, *kept* ones marked;
   **Keep this** saves the current backdrop, **None** clears it, ✕ removes a

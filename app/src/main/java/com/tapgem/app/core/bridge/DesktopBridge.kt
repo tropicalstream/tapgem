@@ -45,6 +45,13 @@ object DesktopBridge {
     @Volatile var activeWidgetId: String? = null
         private set
 
+    /**
+     * Paint one window as it looks right now, at the given size. Set by the activity, which is the
+     * only thing holding the views. Lets a tool use what is on screen — a page, an app — and not
+     * just what is on disk.
+     */
+    @Volatile var windowShot: ((String, Int, Int) -> android.graphics.Bitmap?)? = null
+
     private val saveRunnable = Runnable { persistNow() }
     private val thumbRunnable = Runnable { renderThumbNow() }
 

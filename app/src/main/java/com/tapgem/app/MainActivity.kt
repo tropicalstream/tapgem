@@ -564,6 +564,7 @@ class MainActivity : AppCompatActivity() {
         bookmarkSub = Bookmarks.observe { uiHandler.post { if (bookmarkPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.BOOKMARKS); if (appsPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.APPS) } }
         LibraryBridge.opener = { d, show -> if (show) openDrawer(d) else closeDrawers() }
         BookmarksBridge.thumbnailer = { id -> host.renderWidgetThumbnail(id) }
+        DesktopBridge.windowShot = { id, w, h -> host.renderWidgetThumbnail(id, w, h) }
         BookmarksBridge.freezer = { id, done -> host.snapshotAppState(id, done) }
     }
 
