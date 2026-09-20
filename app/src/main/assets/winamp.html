@@ -9,6 +9,9 @@
 *{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;overflow:hidden}
 body{display:flex;flex-direction:column}
 body.compact #tabs,body.compact #panel{display:none}
+/* A tab pressed while already open collapses the panel: just the skin and the tab row. */
+body.collapsed #panel{display:none}
+body.collapsed #tabs{border-bottom:none}
 body.compact #stage{padding:0}
 #stage{flex:none;display:flex;justify-content:center;padding:6px 0 2px;background:#000}
 #skin{image-rendering:pixelated;cursor:pointer}
@@ -278,14 +281,23 @@ function loadLibrary(){ if(!B)return; try{S.tracks=JSON.parse(B.library(''))||[]
 window.__muEvent=function(js){
   var o; try{o=JSON.parse(js)}catch(e){return}
   if(o.type==='state'){S.state=o;renderSkin();pull();if(S.tab==='lib')renderPanel()}
-  else if(o.type==='skins'){S.skins=o.results||[];S.tab='skins';syncTabs();renderPanel()}
+  else if(o.type==='skins'){S.skins=o.results||[];S.tab='skins';syncTabs();setPanelOpen(true);renderPanel()}
   else if(o.type==='skin'){applySkin(o.skin)}
-  else if(o.type==='visualizer'){S.vis=o.mode;S.tab='vis';syncTabs();fitScale();renderPanel()}
+  else if(o.type==='visualizer'){S.vis=o.mode;S.tab='vis';syncTabs();fitScale();setPanelOpen(true);renderPanel()}
   else if(o.type==='error'){$('stext').textContent=o.text||'error'}
 };
 function syncTabs(){[].forEach.call(document.querySelectorAll('.tab[data-t]'),function(b){b.classList.toggle('on',b.dataset.t===S.tab)})}
+/* Collapsing has to stop the visualiser too: its frame loop keys off the canvas still being in the
+   document, and a hidden panel keeps it there — it would keep pulling FFT and painting unseen. */
+function setPanelOpen(open){
+  document.body.classList.toggle('collapsed',!open);
+  if(!open){cancelAnimationFrame(S.raf);$('panel').innerHTML='';lastPanelTab=''}
+}
+/* Tabs toggle. Pressing the open one again puts the panel away — on a HUD the player is usually
+   wanted as just the skin, and re-pressing is the obvious way to ask for that. */
 [].forEach.call(document.querySelectorAll('.tab[data-t]'),function(b){b.onclick=function(){
-  S.tab=b.dataset.t;syncTabs();
+  if(S.tab===b.dataset.t){S.tab='';syncTabs();setPanelOpen(false);return}
+  S.tab=b.dataset.t;syncTabs();setPanelOpen(true);
   if(S.tab==='skins'&&!S.skins.length)searchSkins('');
   if(S.tab==='lib')loadLibrary();
   renderPanel();
