@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reader</title>
+<style>
+/* Read-along. The point is that the word being spoken is the word lit up, for anyone who follows
+   text more easily when something keeps their place — so this page shows the exact words handed to
+   the speech model, never the book's own rendering. Matching a separate rendering to the audio can
+   only ever be approximate; showing the spoken text itself is exact by construction. */
+:root{--bg:#04060a;--fg:#e8eef6;--dim:#7c8796;--now:#ffd479;--said:#9fb0c2;
+      --font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);overflow:hidden}
+body{display:flex;flex-direction:column}
+#bar{flex:none;display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid #1a2230;font-size:11px;color:var(--dim)}
+#bar b{color:var(--fg);font-weight:600;font-size:12px}
+#prog{flex:1;height:3px;background:#1a2230;border-radius:2px;overflow:hidden}
+#prog i{display:block;height:100%;width:0;background:var(--now);transition:width .3s linear}
+#text{flex:1;overflow-y:auto;padding:14px 16px 24px;font-size:20px;line-height:1.75;letter-spacing:.2px}
+/* Big, high-contrast, generously spaced: this is the reading surface, not a caption. */
+w{transition:color .12s ease}
+w.said{color:var(--said)}
+w.now{color:#0b1016;background:var(--now);border-radius:4px;padding:1px 3px;font-weight:600}
+#done{padding:16px;color:var(--dim);font-size:14px}
+</style></head>
+<body>
+<div id="bar"><b id="title">Reading</b><span id="pos"></span><span id="prog"><i id="progi"></i></span></div>
+<div id="text"></div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var words=[], timings=[], idx=-1, timer=0, startedAt=0;
+
+/* Native hands over the passage and one duration per word, then says when the audio actually
+   started. The page runs its own clock from there: driving every highlight across the bridge
+   would be hundreds of calls a minute for something the page can time itself. */
+window.__read = {
+  show: function(title, text, times, doneChars, totalChars){
+    clearTimeout(timer); idx=-1;
+    $('title').textContent = title || 'Reading';
+    if(totalChars){ $('progi').style.width = Math.min(100, doneChars/totalChars*100)+'%';
+                    $('pos').textContent = Math.round(doneChars/totalChars*100)+'%'; }
+    timings = times || [];
+    var host=$('text'); host.innerHTML='';
+    words = String(text||'').split(/(\s+)/).map(function(tok){
+      if(!tok.trim()){ host.appendChild(document.createTextNode(tok)); return null; }
+      var el=document.createElement('w'); el.textContent=tok; host.appendChild(el); return el;
+    }).filter(Boolean);
+    host.scrollTop = 0;
+  },
+  /* Audio just began. Walk the words on the schedule we were given. */
+  play: function(){
+    startedAt = Date.now();
+    step();
+  },
+  stop: function(){ clearTimeout(timer); },
+  finished: function(msg){
+    clearTimeout(timer);
+    $('text').innerHTML = '<div id="done">'+(msg||'Finished.')+'</div>';
+  }
+};
+
+function step(){
+  var elapsed = Date.now() - startedAt;
+  /* Where should we be by now? Catching up rather than counting keeps the highlight honest even
+     if a timer fires late, which it will on a busy frame. */
+  var t=0, want=-1;
+  for(var i=0;i<timings.length;i++){ t += timings[i]; if(elapsed < t){ want=i; break; } }
+  if(want<0) want = words.length-1;
+  if(want!==idx){
+    if(idx>=0 && words[idx]) words[idx].className='said';
+    for(var j=0;j<want;j++) if(words[j]) words[j].className='said';
+    idx=want;
+    var el=words[idx];
+    if(el){ el.className='now'; keepVisible(el); }
+  }
+  if(idx < words.length-1) timer=setTimeout(step, 60);
+}
+
+/* Keep the lit word in view without yanking the page on every word. */
+function keepVisible(el){
+  var box=$('text'), r=el.getBoundingClientRect(), b=box.getBoundingClientRect();
+  if(r.bottom > b.bottom - 28 || r.top < b.top + 8){
+    box.scrollTop += (r.top - b.top) - box.clientHeight*0.38;
+  }
+}
+})();
+</script>
+</body></html>

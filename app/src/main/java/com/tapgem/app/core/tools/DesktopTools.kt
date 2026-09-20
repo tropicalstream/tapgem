@@ -1851,12 +1851,20 @@ class WebTool(private val context: Context) : AiTool {
             if (text.isBlank()) return Result.success("Nothing to read in \"${w.title}\".")
             val resume = args.bool("continue", "more", "next") == true
             val from = (if (resume) w.state["readAt"]?.toIntOrNull() else args.int("from")) ?: 0
-            com.tapgem.app.core.read.BookReader.start(context, w.id, text, from,
-                chapters = book?.second ?: emptyList(),
+            // Read-along happens in its own window: it shows the exact words being spoken and
+            // lights each one as it is said, which is the point for anyone who needs to see where
+            // they are. The book's own window keeps its place and is left alone.
+            LiveApps.install(context, "reader.html", LiveApps.READER)
+            val reader = LiveApps.window(LiveApps.READER)?.id ?: run {
+                LiveApps.ensureWindow(context, "reader.html", LiveApps.READER, "Read-along",
+                    Args(mapOf("w" to "420", "h" to "330", "anchor" to "bottom right")))
+                LiveApps.window(LiveApps.READER)?.id
+            }
+            com.tapgem.app.core.read.BookReader.start(context, reader, text, from, w.title,
                 onProgress = { at, _ -> DesktopBridge.mutateWidget(w.id) { it.withState("readAt" to at.toString()) } },
                 onDone = { msg -> HudStateBridge.notice(msg) })
-            return Result.success("Reading \"${w.title}\" aloud now — say stop to end it. " +
-                "Do not read anything yourself; the glasses are speaking it.")
+            return Result.success("Reading \"${w.title}\" aloud now, with the words highlighted in the " +
+                "read-along window — say stop to end it. Do not read anything yourself; the glasses are speaking it.")
         }
         val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
         // A search that landed on whichever window happened to be active: say which site answered,
