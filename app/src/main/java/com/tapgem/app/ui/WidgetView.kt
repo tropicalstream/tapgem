@@ -497,6 +497,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
         discordListener?.let { com.tapgem.app.core.irc.DiscordClient.removeListener(it) }; discordListener = null
         interpListener?.let { com.tapgem.app.core.livex.Interpreter.removeListener(it) }; interpListener = null
         tutorListener?.let { com.tapgem.app.core.livex.Tutor.removeListener(it) }; tutorListener = null
+        musicListener?.let { com.tapgem.app.core.music.MusicPlayer.removeListener(it) }; musicListener = null
+        musicUiListener?.let { com.tapgem.app.core.music.MusicBridgeEvents.removeListener(it) }; musicUiListener = null
         runCatching { webView?.stopLoading(); webView?.loadUrl("about:blank"); webView?.destroy() }; webView = null
         synchronized(this) { runCatching { pdfRenderer?.close() }; pdfRenderer = null }
         runCatching { pdfFd?.close() }; pdfFd = null
@@ -1120,6 +1122,22 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             ircListener = l; com.tapgem.app.core.irc.IrcClient.addListener(l)
         }
+        if (kind == Kind.APP && (widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.MUSIC) ||
+                widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.MUSIC_SKINS))) {
+            wv.addJavascriptInterface(MusicBridge(), "TapGemMusic")
+            musicListener?.let { com.tapgem.app.core.music.MusicPlayer.removeListener(it) }
+            val ml = com.tapgem.app.core.music.MusicPlayer.Listener { o ->
+                val js = "window.__muEvent && __muEvent(${JSONObject.quote(o.toString())})"
+                main.post { if (webView === wv) wv.evaluateJavascript(js, null) }
+            }
+            musicListener = ml; com.tapgem.app.core.music.MusicPlayer.addListener(ml)
+            musicUiListener?.let { com.tapgem.app.core.music.MusicBridgeEvents.removeListener(it) }
+            val ul = com.tapgem.app.core.music.MusicBridgeEvents.Listener { o ->
+                val js = "window.__muEvent && __muEvent(${JSONObject.quote(o.toString())})"
+                main.post { if (webView === wv) wv.evaluateJavascript(js, null) }
+            }
+            musicUiListener = ul; com.tapgem.app.core.music.MusicBridgeEvents.addListener(ul)
+        }
         if (kind == Kind.MAP) wv.addJavascriptInterface(NavBridge(), "TapGemNav")
         return wv
     }
@@ -1185,6 +1203,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private var discordListener: com.tapgem.app.core.irc.DiscordClient.Listener? = null
     private var interpListener: com.tapgem.app.core.livex.Interpreter.Listener? = null
     private var tutorListener: com.tapgem.app.core.livex.Tutor.Listener? = null
+    private var musicListener: com.tapgem.app.core.music.MusicPlayer.Listener? = null
+    private var musicUiListener: com.tapgem.app.core.music.MusicBridgeEvents.Listener? = null
 
     inner class InterpreterBridge {
         @JavascriptInterface fun snapshot(since: String): String = com.tapgem.app.core.livex.Interpreter.snapshot(since.toLongOrNull() ?: 0L).toString()
@@ -1195,6 +1215,49 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 "stop" -> { i.stop(); "ok" }
                 "set" -> { i.configure(o.optString("mode").ifBlank { null }, o.optString("mine").ifBlank { null }, o.optString("theirs").ifBlank { null }); "ok" }
                 "clear" -> { i.clear(); "ok" }
+                else -> "unknown op"
+            }
+        }
+    }
+    /**
+     * The page draws the skin and the spectrum; the audio itself lives in [MusicPlayer], so this
+     * carries commands one way and pulls state/FFT on demand. Nothing is pushed per frame: a
+     * throttled or hidden window simply stops asking.
+     */
+    inner class MusicBridge {
+        @JavascriptInterface fun state(): String = com.tapgem.app.core.music.MusicPlayer.state().toString()
+        @JavascriptInterface fun library(query: String): String =
+            org.json.JSONArray().also { a -> com.tapgem.app.core.music.MusicPlayer.search(query.ifBlank { null }).forEach { a.put(it.json()) } }.toString()
+        /** Spectrum for the visualiser, as comma-separated magnitudes — cheap to parse, no JSON churn. */
+        @JavascriptInterface fun fft(bands: Int): String =
+            com.tapgem.app.core.music.MusicPlayer.fft(bands.coerceIn(8, 128)).joinToString(",") { "%.3f".format(it) }
+        @JavascriptInterface fun defaultSkin(): String = com.tapgem.app.core.music.SkinStore.DEFAULT_ID
+        @JavascriptInterface fun cmd(json: String): String {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"
+            val m = com.tapgem.app.core.music.MusicPlayer
+            return when (o.optString("op")) {
+                "play" -> {
+                    val id = o.optLong("id", -1L)
+                    if (id > 0) m.byId(id)?.let { m.play(listOf(it)) } ?: "no such track"
+                    else m.play(m.search(o.optString("query").ifBlank { null }))
+                }
+                "playAll" -> m.play(m.library())
+                "toggle" -> m.toggle()
+                "pause" -> m.pause()
+                "resume" -> m.resume()
+                "next" -> m.next()
+                "previous" -> m.previous()
+                "stop" -> m.stop()
+                "seek" -> { m.seekTo(o.optInt("ms")); "ok" }
+                "volume" -> m.volume(o.optInt("level", 50))
+                "shuffle" -> m.setShuffle(o.optBoolean("value", !m.shuffle))
+                "repeat" -> m.setRepeat(o.optString("value", "all"))
+                "skins" -> com.tapgem.app.core.music.SkinStore.searchJson(o.optString("query").ifBlank { null }).toString()
+                // Tell every open page, not just the caller: a skin tapped in the gallery has to reach
+                // the player window too, which is the whole point of tapping it.
+                "skin" -> com.tapgem.app.core.music.SkinStore.installedJson(o.optString("id"))
+                    .also { if (it.optBoolean("ok")) com.tapgem.app.core.music.MusicBridgeEvents.emitSkin(it) }
+                    .toString()
                 else -> "unknown op"
             }
         }

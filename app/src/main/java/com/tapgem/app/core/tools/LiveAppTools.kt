@@ -16,6 +16,8 @@ import java.io.File
 object LiveApps {
     const val INTERPRETER = "interpreter_client.html"
     const val TUTOR = "tutor_client.html"
+    const val MUSIC = "music_player.html"
+    const val MUSIC_SKINS = "music_skins.html"
     fun install(context: Context, asset: String, file: String): File {
         val f = File(DesktopStore.appsDir, file)
         val html = context.assets.open(asset).bufferedReader().readText()

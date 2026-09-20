@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Skins</title><!-- state lives in TapGemMusic; not instrumented (window.__tgReg) -->
+<style>
+/* A gallery of other people's artwork, browsed as the archive's own screenshots: fifty skins cost
+   fifty thumbnails, not fifty rendered players. Tapping one hands it to the player window. */
+:root{--bg:#04060a;--fg:#e8eef6;--dim:#6b7686;--accent:#39d98a;--line:#1a2230;
+      --font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:13px;overflow:hidden}
+body{display:flex;flex-direction:column}
+#top{flex:none;display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line)}
+#q{flex:1;background:transparent;border:1px solid #2a3547;color:var(--fg);font:inherit;padding:5px 8px;border-radius:5px;outline:none}
+#go{border:1px solid var(--accent);color:var(--accent);background:transparent;border-radius:5px;padding:5px 12px;font:inherit;cursor:pointer}
+#grid{flex:1;overflow-y:auto;padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(134px,1fr));gap:8px;align-content:start}
+.sk{cursor:pointer;border:1px solid #2a3547;border-radius:6px;overflow:hidden;background:#0a0f18}
+/* The archive's shots are portrait (~180x232): they show the whole stack — main window, equaliser,
+   playlist. Cropping to the middle sliced the player out entirely, which read as squashed artwork.
+   Anchor to the top instead, where the main window always sits, and show it wide enough to read. */
+.sk img{width:100%;height:78px;object-fit:cover;object-position:center top;display:block;background:#05070c}
+.sk.full img{height:auto;object-fit:contain}
+.sk .nm{font-size:10px;color:var(--dim);padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sk.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.sk:active{transform:scale(.97)}
+#status{flex:none;padding:4px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)}
+.hint{padding:18px 12px;color:var(--dim);line-height:1.5;grid-column:1/-1}
+.hint b{color:var(--fg)}
+</style></head>
+<body>
+<div id="top"><input id="q" placeholder="search skins — space, neon, retro, anime…"><button id="go">search</button></div>
+<div id="grid"></div>
+<div id="status">tap a skin to wear it · tap its name to see the whole thing</div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)}, B=window.TapGemMusic||null;
+var S={skins:[],worn:''};
+function cmd(o){try{return B?B.cmd(JSON.stringify(o)):'no bridge'}catch(e){return String(e)}}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+
+function draw(){
+  var g=$('grid');
+  if(!S.skins.length){g.innerHTML='<div class="hint"><b>Nothing yet.</b><br>Type a keyword and hit search, or say <i>“show me space skins”</i>.</div>';return}
+  g.innerHTML=S.skins.map(function(s){
+    return '<div class="sk'+(s.id===S.worn?' on':'')+'" data-id="'+esc(s.id)+'" title="'+esc(s.title)+'">'+
+      '<img loading="lazy" src="'+esc(s.thumb)+'"><div class="nm">'+esc(s.title)+'</div></div>'}).join('');
+  [].forEach.call(g.querySelectorAll('.sk'),function(c){
+    c.onclick=function(){wear(c.dataset.id)};
+    /* the name strip shows the rest of the skin without wearing it */
+    var nm=c.querySelector('.nm');
+    if(nm)nm.onclick=function(e){e.stopPropagation();c.classList.toggle('full')};
+  });
+}
+function wear(id){
+  $('status').textContent='fetching…';
+  setTimeout(function(){
+    var o=null; try{o=JSON.parse(cmd({op:'skin',id:id}))}catch(e){}
+    if(o&&o.ok){S.worn=id;$('status').textContent='wearing '+id.replace(/^was-/,'').replace(/-/g,' ');draw()}
+    else $('status').textContent='could not fetch that skin';
+  },10);
+}
+function search(q){
+  $('status').textContent='searching…';
+  setTimeout(function(){
+    try{S.skins=JSON.parse(cmd({op:'skins',query:q||''}))||[]}catch(e){S.skins=[]}
+    $('status').textContent=S.skins.length?S.skins.length+' skins — tap one to wear it':'nothing matched';
+    draw();
+  },10);
+}
+$('go').onclick=function(){search($('q').value)};
+$('q').onkeydown=function(e){if(e.key==='Enter')search($('q').value)};
+
+/* the voice tools push results here too, so "show me space skins" fills this window */
+window.__muEvent=function(js){
+  var o; try{o=JSON.parse(js)}catch(e){return}
+  if(o.type==='skins'){S.skins=o.results||[];if(o.query)$('q').value=o.query;
+    $('status').textContent=S.skins.length+' skins — tap one to wear it';draw()}
+  else if(o.type==='skin'&&o.skin){S.worn=o.skin.id;draw()}
+};
+
+if(!B){$('grid').innerHTML='<div class="hint">TapGemMusic bridge missing — this page only works inside a TapGem window.</div>'}
+else{ try{S.worn=B.defaultSkin()}catch(e){} search(''); }
+})();
+</script>
+</body></html>

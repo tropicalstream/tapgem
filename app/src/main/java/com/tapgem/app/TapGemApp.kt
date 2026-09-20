@@ -82,6 +82,8 @@ class TapGemApp : Application() {
         com.tapgem.app.core.irc.DiscordClient.init(this)
         com.tapgem.app.core.livex.Interpreter.init(this)
         com.tapgem.app.core.livex.Tutor.init(this)
+        com.tapgem.app.core.music.MusicPlayer.init(this)
+        com.tapgem.app.core.music.SkinStore.init(this)
         WidgetRefreshEngine.start(this)
         runCatching {
             ContextCompat.registerReceiver(this, keyReceiver, IntentFilter(ApiKeyStore.ACTION_SET_API_KEY),

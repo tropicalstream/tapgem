@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Music</title><!-- state lives in TapGemMusic; not instrumented (window.__tgReg) -->
+<style>
+/* Audio is decoded natively; this page only paints. Every loop here is either idle or driven by
+   a pull from the bridge, so a throttled window costs nothing. */
+:root{--bg:#04060a;--fg:#e8eef6;--dim:#6b7686;--accent:#39d98a;--amber:#ffc766;--line:#1a2230;
+      --font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;overflow:hidden}
+body{display:flex;flex-direction:column}
+body.compact #tabs,body.compact #panel{display:none}
+body.compact #stage{padding:0}
+#stage{flex:none;display:flex;justify-content:center;padding:6px 0 2px;background:#000}
+#skin{image-rendering:pixelated;cursor:pointer}
+#fallback{display:none;padding:10px 14px}
+#fallback.on{display:block}
+#fallback .t{font-size:19px;font-weight:600;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#fallback .a{color:var(--dim);font-size:13px;margin-top:2px}
+#fbbar{height:4px;background:#1a2230;margin-top:8px;border-radius:2px;overflow:hidden}#fbbar i{display:block;height:100%;width:0;background:var(--accent)}
+#fbtr{display:flex;gap:8px;margin-top:8px}
+#tabs{flex:none;display:flex;gap:4px;padding:4px 8px;border-bottom:1px solid var(--line)}
+.tab{border:1px solid #2a3547;border-radius:12px;padding:3px 11px;color:var(--dim);font-size:12px;cursor:pointer;white-space:nowrap}
+.tab.on{color:#04060a;background:var(--fg);border-color:var(--fg)}
+#panel{flex:1;overflow-y:auto;padding:6px 8px}
+.row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:5px;cursor:pointer;line-height:1.25}
+.row:hover{background:#101725}.row.on{background:#15203300;box-shadow:inset 0 0 0 1px var(--accent)}
+.row .n{color:var(--dim);font-size:11px;min-width:18px;text-align:right}
+.row .ti{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .ar{color:var(--dim);font-size:12px}
+.row .du{color:var(--dim);font-size:11px}
+#grid{display:flex;flex-wrap:wrap;gap:6px}
+.sk{width:118px;cursor:pointer;border:1px solid #2a3547;border-radius:5px;overflow:hidden;background:#0a0f18}
+.sk img{width:100%;height:60px;object-fit:cover;display:block;background:#05070c}
+.sk .nm{font-size:10px;color:var(--dim);padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sk.on{border-color:var(--accent)}
+#vis{width:100%;height:150px;display:block;background:#05070c;border-radius:5px}
+#vismodes{display:flex;gap:4px;margin-bottom:6px}
+#find{width:100%;background:transparent;border:1px solid #2a3547;color:var(--fg);font:inherit;padding:5px 8px;border-radius:5px;margin-bottom:6px;outline:none}
+#status{flex:none;display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)}
+#status .dot{width:7px;height:7px;border-radius:50%;background:#2a3547}#status .dot.on{background:var(--accent);box-shadow:0 0 7px var(--accent)}
+.hint{padding:16px 12px;color:var(--dim);line-height:1.5}
+.hint b{color:var(--fg)}
+</style></head>
+<body>
+<div id="stage"><canvas id="skin" width="550" height="232"></canvas></div>
+<div id="fallback">
+  <div class="t" id="fbt">Nothing playing</div><div class="a" id="fba">—</div>
+  <div id="fbbar"><i id="fbi"></i></div>
+</div>
+<div id="tabs">
+  <span class="tab on" data-t="lib">Library</span>
+  <span class="tab" data-t="skins">Skins</span>
+  <span class="tab" data-t="vis">Visualiser</span>
+</div>
+<div id="panel"></div>
+<div id="status"><span class="dot" id="dot"></span><span id="stext">idle</span><span id="sright" style="margin-left:auto"></span></div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)}, B=window.TapGemMusic||null;
+var S={tab:'lib',tracks:[],skins:[],state:{},sheets:null,skinId:'',vis:'off',raf:0,poll:0};
+
+function cmd(o){try{return B?B.cmd(JSON.stringify(o)):'no bridge'}catch(e){return String(e)}}
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+function mmss(s){s=Math.max(0,s|0);return (s/60|0)+':'+('0'+(s%60)).slice(-2)}
+
+/* ---------- skin rendering -------------------------------------------------------------------
+   A classic skin is a zip of bitmaps with fixed sprite offsets. The native side unpacks it and
+   hands over file:// paths; all that is left here is blitting rectangles, which is cheap enough to
+   redraw only when something actually changes. No artwork ships with the app. */
+var IMG={}, SCALE=1, W=275, H=116;
+/* The artwork is 275x116. Blit it 1:1 so it looks the way it was drawn, and only step up whole
+   integers when the window is genuinely wider — fractional scaling on pixel art just smears it. */
+function fitScale(){
+  var avail=document.documentElement.clientWidth||275;
+  var s=Math.max(1,Math.min(3,Math.floor(avail/W)));
+  if(s!==SCALE||$('skin').width!==W*s){SCALE=s;$('skin').width=W*s;$('skin').height=H*s;ctx.imageSmoothingEnabled=false}
+  /* Short window = just the skin: no tabs, no panel, nothing running. */
+  var compact=(document.documentElement.clientHeight||160) < (H*SCALE+120);
+  document.body.classList.toggle('compact',compact);
+  if(compact&&S.vis!=='off'){S.vis='off';cancelAnimationFrame(S.raf)}
+}
+var ctx=$('skin').getContext('2d');
+ctx.imageSmoothingEnabled=false;
+window.addEventListener('resize',function(){fitScale();renderSkin()});
+
+function loadSheets(sheets,done){
+  IMG={}; var names=Object.keys(sheets||{}), left=names.length;
+  if(!left){done(false);return}
+  names.forEach(function(n){
+    var im=new Image();
+    im.onload=function(){IMG[n]=im;if(!--left)done(true)};
+    im.onerror=function(){if(!--left)done(Object.keys(IMG).length>0)};
+    im.src=sheets[n];
+  });
+}
+function blit(sheet,sx,sy,sw,sh,dx,dy){
+  var im=IMG[sheet]; if(!im)return false;
+  ctx.drawImage(im,sx,sy,sw,sh,dx*SCALE,dy*SCALE,sw*SCALE,sh*SCALE); return true;
+}
+/* text.bmp is a 5x6 bitmap font in a known character order. */
+var FONT=["abcdefghijklmnopqrstuvwxyz\"@ ","0123456789…:()-'!_+\\/[]^&%.=$#"];
+function drawText(str,x,y,maxChars){
+  if(!IMG['text'])return;
+  str=String(str||'').toLowerCase().slice(0,maxChars||30);
+  for(var i=0;i<str.length;i++){
+    var c=str[i],r=-1,col=-1;
+    for(var k=0;k<FONT.length;k++){var p=FONT[k].indexOf(c);if(p>=0){r=k;col=p;break}}
+    if(r<0){r=0;col=FONT[0].length-1}
+    blit('text',col*5,r*6,5,6,x+i*5,y);
+  }
+}
+function drawDigits(sec,x,y){
+  var sheet=IMG['numbers']?'numbers':(IMG['nums_ex']?'nums_ex':null); if(!sheet)return;
+  var m=Math.max(0,sec|0), s=('0'+(m%60)).slice(-2), mm=('  '+((m/60)|0)).slice(-2);
+  var str=mm+s, dx=[0,9,20,29];
+  for(var i=0;i<4;i++){var ch=str[i];var d=(ch>='0'&&ch<='9')?+ch:10;
+    if(d===10&&sheet==='numbers')continue;
+    blit(sheet,d*9,0,9,13,x+dx[i],y)}
+}
+function renderSkin(){
+  var st=S.state||{}, t=st.track||{};
+  if(!IMG['main']){$('fallback').classList.add('on');$('stage').style.display='none';return}
+  $('fallback').classList.remove('on');$('stage').style.display='flex';
+  ctx.clearRect(0,0,W*SCALE,H*SCALE);
+  blit('main',0,0,W,H,0,0);
+  blit('titlebar',27,0,W,14,0,0);
+  /* transport: prev play pause stop next, 23x18 each */
+  var cb=[0,23,46,69,92];
+  for(var i=0;i<5;i++) blit('cbuttons',cb[i],0,23,18,16+i*23,88);
+  blit('cbuttons',114,0,22,16,136,89);           /* eject */
+  /* play / pause / stop indicator */
+  blit('playpaus',st.playing?0:(st.position?9:18),0,9,9,26,28);
+  /* title + time */
+  drawText((t.artist?t.artist+' - ':'')+(t.title||'no track'),111,27,30);
+  drawDigits(st.position||0,36,26);
+  /* seek bar */
+  var dur=st.duration||0, pos=st.position||0, frac=dur?Math.min(1,pos/dur):0;
+  blit('posbar',0,0,248,10,16,72);
+  blit('posbar',248,0,29,10,16+Math.round(frac*(248-29)),72);
+  /* volume: 28 sprite rows, pick by level */
+  var vol=st.volume==null?50:st.volume, vrow=Math.min(27,Math.round(vol/100*27));
+  blit('volume',0,vrow*15,68,13,107,57);
+  blit('volume',15,422,14,11,107+Math.round(vol/100*(68-14)),57);
+  /* shuffle / repeat lamps */
+  blit('shufrep',28,(st.shuffle?30:0),47,15,164,89);
+  blit('shufrep',0,(st.repeat&&st.repeat!=='off'?30:0),28,15,210,89);
+}
+/* clicks on the skin map back to transport */
+$('skin').onclick=function(e){
+  var r=this.getBoundingClientRect(), x=(e.clientX-r.left)/SCALE, y=(e.clientY-r.top)/SCALE;
+  if(y>=88&&y<=106){
+    if(x>=16&&x<39)cmd({op:'previous'}); else if(x>=39&&x<62)cmd({op:'resume'});
+    else if(x>=62&&x<85)cmd({op:'pause'}); else if(x>=85&&x<108)cmd({op:'stop'});
+    else if(x>=108&&x<131)cmd({op:'next'});
+    else if(x>=164&&x<211)cmd({op:'shuffle'}); else if(x>=211&&x<239)cmd({op:'repeat',value:'all'});
+    setTimeout(pull,180); return;
+  }
+  if(y>=72&&y<=82&&x>=16&&x<=264){
+    var dur=(S.state.duration||0); if(dur) cmd({op:'seek',ms:Math.round((x-16)/(248)*dur*1000)});
+    setTimeout(pull,180); return;
+  }
+  if(y>=57&&y<=70&&x>=107&&x<=175){ cmd({op:'volume',level:Math.round((x-107)/68*100)}); setTimeout(pull,180); return }
+  cmd({op:'toggle'}); setTimeout(pull,180);
+};
+
+function applySkin(res){
+  if(!res||!res.ok){return}
+  S.skinId=res.id;
+  loadSheets(res.sheets,function(){renderSkin();renderPanel()});
+}
+function wearSkin(id){
+  $('stext').textContent='fetching skin…';
+  setTimeout(function(){
+    var r=cmd({op:'skin',id:id}); var o=null; try{o=JSON.parse(r)}catch(e){}
+    if(o&&o.ok){applySkin(o);$('stext').textContent='wearing '+id.replace(/^was-/,'').replace(/-/g,' ')}
+    else $('stext').textContent='skin unavailable';
+  },10);
+}
+
+/* ---------- panels --------------------------------------------------------------------------- */
+function renderPanel(){
+  var p=$('panel');
+  if(S.tab==='lib'){
+    if(!S.tracks.length){p.innerHTML='<div class="hint"><b>No audio found.</b><br>Drop files into <b>/sdcard/Music</b> or <b>/sdcard/Download</b>, then say <i>“rescan music”</i>.</div>';return}
+    var cur=(S.state.track||{}).id;
+    p.innerHTML='<input id="find" placeholder="filter…">'+S.tracks.map(function(t,i){
+      return '<div class="row'+(t.id===cur?' on':'')+'" data-id="'+t.id+'"><span class="n">'+(i+1)+'</span>'+
+        '<span class="ti">'+esc(t.title)+' <span class="ar">'+esc(t.artist)+'</span></span>'+
+        '<span class="du">'+(t.duration?mmss(t.duration):'')+'</span></div>'}).join('');
+    var f=$('find'); if(f)f.oninput=function(){var q=f.value.toLowerCase();
+      [].forEach.call(p.querySelectorAll('.row'),function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)>=0?'':'none'})};
+    [].forEach.call(p.querySelectorAll('.row'),function(r){r.onclick=function(){cmd({op:'play',id:+r.dataset.id});setTimeout(pull,250)}});
+  } else if(S.tab==='skins'){
+    p.innerHTML='<input id="find" placeholder="search skins — e.g. space, neon, retro">'+
+      '<div id="grid">'+(S.skins.length?S.skins.map(function(s){
+        return '<div class="sk'+(s.id===S.skinId?' on':'')+'" data-id="'+esc(s.id)+'"><img loading="lazy" src="'+esc(s.thumb)+'"><div class="nm">'+esc(s.title)+'</div></div>'
+      }).join(''):'<div class="hint">Type a keyword, or say <i>“show me space skins”</i>.</div>')+'</div>';
+    var f=$('find'); if(f)f.onkeydown=function(e){if(e.key==='Enter'){searchSkins(f.value)}};
+    [].forEach.call(p.querySelectorAll('.sk'),function(c){c.onclick=function(){wearSkin(c.dataset.id)}});
+  } else {
+    p.innerHTML='<div id="vismodes">'+['bars','scope','flow','off'].map(function(m){
+      return '<span class="tab'+(S.vis===m?' on':'')+'" data-v="'+m+'">'+m+'</span>'}).join('')+'</div><canvas id="vis"></canvas>';
+    [].forEach.call(p.querySelectorAll('[data-v]'),function(b){b.onclick=function(){S.vis=b.dataset.v;renderPanel()}});
+    startVis();
+  }
+}
+function searchSkins(q){
+  $('stext').textContent='searching skins…';
+  setTimeout(function(){
+    var r=cmd({op:'skins',query:q||''}); try{S.skins=JSON.parse(r)||[]}catch(e){S.skins=[]}
+    $('stext').textContent=S.skins.length+' skins'; renderPanel();
+  },10);
+}
+
+/* ---------- visualiser -----------------------------------------------------------------------
+   The spectrum comes from the native player (the audio never reaches this page), pulled per frame
+   and only while the tab is open. 'flow' is an original shader-style field driven by the same
+   bands — not a .milk preset player, which would need the audio graph to live in here. */
+var vctx=null,vcan=null;
+function startVis(){
+  cancelAnimationFrame(S.raf);
+  vcan=$('vis'); if(!vcan||S.vis==='off')return;
+  vcan.width=vcan.clientWidth||560; vcan.height=150; vctx=vcan.getContext('2d');
+  var phase=0;
+  (function frame(){
+    if(!document.getElementById('vis')||S.vis==='off')return;
+    var raw=''; try{raw=B?B.fft(48):''}catch(e){}
+    var b=raw?raw.split(',').map(parseFloat):[];
+    var w=vcan.width,h=vcan.height; vctx.clearRect(0,0,w,h);
+    if(!b.length){vctx.fillStyle='#233';vctx.font='12px sans-serif';vctx.fillText('play something to see the spectrum',12,24)}
+    else if(S.vis==='bars'){
+      var bw=w/b.length;
+      for(var i=0;i<b.length;i++){var bh=Math.max(1,b[i]*h);
+        var g=vctx.createLinearGradient(0,h-bh,0,h);g.addColorStop(0,'#39d98a');g.addColorStop(1,'#1c6b47');
+        vctx.fillStyle=g;vctx.fillRect(i*bw+1,h-bh,bw-2,bh)}
+    } else if(S.vis==='scope'){
+      vctx.strokeStyle='#ffc766';vctx.lineWidth=2;vctx.beginPath();
+      for(var i=0;i<b.length;i++){var y=h/2+Math.sin(i*0.5+phase)*b[i]*h*0.45;i?vctx.lineTo(i/(b.length-1)*w,y):vctx.moveTo(0,y)}
+      vctx.stroke();
+    } else {
+      /* flow: concentric bands modulated by the spectrum; cheap, no WebGL context to lose */
+      var e=0;for(var i=0;i<b.length;i++)e+=b[i];e/=b.length||1;
+      for(var r=0;r<10;r++){
+        var m=b[(r*4)%b.length]||0, rad=(r+1)/10*Math.min(w,h)*0.62*(0.72+m*0.75);
+        vctx.beginPath();vctx.strokeStyle='hsla('+((r*26+phase*40)%360)+',80%,'+(42+m*34)+'%,'+(0.22+m*0.65)+')';
+        vctx.lineWidth=1+m*4;vctx.arc(w/2,h/2,rad,0,Math.PI*2);vctx.stroke();
+      }
+      phase+=0.01+e*0.05;
+    }
+    phase+=0.04;
+    S.raf=requestAnimationFrame(frame);
+  })();
+}
+
+/* ---------- state ----------------------------------------------------------------------------- */
+function pull(){
+  if(!B)return;
+  try{S.state=JSON.parse(B.state())||{}}catch(e){return}
+  var st=S.state,t=st.track||{};
+  $('dot').className='dot'+(st.playing?' on':'');
+  $('stext').textContent=t.title?((st.playing?'playing':'paused')+' · '+(t.artist||'')):'idle';
+  $('sright').textContent=(st.queueSize?st.queueSize+' queued':'')+(st.shuffle?' · shuffle':'')+(st.repeat&&st.repeat!=='off'?' · repeat '+st.repeat:'');
+  $('fbt').textContent=t.title||'Nothing playing'; $('fba').textContent=t.artist?t.artist+(t.album?' · '+t.album:''):'—';
+  $('fbi').style.width=(st.duration?Math.min(100,(st.position/st.duration*100)):0)+'%';
+  renderSkin();
+}
+function loadLibrary(){ if(!B)return; try{S.tracks=JSON.parse(B.library(''))||[]}catch(e){S.tracks=[]} }
+
+window.__muEvent=function(js){
+  var o; try{o=JSON.parse(js)}catch(e){return}
+  if(o.type==='state'){S.state=o;renderSkin();pull();if(S.tab==='lib')renderPanel()}
+  else if(o.type==='skins'){S.skins=o.results||[];S.tab='skins';syncTabs();renderPanel()}
+  else if(o.type==='skin'){applySkin(o.skin)}
+  else if(o.type==='visualizer'){S.vis=o.mode;S.tab='vis';syncTabs();fitScale();renderPanel()}
+  else if(o.type==='error'){$('stext').textContent=o.text||'error'}
+};
+function syncTabs(){[].forEach.call(document.querySelectorAll('.tab[data-t]'),function(b){b.classList.toggle('on',b.dataset.t===S.tab)})}
+[].forEach.call(document.querySelectorAll('.tab[data-t]'),function(b){b.onclick=function(){
+  S.tab=b.dataset.t;syncTabs();
+  if(S.tab==='skins'&&!S.skins.length)searchSkins('');
+  if(S.tab==='lib')loadLibrary();
+  renderPanel();
+}});
+
+if(!B){document.getElementById('panel').innerHTML='<div class="hint">TapGemMusic bridge missing — this page only works inside a TapGem window.</div>'}
+else{
+  fitScale(); loadLibrary(); pull(); renderPanel();
+  /* wear the default skin on first open; cached after the first fetch */
+  var def=''; try{def=B.defaultSkin()}catch(e){}
+  if(def) wearSkin(def);
+  S.poll=setInterval(function(){ if(S.state.playing) pull() },1000);
+}
+})();
+</script>
+</body></html>

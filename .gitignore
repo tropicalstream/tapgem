@@ -13,3 +13,11 @@ captures/
 .externalNativeBuild/
 .cxx/
 .kotlin/
+
+# Audio dropped in for testing the player is personal, not repo content — except the one
+# sample track in samples/ (generated with Suno, shipped so a fresh clone has something to play).
+*.mp3
+*.m4a
+*.flac
+*.wav
+!samples/*.mp3

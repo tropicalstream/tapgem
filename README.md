@@ -354,6 +354,34 @@ correction cards *after* your turn (said → better → why), a vocabulary tray 
 the words you slipped on, scenario role-play, and an end-of-lesson summary. Level, language and
 scenario are chips on the window or a sentence to the assistant; the tray and your level persist.
 
+**Music — "play Victory Parade", "show me space skins", "next track".** A local player
+(`winamp.html`) wearing classic Winamp skins. The audio is decoded **natively** — MediaPlayer, not
+the WebView — so it keeps playing while the page is throttled, the window is closed or eco mode
+pauses animations, and it ducks to a murmur when the assistant speaks instead of fighting it for
+the speaker. The page only paints: it blits the skin's sprite sheets to a canvas and pulls the
+spectrum from the native audio session when a visualiser is showing.
+
+- **Library** is MediaStore plus a walk of `Music/`, `Download/`, `Podcasts/` and `Movies/`, with
+  tags read straight out of files the indexer has not caught up with yet — a track copied over adb
+  a minute ago still answers to its artist and album. A search that misses forces one rescan before
+  giving up, so a just-copied file does not report "nothing matched".
+- **Phrasing is the model's job, not a parser's.** `list`/`search` answer with `[id N]` lines; the
+  assistant picks and calls `play` with the id. That is what makes "the third one", "that album",
+  "anything by her" and "put on whatever is in Downloads" all work without a grammar to outgrow.
+- **Skins** are searched and fetched from the Internet Archive's Winamp collection at runtime and
+  cached on the glasses — none ship with the app, they are other people's artwork. `was-mdk-2` is
+  the default. The gallery shows the archive's own screenshots, so browsing fifty skins costs fifty
+  thumbnails rather than fifty rendered players.
+- **Size.** It opens at the skin's own 275×116, blitted 1:1, with no panels and nothing animating —
+  that is what the artwork was drawn for. Asking for the library, the skins or a visualiser grows
+  the window; "make the player small again" puts it back.
+- **Visualisers** are off until asked for: `bars`, `scope`, `flow`. `flow` is an original
+  spectrum-driven field — *not* a MilkDrop `.milk` preset player. Real MilkDrop (Butterchurn) reads
+  from a Web Audio `AnalyserNode`, and the audio deliberately never enters the page, so genuine
+  preset playback would mean handing that mode the audio graph and losing the background robustness.
+- `samples/` carries one Suno-generated track so a fresh clone has something to play:
+  `adb push "samples/Victory Parade.mp3" /sdcard/Music/`.
+
 **YouTube Music and video in a window.** music.youtube.com's player page is laid out for a
 phone held upright — it reserves 408 px under the media for the controls and the Up next / Lyrics
 strip — so in a 640×418 window the music video (or the album art) came out 10 px tall. TapGem

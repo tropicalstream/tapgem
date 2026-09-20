@@ -139,6 +139,10 @@ class GeminiLiveClient(
                 "on yes → irc confirm, otherwise irc cancel. Never send a chat message without that confirmation. " +
                 "Discord (\"open Discord\", \"switch to #general on the Berkeley server\", \"what's new in general\") → the " +
                 "discord tool with the SAME stage → read back → confirm rule for anything dictated.\n" +
+                "- Music (\"play …\", \"put something on\", \"next track\", \"louder\") → the music tool. It plays files stored " +
+                "on the glasses, not a streaming service: if nothing matches, say so and offer to list what is there. " +
+                "To honour \"the third one\" or \"that album\", call list/search first and then play with the id you got back. " +
+                "Skins and the visualiser are part of the same tool.\n" +
                 "- \"Translate what they're saying / interpret / I need Spanish\" → interpreter start (listen for hearing others, " +
                 "speak for being understood, conversation for both). \"Teach me French / practise Japanese / language lesson\" → " +
                 "tutor start. Both take the microphone from you: after calling them say ONE short sentence and stop talking.\n" +
@@ -571,6 +575,21 @@ class GeminiLiveClient(
             mapOf("action" to "open|connect|disconnect|logout|servers|channels|switch|say|confirm|cancel|read|status|theme",
                 "channel" to "Channel name (with or without #) or a DM person's name.", "server" to "Server (guild) name to disambiguate.",
                 "text" to "say: the message, exactly as dictated.", "count" to "read: how many lines.", "theme" to "Theme name.") + geometryProps))
+        .put(decl("music",
+            "The local music player (a classic-skinned window; audio plays natively, not in a web page). " +
+                "list/search: what audio is on the glasses — each line carries an [id N] to play. play: by id, " +
+                "or a query, or index=N to pick the Nth of what you just listed. queue adds to the end. " +
+                "pause/resume/next/previous/stop/seek/shuffle/repeat/volume. status: what is playing now. " +
+                "skins: search the Internet Archive's Winamp skin collection by keyword and show the gallery; " +
+                "skin: wear one (id, or a keyword to take the best match). visualizer: bars|scope|flow|off. " +
+                "rescan after new files are copied to the glasses.",
+            mapOf("action" to "open|list|search|play|queue|pause|resume|next|previous|stop|seek|shuffle|repeat|volume|status|up_next|skins|skin|visualizer|rescan",
+                "query" to "Words from a title, artist, album or file name — or, for skins, the look the user asked for.",
+                "id" to "play: the [id N] of a track from a previous list; skin: an archive identifier.",
+                "index" to "play: pick the Nth item of the list you just read out (1-based).",
+                "value" to "shuffle/repeat/visualizer: on|off|all|one|bars|scope|flow.",
+                "level" to "volume: 0-100.", "to" to "seek: absolute seconds.", "by" to "seek: relative seconds (negative to go back).",
+                "count" to "list: how many lines to return.") + geometryProps))
         .put(decl("interpreter",
             "Live speech interpreter window (a separate, continuous translation model — it takes the microphone, so " +
                 "it runs after your turn ends). start: mode=listen (what people around the user say → the user's " +
