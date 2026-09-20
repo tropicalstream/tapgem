@@ -159,6 +159,11 @@ class GeminiLiveClient(
                 "then widget action=add with the returned path. If nothing matches, say so briefly.\n" +
                 "- Wallpaper/background requests: wallpaper action=set with a vivid visual description " +
                 "(this also switches to desktop mode). Themes: theme action=set.\n" +
+                "- Careful with pictures already on screen: \"make this/that my wallpaper\", \"use this photo as " +
+                "the background\" mean use THAT picture as it is → wallpaper action=set image=focused, with NO " +
+                "description. Only paint a new one when the wording asks for it — \"make a wallpaper BASED ON " +
+                "this\", \"in the style of\", \"inspired by\" → wallpaper action=set description=<what to paint>. " +
+                "Reusing is the default reading when someone points at a picture.\n" +
                 "- Update times (\"refresh every 10 minutes\") → refresh_seconds. \"Undo\" → desktop " +
                 "action=undo. \"Show my apps / open the app drawer\" → desktop action=apps; \"show wallpapers / " +
                 "show themes\" → desktop action=wallpapers (the drawer lists every wallpaper and the theme presets).\n" +
@@ -541,7 +546,10 @@ class GeminiLiveClient(
         .put(decl("wallpaper",
             "Desktop background. set with description → an image is painted from the words (switches to " +
                 "desktop mode). Or kind=gradient/color with colors (comma-separated hex or names). clear = none.",
-            mapOf("action" to "set|clear", "description" to "Vivid visual description to paint.",
+            mapOf("action" to "set|clear",
+                "image" to "Use a picture that already exists, unchanged: \"focused\" for the window in focus, " +
+                    "or a widget title, or a path/URL. Never send this together with description.",
+                "description" to "Only to PAINT A NEW picture. Leave empty when reusing one.",
                 "kind" to "image|gradient|color|none.", "colors" to "Comma-separated colors for gradient/color.")))
         .put(decl("app_builder",
             "Mini web apps as widgets. open: put a previously built app back on the desktop by name; list: " +

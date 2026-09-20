@@ -1387,6 +1387,25 @@ class ThemeTool : AiTool {
 class WallpaperTool(private val context: Context) : AiTool {
     override val name = "wallpaper"
 
+    /**
+     * Take a copy of an existing picture into the wallpaper folder. A copy rather than a reference
+     * because the original may be a download, which is treated as scratch and swept within
+     * minutes; the wallpaper folder only sweeps what nothing refers to.
+     */
+    private fun adoptImage(src: String): File? = runCatching {
+        val bytes = if (WidgetOps.isUrl(src)) {
+            (java.net.URL(src).openConnection() as java.net.HttpURLConnection).run {
+                connectTimeout = 20_000; readTimeout = 20_000; instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "TapGem/1.0 (RayNeo X3 Pro)")
+                if (responseCode !in 200..299) { disconnect(); return null }
+                inputStream.use { it.readBytes() }.also { disconnect() }
+            }
+        } else File(src.removePrefix("file://")).takeIf { it.isFile }?.readBytes() ?: return null
+        if (bytes.isEmpty()) return null
+        val ext = src.substringAfterLast('.', "").lowercase(Locale.US).takeIf { it.length in 2..4 } ?: "png"
+        File(DesktopStore.wallpapersDir, "wp_${System.currentTimeMillis()}.$ext").apply { writeBytes(bytes) }
+    }.onFailure { Log.w("WallpaperTool", "could not adopt $src: ${it.message}") }.getOrNull()
+
     override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
         when (args.action) {
             "clear", "none", "remove" -> {
@@ -1399,6 +1418,24 @@ class WallpaperTool(private val context: Context) : AiTool {
                 val colors = rawColors.mapNotNull { ColorUtil.parse(it) }
                 val unknown = rawColors.filter { ColorUtil.isUnknown(it) }
                 val kind = args.str("kind", "type")?.lowercase(Locale.US)
+
+                // Either an explicit picture to use, or — when nothing else was asked for and a
+                // picture is the window in focus — that one. Naming a description, colours or a
+                // kind means the request was for something new, so none of this applies.
+                val ref = args.str("image", "from", "source", "photo", "picture", "use_image")
+                val adoptedFrom: Widget? = when {
+                    ref != null && !WidgetOps.isUrl(ref) && !ref.startsWith("/") ->
+                        DesktopBridge.resolveWidget(ref, "image")?.takeIf { it.type == WidgetType.IMAGE }
+                    ref == null && desc == null && colors.isEmpty() && kind == null ->
+                        DesktopBridge.activeWidgetId?.let { DesktopBridge.current().widget(it) }
+                            ?.takeIf { it.type == WidgetType.IMAGE }
+                    else -> null
+                }
+                val adopted: String? = when {
+                    ref != null && (WidgetOps.isUrl(ref) || ref.startsWith("/")) -> ref
+                    else -> adoptedFrom?.source?.takeIf { it.isNotBlank() }
+                }
+                val adoptedName = adoptedFrom?.title?.takeIf { it.isNotBlank() }
                 val wp: Wallpaper
                 var note = if (unknown.isEmpty()) "" else " (Ignored unknown colour ${unknown.joinToString(", ") { "\"$it\"" }}.)"
                 when {
@@ -1407,6 +1444,15 @@ class WallpaperTool(private val context: Context) : AiTool {
                         wp = Wallpaper(WallpaperKind.COLOR, colors.take(1), description = desc.orEmpty())
                     (kind == "gradient" || (kind == null && desc == null)) && colors.size >= 2 ->
                         wp = Wallpaper(WallpaperKind.GRADIENT, colors, description = desc.orEmpty())
+                    // A picture that already exists becomes the wallpaper as it is. "Make this my
+                    // wallpaper" should keep the photo; only "paint a wallpaper based on this" asks
+                    // for a new one, and that arrives as a description instead.
+                    adopted != null -> {
+                        val f = adoptImage(adopted)
+                            ?: return@withContext Result.success("Couldn't read that image to use as a wallpaper.")
+                        wp = Wallpaper(WallpaperKind.IMAGE, imagePath = f.absolutePath,
+                            description = adoptedName ?: "your picture")
+                    }
                     desc != null -> {
                         HudStateBridge.notice("Painting wallpaper…")
                         val prompt = "Wallpaper for a 640x480 landscape AR-glasses display. Rich, dark-friendly, high contrast, " +
@@ -1432,7 +1478,9 @@ class WallpaperTool(private val context: Context) : AiTool {
                 DesktopBridge.mutate { it.copy(wallpaper = wp, mode = if (wp.kind == WallpaperKind.NONE) it.mode else DesktopMode.DESKTOP) }
                 Result.success(when (wp.kind) {
                     WallpaperKind.NONE -> "Wallpaper cleared."
-                    WallpaperKind.IMAGE -> "Painted a new wallpaper: $desc. Desktop mode is on.$note"
+                    WallpaperKind.IMAGE -> (if (adopted != null)
+                        "Using ${adoptedName ?: "that picture"} as the wallpaper, as it is."
+                        else "Painted a new wallpaper: $desc.") + " Desktop mode is on.$note"
                     else -> "Wallpaper set.$note Desktop mode is on."
                 })
             }
