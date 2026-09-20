@@ -1547,7 +1547,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             "eval" -> if (!com.tapgem.app.BuildConfig.DEBUG || !jsOn) done("Not available.") else js(wv, "(function(){ return ${cmd.arg("js") ?: "null"}; })()") { done(it ?: "null") }
             "inspect" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.") else js(wv, "__tg.inspect()") { done((it ?: "Nothing to inspect.") + "\n" + soundLine()) }
-            "read" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.") else js(wv, "__tg.read()") { done(it ?: "Nothing to read.") }
+            "read" -> if (!jsOn) done("\"$title\" is an ebook — use chapter navigation.")
+                else js(wv, "__tg.read(${cmd.arg("cap")?.toIntOrNull()?.coerceIn(500, 400_000) ?: 2500})") { done(it ?: "Nothing to read.") }
             "click" -> {
                 val target = cmd.arg("target_text", "text", "label", "target") ?: ""
                 val index = cmd.arg("index")?.toDoubleOrNull()?.toInt() ?: 0
@@ -1852,7 +1853,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
  /* Short "what's here now" appended to action results so the model can go straight to the next step. */
  T.digest=function(n){ var o=T.collect(); var nw=fresh(o); var ls=lines(o,n||12,true); var s='Now on: '+(document.title||location.host)+'.'; var dl=T.dialogLine(); if(dl) s+=' '+dl; else if(nw.length&&nw.length<=6&&nw.length<o.length/2) s+=' New: '+nw.map(function(x){ return x.label; }).join(' | ')+'.'; var m=T.mediaLine(); if(m) s+=' '+m+'.'; if(ls.length) s+=' Items: '+ls.join(' | ')+(o.length>ls.length?(' | +'+(o.length-ls.length)+' more (inspect)'):''); return s; };
  function deepText(node,acc,depth){ if(acc.n>6000||depth>40) return; if(node.nodeType===3){ var s=node.nodeValue.replace(/\s+/g,' ').trim(); if(s){ acc.parts.push(s); acc.n+=s.length; } return; } if(node.nodeType!==1&&node.nodeType!==11&&node.nodeType!==9) return; if(node.nodeType===1){ var tg=node.tagName; if(tg==='SCRIPT'||tg==='STYLE'||tg==='NOSCRIPT'||tg==='TEMPLATE') return; try{ var cs=getComputedStyle(node); if(cs.display==='none'||cs.visibility==='hidden') return; }catch(e){} if(node.shadowRoot) deepText(node.shadowRoot,acc,depth+1); } var c=node.childNodes; for(var i=0;i<c.length;i++) deepText(c[i],acc,depth+1); }
- T.read=function(){ var m=document.querySelector('main,article,[role=main]')||document.body; var t=(m&&m.innerText||'').replace(/\n{3,}/g,'\n\n').trim(); if(t.length<200){ var acc={parts:[],n:0}; deepText(document.body,acc,0); t=acc.parts.join(' · '); } return 'Title: '+document.title+'\nURL: '+location.href+'\n\n'+t.slice(0,2500)+(t.length>2500?'…':''); };
+ /* cap: 2500 is what goes straight to the conversation; a bigger slice is for the reader model,
+    which has room for it and hands back something short. */
+ T.read=function(cap){ var m=document.querySelector('main,article,[role=main]')||document.body; var t=(m&&m.innerText||'').replace(/\n{3,}/g,'\n\n').trim(); if(t.length<200){ var acc={parts:[],n:0}; deepText(document.body,acc,0); t=acc.parts.join(' · '); } cap=cap||2500; return 'Title: '+document.title+'\nURL: '+location.href+'\n\n'+t.slice(0,cap)+(t.length>cap?'…':''); };
  T.tapPoint=function(el){ var r=el.getBoundingClientRect(); var cx=r.left+r.width/2, cy=r.top+r.height/2; var cands=[[cx,cy],[cx,r.top+r.height*0.25],[cx,r.top+r.height*0.75],[r.left+r.width*0.25,cy],[r.left+r.width*0.75,cy],[r.left+r.width*0.25,r.top+r.height*0.25],[r.left+r.width*0.75,r.top+r.height*0.25]]; var best=null; for(var i=0;i<cands.length;i++){ var p=[Math.round(cands[i][0]),Math.round(cands[i][1])]; if(p[0]<1||p[1]<1||p[0]>=innerWidth-1||p[1]>=innerHeight-1) continue; if(!best) best=p; if(!T.covered(el,p)) return p; } return best||[Math.round(cx),Math.round(cy)]; };
  T.center=function(el){ T.pending=el; try{ el.scrollIntoView({block:'center',inline:'center',behavior:'instant'}); }catch(e){ el.scrollIntoView({block:'center',inline:'center'}); } return T.tapPoint(el); };
  T.pendingPoint=function(){ var el=T.pending; if(!el) return null; var p=T.tapPoint(el); return {tap:p, settled:!T.covered(el,p)}; };

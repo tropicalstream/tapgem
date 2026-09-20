@@ -1774,6 +1774,11 @@ class MediaTool(private val context: Context) : AiTool {
 class WebTool(private val context: Context) : AiTool {
     override val name = "web"
 
+    companion object {
+        /** A page this short is its own summary: hand it over untouched, no second call. */
+        private const val SHORT_PAGE = 1_200
+    }
+
     private val actions = setOf("search", "inspect", "read", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
 
     override suspend fun execute(args: Args): Result<String> {
@@ -1819,6 +1824,7 @@ class WebTool(private val context: Context) : AiTool {
             val dir = (args.str("direction", "value") ?: "in").lowercase(Locale.US)
             return WidgetTool(context).execute(Args(mapOf("action" to "navigate", "id" to w.id, "nav" to (if (dir.startsWith("out")) "out" else "in")) + (args.str("amount", "levels")?.let { mapOf("value" to it) } ?: emptyMap())))
         }
+        if (action == "read") return Result.success(readPage(w, args))
         val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
         // A search that landed on whichever window happened to be active: say which site answered,
         // so "restaurants near X" typed into Radio Garden is recognised as the wrong tool, not a result.
@@ -1827,6 +1833,35 @@ class WebTool(private val context: Context) : AiTool {
             return Result.success("Searched within $site (the active window) — for places use widget add type=map, for another site open it first. $result")
         }
         return Result.success(result)
+    }
+
+    /**
+     * Read a page properly, rather than posting the first 2500 characters of it into the
+     * conversation and hoping the answer was near the top.
+     *
+     * The page hands over as much as it has; a cheap reader model turns that into the few lines
+     * worth saying, guided by the question when there is one. Two things come out of that: long
+     * articles stop being truncated before anyone sees them, and the expensive conversation gets a
+     * short answer instead of pages of raw text. When the page is short enough to speak for itself
+     * there is no second call at all — no cost, no added wait.
+     */
+    private suspend fun readPage(w: Widget, args: Args): String {
+        val focus = args.str("query", "question", "about", "find", "text")
+        // 400k characters is roughly 100k tokens — a tenth of the reader's window, and enough for a
+        // whole book. Measured: a 163k-character Gutenberg page came back intact, and at 120k the
+        // answer to a question about its last chapter had been cut off.
+        val raw = WebCommandBus.execute(w.id, WebCommandBus.Command("read", mapOf("cap" to "400000")),
+            timeoutMs = 30_000L)
+        if (raw.length <= SHORT_PAGE || raw.startsWith("\"")) return raw
+        val system = "You are reading a web page aloud for someone wearing AR glasses. Answer from " +
+            "the text you are given and nothing else; if it does not say, say so. No preamble, no " +
+            "markdown, no bullet characters. Keep it under 120 words unless asked for detail."
+        val ask = if (focus.isNullOrBlank()) "Summarise what this page says."
+                  else "From this page, answer: $focus"
+        return GeminiRest.generateText(context, "$ask\n\n---\n$raw", system = system,
+            model = GeminiRest.READ_MODEL)
+            // Reading failed, but the text is in hand — a truncated page beats no page.
+            .getOrElse { raw.take(SHORT_PAGE) + "\n\n(Couldn't condense this; showing the start.)" }
     }
 
     /** Registrable-ish host for "same site" checks: www./m./open. prefixes dropped. */

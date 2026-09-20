@@ -510,7 +510,9 @@ class GeminiLiveClient(
                 "enter (opens the box if it hides behind an icon) — it searches within that site only, e.g. " +
                 "songs on Spotify, stations on Radio Garden; it is NOT a web search. Places, restaurants, " +
                 "'near me' → widget add type=map; facts → widget add type=live. inspect: full numbered list of buttons, links, fields, rows and media, " +
-                "including ones below the fold. read: page title and main text. click: the item whose " +
+                "including ones below the fold. read: what the page says — the WHOLE page is read, not just the " +
+                "top of it, and comes back condensed, so use it freely on long articles. Pass query to ask " +
+                "something specific of the page (\"what does it say about X\") instead of reading it all. click: the item whose " +
                 "visible text/label matches target_text, or index from the last list. type: put text into " +
                 "the field matched by field_text (label/placeholder); submit=true presses enter. press: a " +
                 "key (enter|escape|space|tab|arrow_down|arrow_up|backspace). scroll: direction " +

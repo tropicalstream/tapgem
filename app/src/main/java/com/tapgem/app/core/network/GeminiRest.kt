@@ -23,6 +23,14 @@ object GeminiRest {
 
     private const val TAG = "GeminiRest"
     const val TEXT_MODEL = "gemini-3.8-flash"
+
+    /**
+     * Reading, as opposed to writing. Pulling the sense out of a page someone is already looking at
+     * is comprehension, not invention, and the lite tier does it for less — with the same
+     * million-token window, so a whole article fits where the raw text never would.
+     * Generation (apps, live cards, prompt widgets) stays on [TEXT_MODEL], which is better at it.
+     */
+    const val READ_MODEL = "gemini-3.5-flash-lite"
     const val IMAGE_MODEL = "gemini-3.1-flash-image"
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 
