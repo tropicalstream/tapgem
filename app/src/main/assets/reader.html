@@ -29,10 +29,15 @@ w.said{color:var(--said)}
 w.now{color:#0b1016;background:var(--now);border-radius:4px;padding:1px 3px;font-weight:600}
 #wait{color:var(--dim);font-size:13px;padding:6px 0}
 #done{padding:16px;color:var(--dim);font-size:14px}
+/* Why a reading stopped, said on the page itself. Run 3 ended on a spent speech quota and the
+   window kept the last word lit with no other change — indistinguishable from a pause, for twelve
+   minutes. Someone following the highlight deserves to be told the voice is not coming back. */
+#note{flex:none;display:none;padding:6px 12px;border-top:1px solid #1a2230;color:var(--now);font-size:12px}
 </style></head>
 <body>
 <div id="bar"><b id="title">Reading</b><span id="pos"></span><span id="prog"><i id="progi"></i></span></div>
 <div id="text"></div>
+<div id="note"></div>
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
@@ -53,6 +58,12 @@ function box(){ return $('text'); }
 window.__read = {
   /* The passage text, before its audio exists. */
   show: function(k, title, text, doneChars, totalChars){
+    /* Block 1 is a new reading: clear the page, the schedule and the record. Without this the
+       previous reading's text stayed above the new one and its trace entries were still counted
+       in the audit — run 3's record opened with two passages from an abandoned attempt. */
+    if(k===1){ clearTimeout(timer); box().innerHTML=''; blocks={}; cur=null; trace=[]; lastShown=0;
+               progress={done:0,total:0,start:-1}; $('progi').style.width='0'; $('pos').textContent='';
+               window.__read.note(''); }
     $('title').textContent = title || 'Reading';
     progress.total=totalChars||0;
     if(progress.start<0) progress.start=Math.max(0,(doneChars||0)-String(text||'').length);
@@ -94,6 +105,13 @@ window.__read = {
   },
   /* The last sample of block k has been heard. */
   ended: function(k){ var b=blocks[k]; trace.push({ev:'end', p:k, t:Date.now(), lit:b?b.idx:-1, n:b?b.n:0}); return true; },
+  /* A line at the foot of the window: why the reading stopped, without disturbing the text. */
+  note: function(msg){
+    var n=$('note');
+    if(!msg){ n.style.display='none'; n.textContent=''; return true; }
+    n.textContent=msg; n.style.display='block';
+    return true;
+  },
   stop: function(){ clearTimeout(timer); trace.push({ev:'stop', p:cur?cur.k:0, t:Date.now()}); return true; },
   finished: function(msg){
     clearTimeout(timer);

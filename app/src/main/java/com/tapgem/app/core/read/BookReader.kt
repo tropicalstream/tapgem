@@ -55,6 +55,10 @@ object BookReader {
      */
     private const val MIN_SECS_PER_CHAR = 0.040
 
+    /** When the speech model's daily quota returns, and what to say about it meanwhile. */
+    @Volatile private var quietUntil = 0L
+    @Volatile private var limitMsg: String? = null
+
     /**
      * Playback speed, pitch preserved. Every voice reads real prose faster than a reading
      * specialist's ceiling for this population (170 wpm): measured on three passages of the book,
@@ -86,6 +90,7 @@ object BookReader {
               bookTitle: String = "Reading",
               onProgress: ((Int, Int) -> Unit)? = null, onDone: ((String) -> Unit)? = null) {
         stop()
+        if (System.currentTimeMillis() >= quietUntil) limitMsg = null   // yesterday's quota is not today's
         val clean = tidy(text)
         if (clean.isBlank()) { onDone?.invoke("Nothing to read."); return }
         running.set(true)
@@ -130,8 +135,13 @@ object BookReader {
                         scope.async { voice(context, clean.substring(s2, e2).trim()) }
                     } else null
                     if (audio == null || audio.isEmpty()) {
-                        Log.w(TAG, "no audio for passage at $start after retries; stopping")
-                        onDone?.invoke("The reading voice stopped working."); break
+                        // Say it on the page too. A reading that dies silently leaves the last
+                        // word lit and looks exactly like a pause — run 3 sat that way for twelve
+                        // minutes with nothing on screen to say the voice had gone.
+                        val why = limitMsg ?: "The reading voice stopped working."
+                        Log.w(TAG, "no audio for passage at $start; stopping — $why")
+                        page(id, "__read.note(${js(why)})")
+                        onDone?.invoke(why); break
                     }
 
                     val secs = audio.size / 2.0 / GeminiRest.SPEECH_RATE_HZ / SPEED
@@ -226,25 +236,69 @@ object BookReader {
     // ── voice ──────────────────────────────────────────────────────
 
     /**
-     * Speech for one passage, or null after three tries. The first version gave up on the first
-     * failed request, so a single transient error from the speech service ended the whole
-     * reading — measured: run 2 stopped dead after one page for exactly that. Errors are retried
-     * with a pause; a truncated rendering is asked for again too.
+     * Speech for one passage, or null when it cannot be had. The first version gave up on the
+     * first failed request, so a single transient error ended a whole reading — run 2 stopped
+     * dead after one page for exactly that. Errors are retried with a pause, and a truncated
+     * rendering is asked for again.
+     *
+     * A 429 is not a failure of the same kind. A per-minute rate limit is a pause: wait it out
+     * and carry on reading, because ending a book over a twenty-second wait is far worse for the
+     * reader than the wait. The daily cap is the opposite — run 3 spent it mid-test and then
+     * burned six pointless retries in five seconds — so it is recorded and every later request
+     * skipped until the quota returns, with something true to say about why.
      */
     private fun voice(context: Context, passage: String): ByteArray? {
         if (passage.isBlank()) return ByteArray(0)
+        if (System.currentTimeMillis() < quietUntil) return null
         var short: ByteArray? = null
-        for (attempt in 0 until 3) {
-            if (attempt > 0) Thread.sleep(1_500L * attempt)
-            val pcm = GeminiRest.speak(context, passage, voice)
-                .onFailure { Log.w(TAG, "speech request failed (try ${attempt + 1}): ${it.message}") }
-                .getOrNull() ?: continue
+        var tries = 0       // requests that failed and are worth making again
+        var waits = 0       // pauses for a rate limit, which is not a failure
+        while (tries < 3 && waits < 3 && running.get()) {
+            val result = GeminiRest.speak(context, passage, voice)
+            val limit = result.exceptionOrNull() as? GeminiRest.SpeechLimited
+            if (limit != null && limit.perDay) {
+                quietUntil = System.currentTimeMillis() + limit.retrySecs * 1_000L
+                limitMsg = "Today's reading voice allowance is used up. It comes back in ${humanWait(limit.retrySecs)}."
+                Log.w(TAG, "speech daily quota spent; voice returns in ${limit.retrySecs}s")
+                return null
+            }
+            if (limit != null) {
+                val secs = limit.retrySecs.coerceIn(5L, 90L)
+                Log.i(TAG, "speech rate limited; waiting ${secs}s")
+                waits++
+                if (!nap(secs * 1_000L)) return null
+                continue
+            }
+            val pcm = result
+                .onFailure { Log.w(TAG, "speech request failed (try ${tries + 1}): ${it.message}") }
+                .getOrNull()
+            if (pcm == null) { tries++; nap(1_500L * tries); continue }
             val secs = pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
             if (secs >= passage.length * MIN_SECS_PER_CHAR) return pcm
             Log.w(TAG, "speech too short (${"%.1f".format(secs)}s for ${passage.length} chars) — asking again")
-            short = pcm
+            short = pcm; tries++
         }
         return short
+    }
+
+    /** Wait, but give up the instant the reading is stopped. False if it was. */
+    private fun nap(ms: Long): Boolean {
+        val until = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < until) {
+            if (!running.get()) return false
+            Thread.sleep(200)
+        }
+        return running.get()
+    }
+
+    /** A wait said the way someone would say it, since this ends up spoken. */
+    private fun humanWait(secs: Long): String {
+        val mins = Math.round(secs / 60.0)
+        return when {
+            mins <= 1L -> "a minute"
+            mins < 90L -> "about $mins minutes"
+            else -> { val h = Math.round(secs / 3600.0); if (h == 1L) "about an hour" else "about $h hours" }
+        }
     }
 
     /** Poll until the page has loaded and can take instructions, up to ten seconds. */

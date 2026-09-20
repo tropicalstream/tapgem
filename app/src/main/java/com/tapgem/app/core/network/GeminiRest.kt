@@ -43,6 +43,37 @@ object GeminiRest {
     /** 24 kHz mono PCM16 — what [SPEECH_MODEL] returns, and what the reader plays. */
     const val SPEECH_RATE_HZ = 24_000
 
+    /**
+     * The speech model refused because a limit was hit. Two very different things arrive as the
+     * same 429, and a reader has to tell them apart: a per-minute rate limit, which is over in
+     * seconds and is merely a pause in a reading, and the free tier's cap of 100 requests per day
+     * per model, which is the end of one. Measured mid-test on the glasses' key: quotaMetric
+     * `generate_requests_per_model_per_day`, limit 100, retryDelay 6931s.
+     */
+    class SpeechLimited(val retrySecs: Long, val perDay: Boolean) :
+        IllegalStateException("speech limited (${if (perDay) "daily quota" else "rate"}); retry in ${retrySecs}s")
+
+    /** Read the kind of limit and the wait out of the error body the API sends with a 429. */
+    private fun limitFrom(raw: String): SpeechLimited {
+        val err = runCatching { JSONObject(raw).optJSONObject("error") }.getOrNull()
+        val details = err?.optJSONArray("details")
+        var secs = 0L
+        var perDay = err?.optString("message")?.contains("per_day") == true
+        for (i in 0 until (details?.length() ?: 0)) {
+            val d = details?.optJSONObject(i) ?: continue
+            val type = d.optString("@type")
+            if (type.endsWith("RetryInfo"))
+                secs = d.optString("retryDelay").removeSuffix("s").substringBefore('.').toLongOrNull() ?: 0L
+            if (type.endsWith("QuotaFailure")) {
+                val v = d.optJSONArray("violations")
+                for (j in 0 until (v?.length() ?: 0))
+                    if (v?.optJSONObject(j)?.optString("quotaMetric")?.contains("per_day") == true) perDay = true
+            }
+        }
+        // A wait measured in hours is a daily cap whatever the body called it.
+        return SpeechLimited(secs, perDay || secs > 300)
+    }
+
     /** Raw PCM for [text], or a failure. Voices are Gemini's prebuilt set; Kore reads plainly. */
     fun speak(context: Context, text: String, voice: String = "Kore"): Result<ByteArray> =
         callAudio(context, text, voice)
@@ -64,6 +95,7 @@ object GeminiRest {
             .build()
         audioHttp.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
+            if (resp.code == 429) throw limitFrom(raw)
             if (!resp.isSuccessful) throw IllegalStateException("speech HTTP ${resp.code}: ${raw.take(140)}")
             val part = JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)
                 ?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)

@@ -1860,6 +1860,12 @@ class WebTool(private val context: Context) : AiTool {
                     Args(mapOf("w" to "420", "h" to "330", "anchor" to "bottom right")))
                 LiveApps.window(LiveApps.READER)?.id
             }
+            // In front of the book. The window it reads from is usually bigger and was opened
+            // later, so the read-along sat underneath it — measured: the lit word was completely
+            // hidden behind the book's cover art in one frame of run 3, which defeats the point.
+            if (reader != null) DesktopBridge.mutate(pushUndo = false) { d ->
+                d.widget(reader)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d
+            }
             com.tapgem.app.core.read.BookReader.start(context, reader, text, from, w.title,
                 onProgress = { at, _ -> DesktopBridge.mutateWidget(w.id) { it.withState("readAt" to at.toString()) } },
                 onDone = { msg -> HudStateBridge.notice(msg) })
