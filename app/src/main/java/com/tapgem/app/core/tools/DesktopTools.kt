@@ -1388,6 +1388,45 @@ class WallpaperTool(private val context: Context) : AiTool {
     override val name = "wallpaper"
 
     /**
+     * The picture a page is actually showing, if it is showing one.
+     *
+     * Capturing the window was the wrong default for this: it keeps the site's own furniture —
+     * search bar, labels, buttons — baked into the wallpaper, which is never what "use this image"
+     * meant. So ask the page instead. The biggest image actually drawn on screen is the one being
+     * looked at; anything under 120px square is an icon or a thumbnail in a grid, not the subject.
+     */
+    private suspend fun pageImage(w: Widget): String? {
+        if (!w.type.isWebLike) return null
+        val js = """
+            (function(){
+              var best=null,area=0,i,im,r;
+              var all=document.querySelectorAll('img');
+              for(i=0;i<all.length;i++){
+                im=all[i]; r=im.getBoundingClientRect();
+                if(r.width<120||r.height<120) continue;
+                if(r.bottom<0||r.top>innerHeight||r.right<0||r.left>innerWidth) continue;
+                if(r.width*r.height>area){area=r.width*r.height;best=im;}
+              }
+              if(best) return best.currentSrc||best.src||'';
+              /* nothing as an <img>: a hero photo is often a background instead */
+              var els=document.querySelectorAll('*'),j,bg,m,el,rr,a2=0,found='';
+              for(j=0;j<els.length&&j<400;j++){
+                el=els[j]; rr=el.getBoundingClientRect();
+                if(rr.width<200||rr.height<200) continue;
+                bg=getComputedStyle(el).backgroundImage||'';
+                m=bg.match(/url\(["']?(.*?)["']?\)/);
+                if(m&&rr.width*rr.height>a2){a2=rr.width*rr.height;found=m[1];}
+              }
+              return found;
+            })()
+        """.trimIndent()
+        val raw = runCatching {
+            WebCommandBus.execute(w.id, WebCommandBus.Command("eval", mapOf("js" to js)), 10_000L)
+        }.getOrNull().orEmpty().trim().trim('"')
+        return raw.takeIf { it.startsWith("http") || it.startsWith("data:image") }
+    }
+
+    /**
      * Paint a window as it currently looks into the wallpaper folder. Captured at the canvas width
      * and the window's own proportions, so nothing is letterboxed; the wallpaper view crops to fill
      * from there. A window smaller than the canvas is being enlarged, so it will look soft.
@@ -1408,7 +1447,9 @@ class WallpaperTool(private val context: Context) : AiTool {
      * minutes; the wallpaper folder only sweeps what nothing refers to.
      */
     private fun adoptImage(src: String): File? = runCatching {
-        val bytes = if (WidgetOps.isUrl(src)) {
+        val bytes = if (src.startsWith("data:image")) {
+            android.util.Base64.decode(src.substringAfter("base64,", ""), android.util.Base64.DEFAULT)
+        } else if (WidgetOps.isUrl(src)) {
             (java.net.URL(src).openConnection() as java.net.HttpURLConnection).run {
                 connectTimeout = 20_000; readTimeout = 20_000; instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "TapGem/1.0 (RayNeo X3 Pro)")
@@ -1417,7 +1458,8 @@ class WallpaperTool(private val context: Context) : AiTool {
             }
         } else File(src.removePrefix("file://")).takeIf { it.isFile }?.readBytes() ?: return null
         if (bytes.isEmpty()) return null
-        val ext = src.substringAfterLast('.', "").lowercase(Locale.US).takeIf { it.length in 2..4 } ?: "png"
+        val ext = if (src.startsWith("data:")) src.substringAfter("data:image/").substringBefore(';').take(4)
+            else src.substringAfterLast('.', "").lowercase(Locale.US).takeIf { it.length in 2..4 } ?: "png"
         File(DesktopStore.wallpapersDir, "wp_${System.currentTimeMillis()}.$ext").apply { writeBytes(bytes) }
     }.onFailure { Log.w("WallpaperTool", "could not adopt $src: ${it.message}") }.getOrNull()
 
@@ -1452,7 +1494,9 @@ class WallpaperTool(private val context: Context) : AiTool {
                 val adopted: String? = when {
                     ref != null && (WidgetOps.isUrl(ref) || ref.startsWith("/")) -> ref
                     adoptedFrom?.type == WidgetType.IMAGE -> adoptedFrom.source.takeIf { it.isNotBlank() }
-                    adoptedFrom != null -> captureWindow(adoptedFrom)?.absolutePath
+                    // A page: take the picture it is showing. Only if it has none is a picture of
+                    // the window itself the best available answer.
+                    adoptedFrom != null -> pageImage(adoptedFrom) ?: captureWindow(adoptedFrom)?.absolutePath
                     else -> null
                 }
                 val adoptedName = adoptedFrom?.title?.takeIf { it.isNotBlank() }
