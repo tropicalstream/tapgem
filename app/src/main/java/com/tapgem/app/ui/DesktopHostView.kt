@@ -34,7 +34,17 @@ class DesktopHostView @JvmOverloads constructor(
     attrs: AttributeSet? = null
 ) : FrameLayout(context, attrs) {
 
-    companion object { private const val TAG = "DesktopHost" }
+    companion object {
+        private const val TAG = "DesktopHost"
+
+        /**
+         * How much of a picture must survive cropping for cropping to still be worth it. 0.7 keeps
+         * the fill for ordinary photo shapes — 16:9 keeps 0.75, square keeps 0.75, 4:3 keeps all —
+         * and switches to showing the whole picture for portrait ones, which is where cropping
+         * stops being a crop and starts being a zoom.
+         */
+        private const val CROP_BUDGET = 0.7f
+    }
 
     private enum class Kind { MOVE, RESIZE, CONTENT }
     /** CONTENT = a synthetic finger drag inside a window (scroll a page, pan a map). */
@@ -121,6 +131,7 @@ class DesktopHostView @JvmOverloads constructor(
                 (if (wp.colors.size >= 2) wp.colors else wp.colors + 0xFF000000.toInt()).toIntArray()))
             WallpaperKind.IMAGE -> {
                 val path = wp.imagePath ?: return
+                wallpaperView.scaleType = ImageView.ScaleType.CENTER_CROP   // until the size is known
                 wallpaperView.setImageDrawable(GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF0A0F1C.toInt(), 0xFF02040A.toInt())))
                 Thread({
                     val bmp = runCatching {
@@ -130,10 +141,32 @@ class DesktopHostView @JvmOverloads constructor(
                         while (o.outWidth / (s * 2) >= Logical.WIDTH && o.outHeight / (s * 2) >= Logical.HEIGHT) s *= 2
                         BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = s })
                     }.getOrNull()
-                    main.post { if (wallpaperKey == key && bmp != null) wallpaperView.setImageBitmap(bmp) }
+                    main.post {
+                        if (wallpaperKey == key && bmp != null) {
+                            wallpaperView.scaleType = fillFor(bmp.width, bmp.height)
+                            wallpaperView.setImageBitmap(bmp)
+                        }
+                    }
                 }, "tapgem-wallpaper").start()
             }
         }
+    }
+
+    /**
+     * Fill the glasses, or show the whole picture?
+     *
+     * Cropping to fill is right for anything near the display's shape — a photo, a painted
+     * wallpaper — and wrong for anything far off it: a portrait picture cropped to a landscape
+     * display is reduced to a zoomed-in band through its middle. So crop while that costs little,
+     * and once it would throw away more than [CROP_BUDGET] of the picture, fit the whole thing
+     * instead. Black is transparent on the glasses, so what surrounds a fitted picture is the room,
+     * not bars — the reason fitting is a better answer here than it would be on a monitor.
+     */
+    private fun fillFor(iw: Int, ih: Int): ImageView.ScaleType {
+        if (iw <= 0 || ih <= 0) return ImageView.ScaleType.CENTER_CROP
+        val ratio = (iw.toFloat() / ih) / (Logical.WIDTH.toFloat() / Logical.HEIGHT)
+        val kept = minOf(ratio, 1f / ratio)      // the fraction still visible after cropping
+        return if (kept >= CROP_BUDGET) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
     }
 
     private fun renderWidgets(d: Desktop) {
