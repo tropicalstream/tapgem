@@ -3,10 +3,8 @@ package com.tapgem.app.core.read
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
-import com.tapgem.app.core.bridge.DesktopBridge
 import com.tapgem.app.core.bridge.WebCommandBus
 import com.tapgem.app.core.network.GeminiRest
 import kotlinx.coroutines.CoroutineScope
@@ -20,20 +18,18 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Reads something aloud, passage after passage, turning the page as it goes.
+ * Reads something aloud, passage after passage, with the words lit on screen as they are said.
  *
  * Why this exists rather than letting the assistant read: the Live model ends a spoken turn after
- * roughly a paragraph. Measured twice on the glasses — handed several pages it spoke 336
- * characters and stopped; handed a short passage and told explicitly to continue, it spoke 271 and
- * never called back. No prompt fixes that, because the limit is the model's.
+ * roughly a paragraph — measured twice on the glasses, 336 then 271 characters, with no further
+ * tool call however plainly it was asked. So the app does the reading: a speech model voices each
+ * passage, and this loop, not the conversation, decides what comes next.
  *
- * So the app does the reading. A separate speech model voices each passage, and the loop here —
- * not the conversation — decides what comes next. That also puts page-turning somewhere it can
- * actually work: the page moves when a passage starts, so the words on screen are the words being
- * spoken.
- *
- * Generation runs ahead of playback (about 26s of work for 65s of speech), so the next passage is
- * prepared while the current one plays and the gap between them is silence, not waiting.
+ * The reading surface is a page of the exact words handed to the speech model, which lights each
+ * word on a schedule inferred from the audio's length. That is for people who follow text more
+ * easily with something holding their place, and the first version taught what that population
+ * cannot tolerate: a highlight that skips, text that moves backwards, and a lit word off screen.
+ * Each had a specific cause here, called out where it was fixed.
  */
 object BookReader {
     private const val TAG = "BookReader"
@@ -41,68 +37,116 @@ object BookReader {
     /** Big enough to be worth a request, small enough that a stop feels immediate. */
     private const val PASSAGE = 1_000
 
+    /**
+     * The voice. Pace is a property of the voice, not a parameter — the API rejects every rate
+     * field, and an instruction to read slowly made Kore faster. Measured over the same 1000
+     * characters: Kore 177 wpm, Charon 186, Aoede 192, Zephyr 142, Rasalgethi 143, Iapetus 148.
+     * A rendition varies by about 20% either way (Umbriel read the same text at 169 and 195), so
+     * a voice near the edge of the acceptable range will cross it on some passages. A reading
+     * specialist's range for this population is 100–170 wpm, ideally 120–150; Zephyr sits in the
+     * middle with room to vary in both directions.
+     */
+    @Volatile var voice: String = "Zephyr"
+
+    /**
+     * Audio shorter than this per character means the model did not read the whole passage —
+     * seen once as a 1000-character passage rendered in 30 s at 383 wpm. A schedule stretched
+     * over that audio would light every word while the voice said half of them. Ask again.
+     */
+    private const val MIN_SECS_PER_CHAR = 0.040
+
+    /**
+     * Playback speed, pitch preserved. Every voice reads real prose faster than a reading
+     * specialist's ceiling for this population (170 wpm): measured on three passages of the book,
+     * Zephyr 147–194, Iapetus 164–203, Rasalgethi 174–212. The API has no rate control and an
+     * instruction to slow down made it faster, so the stretch happens here, on the device: Android
+     * time-stretches the track without changing pitch. At 0.82, 194 becomes 159 and 147 becomes
+     * 121 — inside 100–170 across the whole measured spread, and mostly inside the 120–150 ideal.
+     */
+    private const val SPEED = 0.82f
+
     private val scope = CoroutineScope(Dispatchers.IO)
     private val running = AtomicBoolean(false)
     private var job: Job? = null
     @Volatile private var track: AudioTrack? = null
+    @Volatile private var readerId: String? = null
+    @Volatile private var title: String = "Reading"
 
     val isReading: Boolean get() = running.get()
 
-    /** Where in [text] the reader is, so stopping and starting again carries on. */
+    /** Where in the text the reader is, so stopping and starting again carries on. */
     @Volatile var position: Int = 0
         private set
 
     /**
-     * Start reading [text] aloud for the window [widgetId], from [from].
+     * Start reading [text] aloud, lighting words in the window [readerId], from [from].
      * Returns at once; [onDone] runs when the reading ends or is stopped.
      */
     fun start(context: Context, readerId: String?, text: String, from: Int = 0,
               bookTitle: String = "Reading",
               onProgress: ((Int, Int) -> Unit)? = null, onDone: ((String) -> Unit)? = null) {
         stop()
-        if (text.isBlank()) { onDone?.invoke("Nothing to read."); return }
+        val clean = tidy(text)
+        if (clean.isBlank()) { onDone?.invoke("Nothing to read."); return }
         running.set(true)
+        this.readerId = readerId
         title = bookTitle
-        position = from.coerceIn(0, text.length)
-        val readerId = readerId
+        position = snapToSentence(clean, from.coerceIn(0, clean.length))
+        val id = readerId
         job = scope.launch {
             var spoken = 0
             try {
+                // The window was created a moment ago and may not have loaded its page yet. The
+                // first show() used to fall into the page's not-ready guard and vanish — a whole
+                // passage played to an empty window. Wait until the page answers.
+                awaitPage(id)
+
+                // Text goes up a passage ahead of the voice: the words are known long before the
+                // audio is, and a reader following the lit word needs the lines below it to be the
+                // next words, not an empty box. Blocks are numbered in the order they are shown.
+                val blockOf = HashMap<Int, Int>(); var blocks = 0
+                suspend fun show(from: Int, to: Int) {
+                    blocks++; blockOf[from] = blocks
+                    page(id, "__read.show($blocks, ${js(title)}, ${js(clean.substring(from, to).trim())}, $to, ${clean.length})")
+                }
+
                 var next: Deferred<ByteArray?>? = null
-                while (isActive && running.get() && position < text.length) {
+                while (isActive && running.get() && position < clean.length) {
                     val start = position
-                    val end = cut(text, start)
-                    val passage = text.substring(start, end).trim()
+                    val end = cut(clean, start)
+                    val passage = clean.substring(start, end).trim()
                     position = end
 
-                    // The audio for this passage was usually started last time round.
-                    val audio = (next ?: scope.async { voice(context, passage) }).await()
-                    // Prepare the following one while this plays.
-                    val after = if (position < text.length) {
-                        val s2 = position; val e2 = cut(text, s2)
-                        scope.async { voice(context, text.substring(s2, e2).trim()) }
-                    } else null
+                    if (blockOf[start] == null) show(start, end)
+                    val block = blockOf[start]!!
+                    if (end < clean.length && blockOf[end] == null) show(end, cut(clean, end))
 
+                    // A failed request must not end the reading: one more try, in line, before
+                    // giving up. (voice() already retries inside itself.)
+                    val audio = (next ?: scope.async { voice(context, passage) }).await()
+                        ?: voice(context, passage)
+                    val after = if (position < clean.length) {
+                        val s2 = position; val e2 = cut(clean, s2)
+                        scope.async { voice(context, clean.substring(s2, e2).trim()) }
+                    } else null
                     if (audio == null || audio.isEmpty()) {
-                        Log.w(TAG, "no audio for passage at $start; stopping")
+                        Log.w(TAG, "no audio for passage at $start after retries; stopping")
                         onDone?.invoke("The reading voice stopped working."); break
                     }
-                    // Show the exact words about to be spoken, with a duration for each, then
-                    // start the page's clock at the moment the audio does. Highlighting a separate
-                    // rendering could only ever approximate this; here the lit word is the word.
-                    val secs = audio.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
-                    showPassage(readerId, passage, secs, end, text.length)
-                    onProgress?.invoke(end, text.length)
-                    play(audio, readerId)
+
+                    val secs = audio.size / 2.0 / GeminiRest.SPEECH_RATE_HZ / SPEED
+                    page(id, "__read.retime($block, ${wordTimings(passage, secs).joinToString(",", "[", "]")}, ${(secs * 1000).toInt()})")
+                    onProgress?.invoke(end, clean.length)
+                    play(audio, id, block)
                     spoken++
                     next = after
                 }
-                val msg = if (position >= text.length) "Finished reading." else "Stopped after $spoken passage(s)."
-                readerId?.let { id -> runCatching { WebCommandBus.execute(id,
-                    WebCommandBus.Command("eval", mapOf("js" to "window.__read && __read.finished(${jsStr(msg)})")), 4_000L) } }
+                val msg = if (position >= clean.length) "Finished reading." else "Stopped after $spoken passage(s)."
+                page(id, if (position >= clean.length) "__read.finished(${js(msg)})" else "__read.stop()")
                 if (running.get()) onDone?.invoke(msg)
             } catch (t: Throwable) {
                 Log.w(TAG, "reader failed: ${t.message}")
+                page(id, "__read.stop()")
                 onDone?.invoke("Reading stopped: ${t.message}")
             } finally {
                 running.set(false)
@@ -115,43 +159,34 @@ object BookReader {
         running.set(false)
         job?.cancel(); job = null
         releaseTrack()
+        // The page runs its own clock; left alone it kept lighting words for 42 s after the voice
+        // had gone — a highlight moving with nothing to follow.
+        readerId?.let { id -> scope.launch { page(id, "__read.stop()") } }
     }
+
+    // ── text ───────────────────────────────────────────────────────
 
     /**
-     * Give each word a slice of the passage's audio.
-     *
-     * The speech model returns audio with no timing in it, so the shape has to be inferred: longer
-     * words take longer to say, and a comma or a full stop buys a pause. Proportional weighting is
-     * not perfect, but it drifts by a word at most across a passage and that is close enough to
-     * keep someone's place — which is the whole point of highlighting.
+     * Section-break decoration — a line of asterisks or dashes — is not words. Left in, the voice
+     * said something for each one and the page lit twenty asterisks in a row, 130 ms each, eight of
+     * them off screen. A separator becomes a paragraph break and nothing more.
      */
-    private fun wordTimings(passage: String, seconds: Double): List<Int> {
-        val tokens = passage.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.isEmpty()) return emptyList()
-        val weights = tokens.map { t ->
-            var w = t.length.toDouble() + 1.0
-            val last = t.lastOrNull()
-            if (last != null && last in ",;:") w += 2.5
-            if (last != null && last in ".!?\u201d") w += 5.0
-            w
-        }
-        val total = weights.sum().takeIf { it > 0 } ?: return emptyList()
-        val ms = seconds * 1000.0
-        return weights.map { ((it / total) * ms).toInt().coerceAtLeast(40) }
-    }
+    private fun tidy(text: String): String = text
+        .replace(Regex("(?m)^[ \\t]*[*_\\-—–·•~=]+([ \\t]+[*_\\-—–·•~=]+)*[ \\t]*$"), "")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
 
-    private suspend fun showPassage(widgetId: String?, passage: String, seconds: Double,
-                                    done: Int, total: Int) {
-        val id = widgetId ?: return
-        val times = wordTimings(passage, seconds)
-        runCatching {
-            WebCommandBus.execute(id, WebCommandBus.Command("eval", mapOf("js" to
-                "window.__read && __read.show(${jsStr(title)}, ${jsStr(passage)}, " +
-                "${times.joinToString(",", "[", "]")}, $done, $total)")), 6_000L)
-        }
+    /** A reading that starts in the middle of a word ("gain." for "again.") is wrong from its first
+     *  syllable. Move forward to the start of the next sentence, or failing that the next word. */
+    private fun snapToSentence(text: String, at: Int): Int {
+        if (at <= 0 || at >= text.length) return at.coerceIn(0, text.length)
+        if (text[at - 1].isWhitespace()) return at
+        val window = text.substring(at, minOf(text.length, at + 400))
+        val m = Regex("[.!?\\u201d]\\s+|\\n\\n").find(window)
+        if (m != null) return at + m.range.last + 1
+        val ws = window.indexOfFirst { it.isWhitespace() }
+        return if (ws >= 0) at + ws + 1 else at
     }
-
-    @Volatile private var title: String = "Reading"
 
     /** End a passage on a sentence, so a pause never lands mid-clause. */
     private fun cut(text: String, start: Int): Int {
@@ -166,17 +201,75 @@ object BookReader {
         return end
     }
 
-    private fun jsStr(s: String): String = org.json.JSONObject.quote(s)
-
-    private fun voice(context: Context, passage: String): ByteArray? {
-        if (passage.isBlank()) return ByteArray(0)
-        // Asking it to read rather than react: without this the model answers the passage.
-        return GeminiRest.speak(context, "Read this aloud, exactly as written:\n\n$passage")
-            .onFailure { Log.w(TAG, "speech failed: ${it.message}") }
-            .getOrNull()
+    /**
+     * Give each word a slice of the passage's audio.
+     *
+     * The speech model returns audio with no timing in it, so the shape is inferred: longer words
+     * take longer, and a comma or a full stop buys a pause. The shares are normalised to the audio's
+     * actual length, so the schedule ends exactly when the voice does.
+     */
+    private fun wordTimings(passage: String, seconds: Double): List<Int> {
+        val tokens = passage.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (tokens.isEmpty()) return emptyList()
+        val weights = tokens.map { t ->
+            var w = t.length.toDouble() + 1.0
+            val last = t.lastOrNull()
+            if (last != null && last in ",;:") w += 2.5
+            if (last != null && last in ".!?”") w += 5.0
+            w
+        }
+        val total = weights.sum().takeIf { it > 0 } ?: return emptyList()
+        val ms = seconds * 1000.0
+        return weights.map { ((it / total) * ms).toInt().coerceAtLeast(40) }
     }
 
-    private suspend fun play(pcm: ByteArray, widgetId: String? = null) = withContext(Dispatchers.IO) {
+    // ── voice ──────────────────────────────────────────────────────
+
+    /**
+     * Speech for one passage, or null after three tries. The first version gave up on the first
+     * failed request, so a single transient error from the speech service ended the whole
+     * reading — measured: run 2 stopped dead after one page for exactly that. Errors are retried
+     * with a pause; a truncated rendering is asked for again too.
+     */
+    private fun voice(context: Context, passage: String): ByteArray? {
+        if (passage.isBlank()) return ByteArray(0)
+        var short: ByteArray? = null
+        for (attempt in 0 until 3) {
+            if (attempt > 0) Thread.sleep(1_500L * attempt)
+            val pcm = GeminiRest.speak(context, passage, voice)
+                .onFailure { Log.w(TAG, "speech request failed (try ${attempt + 1}): ${it.message}") }
+                .getOrNull() ?: continue
+            val secs = pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
+            if (secs >= passage.length * MIN_SECS_PER_CHAR) return pcm
+            Log.w(TAG, "speech too short (${"%.1f".format(secs)}s for ${passage.length} chars) — asking again")
+            short = pcm
+        }
+        return short
+    }
+
+    /** Poll until the page has loaded and can take instructions, up to ten seconds. */
+    private suspend fun awaitPage(widgetId: String?) {
+        val id = widgetId ?: return
+        repeat(50) {
+            val r = runCatching {
+                WebCommandBus.execute(id, WebCommandBus.Command("eval", mapOf("js" to "typeof window.__read")), 3_000L)
+            }.getOrNull().orEmpty()
+            if (r.contains("object")) return
+            kotlinx.coroutines.delay(200)
+        }
+        Log.w(TAG, "reader page not ready after 10 s; continuing anyway")
+    }
+
+    /**
+     * Play the passage and do not return until the last sample has been heard.
+     *
+     * The first version returned when the last buffer was written, then waited on the play state
+     * — but stop() flips that state at once while up to 512 KB (ten seconds) is still queued. So
+     * the loop moved to the next passage ten seconds early, every time, and the last 15–32 words of
+     * every passage were never lit though the voice said them. Now it waits for the playback head
+     * to reach the last frame written.
+     */
+    private suspend fun play(pcm: ByteArray, widgetId: String?, block: Int) = withContext(Dispatchers.IO) {
         val min = AudioTrack.getMinBufferSize(GeminiRest.SPEECH_RATE_HZ,
             AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(4096)
         val t = AudioTrack.Builder()
@@ -191,23 +284,33 @@ object BookReader {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         track = t
+        val totalFrames = pcm.size / 2
         runCatching {
+            // Pitch-preserving stretch. If a device refused it the schedule would outrun the voice,
+            // so the speed the track actually took is logged and the wall clock is checked below.
+            runCatching { t.playbackParams = android.media.PlaybackParams().setSpeed(SPEED).setPitch(1.0f)
+                .setAudioFallbackMode(android.media.PlaybackParams.AUDIO_FALLBACK_MODE_DEFAULT) }
+                .onFailure { Log.w(TAG, "playback speed not accepted: ${it.message}") }
+            val began = System.currentTimeMillis()
             t.play()
-            widgetId?.let { id ->
-                runCatching { WebCommandBus.execute(id,
-                    WebCommandBus.Command("eval", mapOf("js" to "window.__read && __read.play()")), 4_000L) }
-            }
+            Log.i(TAG, "block $block: ${totalFrames} frames, speed ${runCatching { t.playbackParams.speed }.getOrDefault(1f)}, expect ${"%.1f".format(totalFrames / GeminiRest.SPEECH_RATE_HZ.toDouble() / SPEED)}s")
+            page(widgetId, "__read.play($block)")
             var off = 0
             while (off < pcm.size && running.get()) {
                 val n = t.write(pcm, off, minOf(8192, pcm.size - off))
                 if (n <= 0) break
                 off += n
             }
-            // Let the tail drain rather than cutting the last syllable.
-            if (running.get()) {
-                t.stop()
-                while (running.get() && t.playState == AudioTrack.PLAYSTATE_PLAYING) Thread.sleep(40)
+            // Drain: the head position counts frames actually rendered.
+            var last = -1; var stuck = 0
+            while (running.get()) {
+                val head = t.playbackHeadPosition
+                if (head >= totalFrames) break
+                if (head == last) { if (++stuck > 75) break } else { stuck = 0; last = head }   // ~3 s with no movement
+                Thread.sleep(40)
             }
+            Log.i(TAG, "block $block: played in ${"%.1f".format((System.currentTimeMillis() - began) / 1000.0)}s")
+            page(widgetId, "__read.ended($block)")
         }
         releaseTrack()
     }
@@ -217,5 +320,16 @@ object BookReader {
         track = null
         runCatching { if (t.state == AudioTrack.STATE_INITIALIZED) t.pause(); t.flush(); t.stop() }
         runCatching { t.release() }
+    }
+
+    // ── page ───────────────────────────────────────────────────────
+
+    private fun js(s: String): String = org.json.JSONObject.quote(s)
+
+    private suspend fun page(widgetId: String?, call: String) {
+        val id = widgetId ?: return
+        runCatching {
+            WebCommandBus.execute(id, WebCommandBus.Command("eval", mapOf("js" to "window.__read && $call")), 6_000L)
+        }
     }
 }

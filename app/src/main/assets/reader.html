@@ -1,12 +1,16 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Reader</title>
 <style>
-/* Read-along. The point is that the word being spoken is the word lit up, for anyone who follows
-   text more easily when something keeps their place — so this page shows the exact words handed to
-   the speech model, never the book's own rendering. Matching a separate rendering to the audio can
-   only ever be approximate; showing the spoken text itself is exact by construction. */
-:root{--bg:#04060a;--fg:#e8eef6;--dim:#7c8796;--now:#ffd479;--said:#9fb0c2;
+/* Read-along. The word being spoken is the word lit up, for anyone who follows text more easily
+   when something keeps their place — so this page shows the exact words handed to the speech
+   model, never the book's own rendering. Matching a separate rendering to the audio can only ever
+   be approximate; showing the spoken text itself is exact by construction. */
+/* color-scheme: the page IS dark. Without saying so, WebView's forced darkening inverted the
+   highlight to light-on-brown; declared dark, it is left alone and the lit word is dark on yellow
+   as designed — the high-contrast pairing reading aids use. */
+:root{color-scheme:dark;--bg:#04060a;--fg:#e8eef6;--dim:#7c8796;--now:#ffd479;--said:#9fb0c2;
       --font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);overflow:hidden}
@@ -15,11 +19,15 @@ body{display:flex;flex-direction:column}
 #bar b{color:var(--fg);font-weight:600;font-size:12px}
 #prog{flex:1;height:3px;background:#1a2230;border-radius:2px;overflow:hidden}
 #prog i{display:block;height:100%;width:0;background:var(--now);transition:width .3s linear}
-#text{flex:1;overflow-y:auto;padding:14px 16px 24px;font-size:20px;line-height:1.75;letter-spacing:.2px}
-/* Big, high-contrast, generously spaced: this is the reading surface, not a caption. */
+/* Scrolling is instant and by whole lines, never animated. A smooth scroll reads back a mid-flight
+   position, which is what broke the trim correction; and a lit word in a view still gliding towards
+   it is a lit word off screen. One-line steps are a teleprompter tick — expected, and small. */
+#text{flex:1;position:relative;overflow-y:auto;padding:0 16px 24px;font-size:20px;line-height:35px;letter-spacing:.2px}
+p.passage{margin:0 0 12px 0}
 w{transition:color .12s ease}
 w.said{color:var(--said)}
 w.now{color:#0b1016;background:var(--now);border-radius:4px;padding:1px 3px;font-weight:600}
+#wait{color:var(--dim);font-size:13px;padding:6px 0}
 #done{padding:16px;color:var(--dim);font-size:14px}
 </style></head>
 <body>
@@ -28,59 +36,153 @@ w.now{color:#0b1016;background:var(--now);border-radius:4px;padding:1px 3px;font
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
-var words=[], timings=[], idx=-1, timer=0, startedAt=0;
+var LINE=35;                 // must match line-height above
+var TARGET_LINE=3;           // the lit word lives here: three lines of read text above, four of what is coming below
+var KEEP=4;                  // passages held on the page; older ones are trimmed off the top
+/* Blocks are passages, numbered by the host in the order shown. The host shows a block a passage
+   AHEAD of the voice, so the lines under the lit word are always the next words, and then plays
+   blocks in order. `cur` is the block being read. */
+var blocks={}, cur=null, timer=0, startedAt=0, lastShown=0;
+var progress={done:0,total:0,start:-1};
+/* Every highlight change is recorded: which word lit, when, and where the view was. Read-along is
+   verified from this record — sync and skipping are judged from it rather than guessed. */
+var trace=[];
 
-/* Native hands over the passage and one duration per word, then says when the audio actually
-   started. The page runs its own clock from there: driving every highlight across the bridge
-   would be hundreds of calls a minute for something the page can time itself. */
+function box(){ return $('text'); }
+
 window.__read = {
-  show: function(title, text, times, doneChars, totalChars){
-    clearTimeout(timer); idx=-1;
+  /* The passage text, before its audio exists. */
+  show: function(k, title, text, doneChars, totalChars){
     $('title').textContent = title || 'Reading';
-    if(totalChars){ $('progi').style.width = Math.min(100, doneChars/totalChars*100)+'%';
-                    $('pos').textContent = Math.round(doneChars/totalChars*100)+'%'; }
-    timings = times || [];
-    var host=$('text'); host.innerHTML='';
-    words = String(text||'').split(/(\s+)/).map(function(tok){
-      if(!tok.trim()){ host.appendChild(document.createTextNode(tok)); return null; }
-      var el=document.createElement('w'); el.textContent=tok; host.appendChild(el); return el;
+    progress.total=totalChars||0;
+    if(progress.start<0) progress.start=Math.max(0,(doneChars||0)-String(text||'').length);
+    var host=box();
+    var w0=host.querySelector('#wait'); if(w0) w0.remove();
+    var el=document.createElement('p'); el.className='passage';
+    var words = String(text||'').split(/(\s+)/).map(function(tok){
+      if(!tok.trim()){ el.appendChild(document.createTextNode(tok)); return null; }
+      var w=document.createElement('w'); w.textContent=tok; el.appendChild(w); return w;
     }).filter(Boolean);
-    host.scrollTop = 0;
+    host.appendChild(el);
+    blocks[k]={k:k, el:el, words:words, timings:[], idx:-1, done:doneChars||0, n:words.length};
+    lastShown=k;
+    if(!cur && k===1){ var w=document.createElement('div'); w.id='wait'; w.textContent='preparing the voice…'; host.appendChild(w); }
+    trace.push({ev:'passage', p:k, t:Date.now(), n:words.length, done:doneChars||0});
+    trim();
+    return true;
   },
-  /* Audio just began. Walk the words on the schedule we were given. */
-  play: function(){
-    startedAt = Date.now();
+  /* The audio for block k exists now: one duration per word, and the audio's own length. */
+  retime: function(k, times, audioMs){
+    var b=blocks[k]; if(!b) return false;
+    b.timings = times || [];
+    var w=box().querySelector('#wait'); if(w) w.remove();
+    trace.push({ev:'audio', p:k, t:Date.now(), ms:audioMs||0, sum:b.timings.reduce(function(a,c){return a+c},0)});
+    return true;
+  },
+  /* Block k's audio just began. Walk its words on the schedule. */
+  play: function(k){
+    var b=blocks[k]; if(!b) return false;
+    clearTimeout(timer);
+    if(cur && cur!==b){ cur.words.forEach(function(w){ w.className='said'; }); }
+    cur=b; startedAt=Date.now();
+    progress.done=b.done;
+    if(progress.total){ $('progi').style.width = Math.min(100, b.done/progress.total*100)+'%';
+                        $('pos').textContent = Math.round(b.done/progress.total*100)+'%'; }
+    trace.push({ev:'start', p:k, t:startedAt});
     step();
+    return true;
   },
-  stop: function(){ clearTimeout(timer); },
+  /* The last sample of block k has been heard. */
+  ended: function(k){ var b=blocks[k]; trace.push({ev:'end', p:k, t:Date.now(), lit:b?b.idx:-1, n:b?b.n:0}); return true; },
+  stop: function(){ clearTimeout(timer); trace.push({ev:'stop', p:cur?cur.k:0, t:Date.now()}); return true; },
   finished: function(msg){
     clearTimeout(timer);
-    $('text').innerHTML = '<div id="done">'+(msg||'Finished.')+'</div>';
-  }
+    box().innerHTML = '<div id="done">'+(msg||'Finished.')+'</div>';
+    return true;
+  },
+  /* Self-check over the whole record. */
+  audit: function(){
+    var perPassage={}, maxI={}, nOf={}, doneOf={}, audio={}, skips=[], backs=[], offscreen=[], gaps=[], roll=[];
+    var lastS=-1, lastI=-1, lastT=0, completed=0, lastCompletedDone=-1;
+    for(var k=0;k<trace.length;k++){
+      var e=trace[k];
+      if(e.ev==='passage'){ nOf[e.p]=e.n; doneOf[e.p]=e.done; continue; }
+      if(e.ev==='audio'){ audio[e.p]=e.ms; continue; }
+      if(e.ev==='start'){ lastI=-1; lastT=0; continue; }
+      if(e.ev==='trim'){ if(e.to!==e.from-e.h) backs.push({at:k,note:'trim correction off',e:e}); continue; }
+      if(e.ev!=='word') continue;
+      perPassage[e.p]=(perPassage[e.p]||0)+1; maxI[e.p]=Math.max(maxI[e.p]===undefined?-1:maxI[e.p],e.i);
+      if(lastI>=0 && e.i-lastI>1) skips.push({p:e.p,from:lastI,to:e.i,word:e.w,t:e.t});
+      if(lastS>=0 && e.s<lastS-1) backs.push({p:e.p,i:e.i,from:lastS,to:e.s,word:e.w});
+      if(e.top< -4 || e.bot>e.view+4) offscreen.push({p:e.p,i:e.i,word:e.w,top:e.top,bot:e.bot,view:e.view});
+      if(lastI>=0){ gaps.push(e.t-lastT); roll.push({p:e.p,dt:e.t-lastT}); }
+      lastS=e.s; lastI=e.i; lastT=e.t;
+    }
+    var tails={}, unlit=0, highlighted=0;
+    for(var p in nOf){ var m=(maxI[p]===undefined?-1:maxI[p]); var tail=nOf[p]-1-m;
+      if(tail>0 && perPassage[p]) tails[p]=tail;        // a block shown ahead but not yet started is not a tail
+      if(perPassage[p]) unlit+=Math.max(0,tail); highlighted+=(perPassage[p]||0);
+      if(m===nOf[p]-1){ completed++; lastCompletedDone=Math.max(lastCompletedDone, doneOf[p]||0); } }
+    /* fastest 10-word run (9 gaps), as words per minute */
+    var maxRoll=0; for(var r=8;r<roll.length;r++){ var s=0,ok=true; for(var q=r-8;q<=r;q++){ if(roll[q].p!==roll[r].p){ok=false;break;} s+=roll[q].dt; } if(ok&&s>0) maxRoll=Math.max(maxRoll, 9/(s/60000)); }
+    gaps.sort(function(a,b){return a-b});
+    return JSON.stringify({passages:lastShown, passagesCompleted:completed,
+      charsCompleted: lastCompletedDone<0 ? 0 : lastCompletedDone-progress.start,
+      charsRead:progress.done-progress.start, wordsHighlighted:highlighted, perPassage:perPassage, wordsPerPassage:nOf,
+      unlitTailWords:unlit, tails:tails, skippedWords:skips.length, skips:skips.slice(0,12),
+      backwardScrolls:backs.length, backs:backs.slice(0,12), offscreen:offscreen.length, offscreenSamples:offscreen.slice(0,8),
+      audioMs:audio, maxGapMs:gaps.length?gaps[gaps.length-1]:0, medianGapMs:gaps.length?gaps[gaps.length>>1]:0,
+      fastest10wordWpm:Math.round(maxRoll), traceLen:trace.length});
+  },
+  slice: function(a,b){ return JSON.stringify(trace.slice(a,b)); }
 };
 
 function step(){
+  var b=cur; if(!b) return;
   var elapsed = Date.now() - startedAt;
   /* Where should we be by now? Catching up rather than counting keeps the highlight honest even
      if a timer fires late, which it will on a busy frame. */
   var t=0, want=-1;
-  for(var i=0;i<timings.length;i++){ t += timings[i]; if(elapsed < t){ want=i; break; } }
-  if(want<0) want = words.length-1;
-  if(want!==idx){
-    if(idx>=0 && words[idx]) words[idx].className='said';
-    for(var j=0;j<want;j++) if(words[j]) words[j].className='said';
-    idx=want;
-    var el=words[idx];
-    if(el){ el.className='now'; keepVisible(el); }
+  for(var i=0;i<b.timings.length;i++){ t += b.timings[i]; if(elapsed < t){ want=i; break; } }
+  if(want<0) want = b.words.length-1;
+  if(want!==b.idx){
+    for(var j=Math.max(0,b.idx);j<want;j++) if(b.words[j]) b.words[j].className='said';
+    b.idx=want;
+    var el=b.words[b.idx];
+    if(el){ el.className='now'; keepVisible(el);
+      var bx=box(), r=el.getBoundingClientRect(), bb=bx.getBoundingClientRect();
+      trace.push({ev:'word', p:b.k, i:b.idx, w:el.textContent, t:elapsed,
+                  s:Math.round(bx.scrollTop), top:Math.round(r.top-bb.top), bot:Math.round(r.bottom-bb.top), view:bx.clientHeight});
+    }
   }
-  if(idx < words.length-1) timer=setTimeout(step, 60);
+  if(b.idx < b.words.length-1) timer=setTimeout(step, 60);
 }
 
-/* Keep the lit word in view without yanking the page on every word. */
+/* Keep the lit word on its line. The first version re-centred the word at 38% whenever it reached
+   the bottom, throwing the text half a screen at a stroke — a jump every twenty words. Now the lit
+   word is held on TARGET_LINE: when it moves down a line, the text moves up one line, instantly.
+   Anything larger only happens on the first word of a reading. */
 function keepVisible(el){
-  var box=$('text'), r=el.getBoundingClientRect(), b=box.getBoundingClientRect();
-  if(r.bottom > b.bottom - 28 || r.top < b.top + 8){
-    box.scrollTop += (r.top - b.top) - box.clientHeight*0.38;
+  var b=box();
+  var line=Math.floor(el.offsetTop/LINE);           // line index within the whole text
+  var want=Math.max(0,(line-TARGET_LINE)*LINE);      // scroll that puts this line on TARGET_LINE
+  if(want>b.scrollTop || el.offsetTop<b.scrollTop) b.scrollTop=want;
+}
+
+/* Drop passages well above the view once there are more than KEEP, correcting the scroll by the
+   height removed so nothing on screen moves. Instant scrolling is what makes this exact: with a
+   smooth scroll in flight the position read here was stale, and the correction became a jump.
+   Never removes the block being read or the one after it. */
+function trim(){
+  var b=box(), els=b.querySelectorAll('p.passage');
+  while(els.length>KEEP){
+    var old=els[0], h=old.offsetHeight+12, before=b.scrollTop;
+    if(cur && (old===cur.el)) break;
+    if(before < h + LINE*TARGET_LINE) break;            // would pull the lit line off the top; wait
+    old.remove();
+    b.scrollTop = before - h;
+    trace.push({ev:'trim', p:cur?cur.k:0, t:Date.now(), h:h, from:before, to:b.scrollTop});
+    els=b.querySelectorAll('p.passage');
   }
 }
 })();
