@@ -1261,7 +1261,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
         /** Spectrum for the visualiser, as comma-separated magnitudes — cheap to parse, no JSON churn. */
         @JavascriptInterface fun fft(bands: Int): String =
             com.tapgem.app.core.music.MusicPlayer.fft(bands.coerceIn(8, 128)).joinToString(",") { "%.3f".format(it) }
-        @JavascriptInterface fun defaultSkin(): String = com.tapgem.app.core.music.SkinStore.DEFAULT_ID
+        @JavascriptInterface fun defaultSkin(): String = com.tapgem.app.core.music.SkinStore.lastWorn()
         @JavascriptInterface fun cmd(json: String): String {
             val o = runCatching { JSONObject(json) }.getOrNull() ?: return "bad json"
             val m = com.tapgem.app.core.music.MusicPlayer

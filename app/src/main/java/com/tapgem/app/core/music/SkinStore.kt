@@ -102,11 +102,30 @@ object SkinStore {
         }.getOrNull()
     }
 
+    /**
+     * Every path that puts a skin on the player — the gallery tap, a card in the Skins panel, the
+     * voice tool — comes through here, so this is the one place that can remember the choice.
+     * Without it, reopening the window silently reverted to [DEFAULT_ID] and the skin you picked
+     * looked like it had been thrown away.
+     */
     fun installedJson(id: String): JSONObject {
         val map = install(id)
+        if (map.isNotEmpty()) rememberWorn(id)
         return JSONObject().put("id", id).put("ok", map.isNotEmpty())
             .put("sheets", JSONObject().also { o -> map.forEach { (k, v) -> o.put(k, "file://$v") } })
     }
+
+    private const val PREFS = "skin_store"
+    private const val KEY_WORN = "last_worn"
+
+    private fun rememberWorn(id: String) = runCatching {
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_WORN, id).apply()
+    }
+
+    /** The skin a freshly opened player should wear: whatever was last worn, else the bundled default. */
+    fun lastWorn(): String = runCatching {
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_WORN, null)
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: DEFAULT_ID
 
     fun searchJson(query: String?): JSONArray =
         JSONArray().also { a -> search(query).forEach { a.put(it.json()) } }
