@@ -178,8 +178,14 @@ function wearSkin(id){
 }
 
 /* ---------- panels --------------------------------------------------------------------------- */
+/* The panel keeps its own scrollTop across an innerHTML swap. Scroll the library down, switch to
+   the much shorter Visualiser, and its controls sit above the visible area — the tab looks empty
+   and broken. Reset on a tab CHANGE only: renderPanel also runs for in-tab refreshes (state
+   ticks, skin results) where yanking the list back to the top mid-scroll would be worse. */
+var lastPanelTab='', visPicked=false;
 function renderPanel(){
   var p=$('panel');
+  if(S.tab!==lastPanelTab){p.scrollTop=0;lastPanelTab=S.tab}
   if(S.tab==='lib'){
     if(!S.tracks.length){p.innerHTML='<div class="hint"><b>No audio found.</b><br>Drop files into <b>/sdcard/Music</b> or <b>/sdcard/Download</b>, then say <i>“rescan music”</i>.</div>';return}
     var cur=(S.state.track||{}).id;
@@ -198,9 +204,12 @@ function renderPanel(){
     var f=$('find'); if(f)f.onkeydown=function(e){if(e.key==='Enter'){searchSkins(f.value)}};
     [].forEach.call(p.querySelectorAll('.sk'),function(c){c.onclick=function(){wearSkin(c.dataset.id)}});
   } else {
+    /* Opening the tab with the mode still 'off' draws nothing and never starts the frame loop,
+       so not even the "play something" hint appears. Start it running unless off was asked for. */
+    if(S.vis==='off'&&!visPicked)S.vis='bars';
     p.innerHTML='<div id="vismodes">'+['bars','scope','flow','off'].map(function(m){
       return '<span class="tab'+(S.vis===m?' on':'')+'" data-v="'+m+'">'+m+'</span>'}).join('')+'</div><canvas id="vis"></canvas>';
-    [].forEach.call(p.querySelectorAll('[data-v]'),function(b){b.onclick=function(){S.vis=b.dataset.v;renderPanel()}});
+    [].forEach.call(p.querySelectorAll('[data-v]'),function(b){b.onclick=function(){visPicked=true;S.vis=b.dataset.v;renderPanel()}});
     startVis();
   }
 }
