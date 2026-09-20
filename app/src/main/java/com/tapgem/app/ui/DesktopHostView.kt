@@ -251,12 +251,14 @@ class DesktopHostView @JvmOverloads constructor(
      * hovered is never written to the desktop and a rebind from the model simply snaps it back to
      * resting. Skipped mid-drag so it cannot fight a move or resize already in progress.
      */
+    fun refreshHoverGrow() = applyHoverGrow()
+
     private fun applyHoverGrow() {
         if (interaction != null) return
         for (v in views.values) {
             val want = v.hoverGrow ?: continue
             val m = v.widget
-            if (v.cursorOver) {
+            if (v.cursorOver || v.panelPinned) {
                 val w = maxOf(m.w, want.first).coerceAtMost(Logical.WIDTH)
                 val h = maxOf(m.h, want.second).coerceAtMost(Logical.HEIGHT - Logical.CONTENT_TOP)
                 // Grow down and right from where it sits; pull back on screen only if it must.

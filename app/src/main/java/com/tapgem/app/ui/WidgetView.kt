@@ -409,6 +409,14 @@ class WidgetView(context: Context) : FrameLayout(context) {
                     widget.source.endsWith(com.tapgem.app.core.tools.LiveApps.MUSIC)) 430 to 330 else null
 
     /**
+     * A section the owner has switched on stays on screen: the window keeps the room it grew to
+     * even after the cursor leaves, and only goes back to bare artwork when that section is
+     * switched off again. The page owns that state and reports it through the music bridge.
+     */
+    var panelPinned: Boolean = false
+        set(v) { if (field != v) { field = v; (parent as? DesktopHostView)?.refreshHoverGrow() } }
+
+    /**
      * The cursor is over this window. Auto-mode frames use it, and a page can opt in by defining
      * `window.__tgHover` — the music player reveals its section switch and panel that way, so the
      * window is just the skin until you reach for it. The software cursor never reaches the page
@@ -1292,6 +1300,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
                     else m.play(m.search(o.optString("query").ifBlank { null }))
                 }
                 "playAll" -> m.play(m.library())
+                // The page telling us a section is switched on, so the window holds its size.
+                "panel" -> o.optBoolean("open").let { on -> main.post { panelPinned = on }; "ok" }
                 // Tapping a row in the Queue tab means "go to this one", not "throw the rest away".
                 // The plain play op replaces the queue with a single track, which would empty the
                 // very list being tapped, so jumping keeps the queue and moves the index.
