@@ -169,7 +169,13 @@ object MusicPlayer {
     private fun start() {
         val t = current() ?: return
         release(keepQueue = true)
-        if (!requestFocus()) { emit(ev("error", "text", "Another app holds the audio.")); return }
+        // Focus is cooperative, not a permission. The glasses' own assistant
+        // (com.rayneo.live.ai) leaks GAIN_TRANSIENT_MAY_DUCK requests it never abandons —
+        // six of them stack up — and once they do, every later GAIN request returns
+        // AUDIOFOCUS_REQUEST_FAILED. Refusing to play on that means the user presses play,
+        // nothing happens, and nothing on screen says why. Ask, take it when granted,
+        // and play either way.
+        if (!requestFocus()) Log.w(TAG, "audio focus denied (stale holder?) — playing anyway")
         runCatching {
             player = MediaPlayer().apply {
                 setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
@@ -206,7 +212,10 @@ object MusicPlayer {
     }
     @Synchronized fun resume(): String {
         if (player == null) { if (queue.isNotEmpty()) start() else return "Nothing queued." }
-        else { if (!requestFocus()) return "Another app holds the audio."; runCatching { player?.start() }; playing = true; emit(state()) }
+        else {
+            if (!requestFocus()) Log.w(TAG, "audio focus denied (stale holder?) — resuming anyway")
+            runCatching { player?.start() }; playing = true; emit(state())
+        }
         return "Playing ${current()?.label ?: ""}."
     }
     @Synchronized fun toggle(): String = if (playing) pause() else resume()
