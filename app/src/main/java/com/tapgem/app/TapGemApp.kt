@@ -88,6 +88,15 @@ class TapGemApp : Application() {
         com.tapgem.app.core.system.LongPressGuard.restoreIfLeftRaised(this)
         com.tapgem.app.core.music.MusicPlayer.init(this)
         com.tapgem.app.core.music.SkinStore.init(this)
+        // A restored window opens the copy of the page already written to appsDir, and nothing
+        // rewrote it on launch — so after an app update the old page came back until some tool
+        // action happened to reinstall it, which reads as "the fix didn't take". install() only
+        // writes when the bundled asset actually differs, so doing it here before any desktop is
+        // built is cheap and means a window always opens on the page this build ships.
+        runCatching {
+            com.tapgem.app.core.tools.LiveApps.install(this, "winamp.html", com.tapgem.app.core.tools.LiveApps.MUSIC)
+            com.tapgem.app.core.tools.LiveApps.install(this, "skins.html", com.tapgem.app.core.tools.LiveApps.MUSIC_SKINS)
+        }
         WidgetRefreshEngine.start(this)
         runCatching {
             ContextCompat.registerReceiver(this, keyReceiver, IntentFilter(ApiKeyStore.ACTION_SET_API_KEY),
