@@ -82,6 +82,9 @@ object BookReader {
     private const val SPLIT_DEPTH = 2
     private const val SPLIT_MIN = 200
 
+    /** Short lines closer together than this are one heading, not two. */
+    private const val HEADING_RUN = 80
+
     private const val MIN_WPM = 100.0
     private const val MAX_WPM = 260.0
 
@@ -334,11 +337,22 @@ object BookReader {
         return end
     }
 
-    /** The last "short line on its own" in the window — "Letter 4", "CHAPTER II" — past [least]. */
-    private fun headingStart(window: String, least: Int): Int? =
-        Regex("\\n\\n(?=[^\\n]{1,60}\\n)").findAll(window)
-            .map { it.range.first + 2 }
-            .lastOrNull { it > least && it < window.length }
+    /**
+     * Where the last heading in the window begins — "Letter 4", "CHAPTER II" — past [least].
+     *
+     * A heading is often several short lines: a title, an addressee, a date. Taking the last short
+     * line cut BETWEEN them, so one passage ended "Letter 4 To Mrs. Saville, England." and the
+     * next opened "August 5th, 17—." A run of short lines is one heading, and the passage ends
+     * before the whole of it.
+     */
+    private fun headingStart(window: String, least: Int): Int? {
+        val starts = Regex("\\n\\n(?=[^\\n]{1,60}\\n)").findAll(window)
+            .map { it.range.first + 2 }.filter { it < window.length }.toList()
+        if (starts.isEmpty()) return null
+        var i = starts.lastIndex
+        while (i > 0 && starts[i] - starts[i - 1] <= HEADING_RUN) i--   // walk back over the run
+        return starts[i].takeIf { it > least }
+    }
 
     /**
      * Give each word a slice of the passage's audio.
