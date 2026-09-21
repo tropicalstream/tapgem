@@ -12,6 +12,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,6 +38,12 @@ object BookReader {
 
     /** Big enough to be worth a request, small enough that a stop feels immediate. */
     private const val PASSAGE = 1_000
+
+    /** Passages of speech kept in flight ahead of the voice. */
+    private const val AHEAD = 2
+
+    /** A join longer than this stops looking like a pause, so the page is told to hold the place. */
+    private const val HOLD_MS = 3_000L
 
     /**
      * The voice. Pace is a property of the voice, not a parameter — the API rejects every rate
@@ -115,7 +123,23 @@ object BookReader {
                     page(id, "__read.show($blocks, ${js(title)}, ${js(clean.substring(from, to).trim())}, $to, ${clean.length})")
                 }
 
-                var next: Deferred<ByteArray?>? = null
+                // Speech is generated AHEAD of playback, two passages deep. One deep is not
+                // enough: a passage's audio takes roughly as long to make as a passage takes to
+                // say, so a short passage followed by a slow one lets playback catch up and the
+                // reading goes silent at the join — run 5 stopped for 30 s between a 35 s passage
+                // and one that took 65 s to generate, with the highlight parked on a full stop.
+                // Two in flight covers that and stays well under what the endpoint will take.
+                // The requests belong to this reading's own scope, so stopping cancels them
+                // instead of leaving them to finish into nothing and spend the day's quota.
+                var fetchAt = position
+                fun request(): Deferred<ByteArray?>? {
+                    if (fetchAt >= clean.length) return null
+                    val s0 = fetchAt; val e0 = cut(clean, s0); fetchAt = e0
+                    return async { voice(context, clean.substring(s0, e0).trim()) }
+                }
+                val pending = ArrayDeque<Deferred<ByteArray?>>()
+                repeat(AHEAD) { request()?.let { pending.addLast(it) } }
+
                 while (isActive && running.get() && position < clean.length) {
                     val start = position
                     val end = cut(clean, start)
@@ -128,12 +152,20 @@ object BookReader {
 
                     // A failed request must not end the reading: one more try, in line, before
                     // giving up. (voice() already retries inside itself.)
-                    val audio = (next ?: scope.async { voice(context, passage) }).await()
-                        ?: voice(context, passage)
-                    val after = if (position < clean.length) {
-                        val s2 = position; val e2 = cut(clean, s2)
-                        scope.async { voice(context, clean.substring(s2, e2).trim()) }
-                    } else null
+                    // If the wait runs past a breath, say so on the page: the highlight stops
+                    // claiming to be the word being spoken and holds the place instead. A
+                    // specialist's threshold — under 3 s reads as a pause between sentences;
+                    // beyond it, silence with a lit word reads as "I broke it".
+                    val queued = pending.removeFirstOrNull()
+                    val audio = if (queued == null) voice(context, passage) else {
+                        var held = false
+                        val hold = launch { delay(HOLD_MS); held = true; page(id, "__read.waiting(true)") }
+                        val got = queued.await()
+                        hold.cancelAndJoin()
+                        if (held) page(id, "__read.waiting(false)")
+                        got
+                    } ?: voice(context, passage)
+                    request()?.let { pending.addLast(it) }
                     if (audio == null || audio.isEmpty()) {
                         // Say it on the page too. A reading that dies silently leaves the last
                         // word lit and looks exactly like a pause — run 3 sat that way for twelve
@@ -149,7 +181,6 @@ object BookReader {
                     onProgress?.invoke(end, clean.length)
                     play(audio, id, block)
                     spoken++
-                    next = after
                 }
                 val msg = if (position >= clean.length) "Finished reading." else "Stopped after $spoken passage(s)."
                 page(id, if (position >= clean.length) "__read.finished(${js(msg)})" else "__read.stop()")
@@ -182,7 +213,11 @@ object BookReader {
      * them off screen. A separator becomes a paragraph break and nothing more.
      */
     private fun tidy(text: String): String = text
-        .replace(Regex("(?m)^[ \\t]*[*_\\-—–·•~=]+([ \\t]+[*_\\-—–·•~=]+)*[ \\t]*$"), "")
+        // A scene break is typeset with NON-BREAKING spaces between the asterisks, which is why
+        // this rule used to miss it: twenty "*" tokens were read as words and lit one by one,
+        // 20 flickers of nothing in 2.7 s, and they inflated that passage's measured pace from
+        // 162 to 177 wpm. The break survives as the blank line it always was.
+        .replace(Regex("(?m)^[ \\t\\u00a0]*[*_\\-—–·•~=]+([ \\t\\u00a0]+[*_\\-—–·•~=]+)*[ \\t\\u00a0]*$"), "")
         .replace(Regex("\\n{3,}"), "\n\n")
         .trim()
 

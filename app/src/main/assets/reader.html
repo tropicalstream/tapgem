@@ -27,6 +27,14 @@ p.passage{margin:0 0 12px 0}
 w{transition:color .12s ease}
 w.said{color:var(--said)}
 w.now{color:#0b1016;background:var(--now);border-radius:4px;padding:1px 3px;font-weight:600}
+/* Holding, not reading. When the voice has nothing ready, the lit word must stop claiming to be
+   the word being said: it becomes an outline that breathes, and the text ahead dims so it stops
+   inviting a reader to run on and lose the place the highlight is keeping for them. Under three
+   seconds this never appears — a short join reads as a breath between sentences. */
+w.now.hold{color:var(--now);background:transparent;box-shadow:inset 0 0 0 2px var(--now);
+           animation:hold 1.4s ease-in-out infinite}
+@keyframes hold{0%,100%{opacity:1}50%{opacity:.45}}
+body.waiting w:not(.said):not(.now){color:#46525f}
 #wait{color:var(--dim);font-size:13px;padding:6px 0}
 #done{padding:16px;color:var(--dim);font-size:14px}
 /* Why a reading stopped, said on the page itself. Run 3 ended on a spent speech quota and the
@@ -105,6 +113,15 @@ window.__read = {
   },
   /* The last sample of block k has been heard. */
   ended: function(k){ var b=blocks[k]; trace.push({ev:'end', p:k, t:Date.now(), lit:b?b.idx:-1, n:b?b.n:0}); return true; },
+  /* The voice has nothing ready yet. Hold the place visibly rather than looking like a reading
+     that is simply going very slowly. */
+  waiting: function(on){
+    document.body.className = on ? 'waiting' : '';
+    var el = cur && cur.words[cur.idx];
+    if(el && el.className.indexOf('now')===0) el.className = on ? 'now hold' : 'now';
+    trace.push({ev:'wait', t:Date.now(), on:!!on, p:cur?cur.k:0, i:cur?cur.idx:-1});
+    return true;
+  },
   /* A line at the foot of the window: why the reading stopped, without disturbing the text. */
   note: function(msg){
     var n=$('note');
@@ -167,7 +184,7 @@ function step(){
     for(var j=Math.max(0,b.idx);j<want;j++) if(b.words[j]) b.words[j].className='said';
     b.idx=want;
     var el=b.words[b.idx];
-    if(el){ el.className='now'; keepVisible(el);
+    if(el){ el.className = document.body.className==='waiting' ? 'now hold' : 'now'; keepVisible(el);
       var bx=box(), r=el.getBoundingClientRect(), bb=bx.getBoundingClientRect();
       trace.push({ev:'word', p:b.k, i:b.idx, w:el.textContent, t:elapsed,
                   s:Math.round(bx.scrollTop), top:Math.round(r.top-bb.top), bot:Math.round(r.bottom-bb.top), view:bx.clientHeight});
