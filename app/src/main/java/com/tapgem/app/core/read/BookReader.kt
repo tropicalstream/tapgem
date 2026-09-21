@@ -45,6 +45,9 @@ object BookReader {
     /** A join longer than this stops looking like a pause, so the page is told to hold the place. */
     private const val HOLD_MS = 3_000L
 
+    /** How far into a file a Project Gutenberg header can be and still be a header. */
+    private const val HEADER_LIMIT = 20_000
+
     /**
      * The voice. Pace is a property of the voice, not a parameter — the API rejects every rate
      * field, and an instruction to read slowly made Kore faster. Measured over the same 1000
@@ -212,7 +215,7 @@ object BookReader {
      * said something for each one and the page lit twenty asterisks in a row, 130 ms each, eight of
      * them off screen. A separator becomes a paragraph break and nothing more.
      */
-    private fun tidy(text: String): String = text
+    private fun tidy(text: String): String = unwrapGutenberg(text)
         // A scene break is typeset with NON-BREAKING spaces between the asterisks, which is why
         // this rule used to miss it: twenty "*" tokens were read as words and lit one by one,
         // 20 flickers of nothing in 2.7 s, and they inflated that passage's measured pace from
@@ -220,6 +223,27 @@ object BookReader {
         .replace(Regex("(?m)^[ \\t\\u00a0]*[*_\\-—–·•~=]+([ \\t\\u00a0]+[*_\\-—–·•~=]+)*[ \\t\\u00a0]*$"), "")
         .replace(Regex("\\n{3,}"), "\n\n")
         .trim()
+
+    /**
+     * Take off Project Gutenberg's wrapper: a licence header before the book and the whole licence
+     * after it. "Read it from the beginning" should begin at the book, not at several hundred
+     * words about redistribution terms.
+     *
+     * Bounded on purpose. An epub whose spine cannot be read is concatenated in filename order,
+     * which can leave the header sitting in the middle of the text — and an unbounded "drop
+     * everything before START" would then throw the book away and keep the front matter. So the
+     * header is only removed where a header belongs, and the licence only from the back half.
+     */
+    private fun unwrapGutenberg(text: String): String {
+        var t = text
+        Regex("(?is)\\*\\*\\*\\s*START OF (?:THE|THIS) PROJECT GUTENBERG E-?BOOK.*?\\*\\*\\*")
+            .find(t)?.takeIf { it.range.last < HEADER_LIMIT }
+            ?.let { t = t.substring(it.range.last + 1) }
+        Regex("(?is)\\*\\*\\*\\s*END OF (?:THE|THIS) PROJECT GUTENBERG E-?BOOK")
+            .findAll(t).lastOrNull()?.takeIf { it.range.first > t.length / 2 }
+            ?.let { t = t.substring(0, it.range.first) }
+        return t
+    }
 
     /** A reading that starts in the middle of a word ("gain." for "again.") is wrong from its first
      *  syllable. Move forward to the start of the next sentence, or failing that the next word. */

@@ -495,6 +495,17 @@ can't quietly turn into a new app, and a different saved app is never substitute
 - "Show the duck 3D model, large."
 - "Open my notes text file."
 
+**Books from Project Gutenberg** (nothing needs to be on the glasses first)
+- "Open Frankenstein." · "Get me Moby Dick." · "Find the book Dracula." · "Open Alice in Wonderland and read it to me."
+
+If nothing on the glasses matches, the title is looked up on Project
+Gutenberg, the epub is downloaded into the media folder and opened — so the
+second time you ask it is already local. Search goes through
+[Gutendex](https://gutendex.com) (no key, no account); the file comes from
+gutenberg.org. These are public-domain texts. The licence header and the
+licence at the end are stripped before reading aloud, so "from the beginning"
+begins at the book.
+
 Drop files in with adb — this folder is searched first:
 
 ```bash

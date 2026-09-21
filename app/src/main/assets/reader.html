@@ -55,7 +55,7 @@ var KEEP=4;                  // passages held on the page; older ones are trimme
 /* Blocks are passages, numbered by the host in the order shown. The host shows a block a passage
    AHEAD of the voice, so the lines under the lit word are always the next words, and then plays
    blocks in order. `cur` is the block being read. */
-var blocks={}, cur=null, timer=0, startedAt=0, lastShown=0;
+var blocks={}, cur=null, timer=0, startedAt=0, lastShown=0, started=false;
 var progress={done:0,total:0,start:-1};
 /* Every highlight change is recorded: which word lit, when, and where the view was. Read-along is
    verified from this record — sync and skipping are judged from it rather than guessed. */
@@ -69,7 +69,7 @@ window.__read = {
     /* Block 1 is a new reading: clear the page, the schedule and the record. Without this the
        previous reading's text stayed above the new one and its trace entries were still counted
        in the audit — run 3's record opened with two passages from an abandoned attempt. */
-    if(k===1){ clearTimeout(timer); box().innerHTML=''; blocks={}; cur=null; trace=[]; lastShown=0;
+    if(k===1){ clearTimeout(timer); box().innerHTML=''; blocks={}; cur=null; trace=[]; lastShown=0; started=false;
                progress={done:0,total:0,start:-1}; $('progi').style.width='0'; $('pos').textContent='';
                window.__read.note(''); }
     $('title').textContent = title || 'Reading';
@@ -85,7 +85,6 @@ window.__read = {
     host.appendChild(el);
     blocks[k]={k:k, el:el, words:words, timings:[], idx:-1, done:doneChars||0, n:words.length};
     lastShown=k;
-    if(!cur && k===1){ var w=document.createElement('div'); w.id='wait'; w.textContent='preparing the voice…'; host.appendChild(w); }
     trace.push({ev:'passage', p:k, t:Date.now(), n:words.length, done:doneChars||0});
     trim();
     return true;
@@ -103,7 +102,7 @@ window.__read = {
     var b=blocks[k]; if(!b) return false;
     clearTimeout(timer);
     if(cur && cur!==b){ cur.words.forEach(function(w){ w.className='said'; }); }
-    cur=b; startedAt=Date.now();
+    cur=b; startedAt=Date.now(); started=true;
     progress.done=b.done;
     if(progress.total){ $('progi').style.width = Math.min(100, b.done/progress.total*100)+'%';
                         $('pos').textContent = Math.round(b.done/progress.total*100)+'%'; }
@@ -119,6 +118,15 @@ window.__read = {
     document.body.className = on ? 'waiting' : '';
     var el = cur && cur.words[cur.idx];
     if(el && el.className.indexOf('now')===0) el.className = on ? 'now hold' : 'now';
+    /* Say which wait this is. Before the first word there is no place to hold and nothing has
+       been promised — what the reader needs is to know the voice is coming and roughly when.
+       Mid-reading the message is the opposite: the place IS held, and saying so is the point.
+       This goes in the footer strip, which is always on screen: the old "preparing the voice"
+       line was appended under the text, so on a full screen it sat below the fold and a 35 s
+       silence at the start of a reading looked like nothing happening at all. */
+    window.__read.note(!on ? '' : (started
+      ? 'Holding your place — the next part is still coming.'
+      : 'Finding the reading voice. This takes about half a minute.'));
     trace.push({ev:'wait', t:Date.now(), on:!!on, p:cur?cur.k:0, i:cur?cur.idx:-1});
     return true;
   },

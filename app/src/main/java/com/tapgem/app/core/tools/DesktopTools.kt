@@ -1718,12 +1718,20 @@ class MediaTool(private val context: Context) : AiTool {
                     // Nothing on the glasses by that name: for a 3D model, try fetching one rather
                     // than just reporting failure — MediaScanner never looks past local storage.
                     else if (type == WidgetType.MODEL3D && !query.isNullOrBlank()) fetchModel(context, query, args)
+                    // Likewise a book: "open Frankenstein" should get you Frankenstein whether or
+                    // not anybody pushed it over adb first.
+                    else if ((type == WidgetType.EPUB || looksLikeABook(args)) && !query.isNullOrBlank())
+                        fetchBook(context, query, args)
                     else Result.success("No files match \"${query ?: ""}\".")
                 }
             }
             "search_online", "find_model", "fetch_model" -> {
                 if (query.isNullOrBlank()) return@withContext Result.success("What model?")
                 fetchModel(context, query, args)
+            }
+            "fetch_book", "find_book", "download_book", "get_book", "read_book" -> {
+                if (query.isNullOrBlank()) return@withContext Result.success("Which book?")
+                fetchBook(context, query, args)
             }
             else -> Result.failure(IllegalArgumentException("Unknown media action '${args.action}'."))
         }
@@ -1734,6 +1742,41 @@ class MediaTool(private val context: Context) : AiTool {
      * has to obtain themselves (see ModelStore) — with no key this says so plainly instead of a
      * bare "not found", since the two cases mean different things to fix.
      */
+    /** Words that mean the thing being asked for is a book, when no type was given. */
+    private fun looksLikeABook(args: Args): Boolean {
+        val said = args.raw.values.joinToString(" ").lowercase(Locale.US)
+        return listOf("book", "ebook", "epub", "novel", "gutenberg", "read").any { it in said }
+    }
+
+    /**
+     * Fetch a book from Project Gutenberg and open it. Public domain in the US and free to
+     * download, which is why this archive and not a bookshop; the file lands in the media folder,
+     * so asking for it again opens the copy already there.
+     */
+    private suspend fun fetchBook(context: Context, query: String, args: Args): Result<String> {
+        val hits = com.tapgem.app.core.media.BookStore.search(query)
+        if (hits.isEmpty()) return Result.success("Project Gutenberg has nothing matching \"$query\".")
+        // Gutendex already sorts by popularity, which settles most bare titles; a real title match
+        // still beats a popular book that merely mentions the words.
+        val q = query.trim().lowercase(Locale.US)
+        val pick = hits.maxWithOrNull(compareBy({ b ->
+            val t = b.title.lowercase(Locale.US)
+            when {
+                t == q -> 4
+                t.startsWith(q) || t.substringBefore(';').trim() == q -> 3
+                t.contains(q) -> 2
+                else -> 1
+            }
+        }, { b -> b.downloads })) ?: hits.first()
+        val file = com.tapgem.app.core.media.BookStore.fetch(context, pick)
+            ?: return Result.success("Found \"${pick.title}\" on Project Gutenberg but the download failed.")
+        WidgetOps.add(context, args, forcedType = WidgetType.EPUB, forcedSource = file.absolutePath,
+            forcedTitle = pick.title.substringBefore(';').trim().take(40))
+        val by = if (pick.author.isNotBlank()) " by ${pick.author}" else ""
+        return Result.success("Opened \"${pick.title.substringBefore(';').trim()}\"$by from Project Gutenberg. " +
+            "Say \"read it to me from the beginning\" to have it read aloud.")
+    }
+
     private suspend fun fetchModel(context: Context, query: String, args: Args): Result<String> {
         if (!com.tapgem.app.core.media.ModelStore.hasKey()) {
             return Result.success("I don't have a 3D-model source configured — only what is already on the glasses. " +

@@ -631,8 +631,12 @@ class GeminiLiveClient(
                 "adds one or says plainly that no model source is configured (that needs the user's own setup, not " +
                 "something to keep retrying). A model named after something copyrighted (a film ship, a game " +
                 "character) is a fan upload wearing a licence that does not cover the design itself; say so once " +
-                "if it comes up, don't just present it as free to use.",
-            mapOf("action" to "find|open", "query" to "Words from the file name.",
+                "if it comes up, don't just present it as free to use. BOOKS: open also fetches a book from " +
+                "Project Gutenberg when nothing local matches, so \"open Frankenstein\", \"get me Moby Dick\", " +
+                "\"find the book Dracula\" all work whether or not it is already on the glasses — it downloads " +
+                "and opens it. Use fetch_book to insist on the archive. These are public-domain texts. After " +
+                "opening a book, \"read it to me\" (web action=read_aloud) reads it out loud with the words lit.",
+            mapOf("action" to "find|open|fetch_book", "query" to "Words from the file name, or a book title/author.",
                 "type" to "image|video|audio|pdf|epub|model3d|text|any.",
                 "path" to "open: exact path if already known.",
                 "anchor" to geometryProps.getValue("anchor"), "size" to geometryProps.getValue("size"))))
