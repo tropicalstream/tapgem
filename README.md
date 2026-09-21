@@ -508,13 +508,15 @@ access is granted, see Permissions.)
 - "Read Alice in Wonderland to me from the beginning." · "Read this page to me." · "Keep reading." · "Stop reading."
 
 Saying *beginning* or *start* begins at the first word; without it the reading
-carries on from where it stopped. A Read-along window opens bottom right and
-shows the exact words being spoken, with the current one highlighted and the
-lines under it already loaded — the text never moves backwards, and the lit
-word stays on the same line rather than being re-centred, which a jump every
-twenty words is intolerable for anyone using the highlight to hold their place.
-The assistant says one short sentence and then stays quiet; the voice you hear
-after that is the reader, not the conversation.
+carries on from where it stopped. **The book's own window becomes the
+read-along**: it shows the exact words being spoken, the current one
+highlighted, the lines under it already loaded — the text never moves
+backwards, and the lit word stays on the same line rather than being
+re-centred, because a jump every twenty words is intolerable for anyone using
+the highlight to hold their place. "Stop reading" gives the window back to the
+chapter. (A web page keeps its page; its read-along opens in a window of its
+own, in front.) The assistant says one short sentence and then stays quiet; the
+voice you hear after that is the reader, not the conversation.
 
 It reads the **whole book**, turning pages itself, not just the chapter in
 view. Playback is slowed to 0.82× with pitch preserved, because every Gemini

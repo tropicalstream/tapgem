@@ -1807,7 +1807,9 @@ class WebTool(private val context: Context) : AiTool {
         if (action !in actions) return Result.failure(IllegalArgumentException("Unknown web action '${args.action}'. Use search, inspect, read, click, type, press, scroll, play, pause, url, back, forward, reload."))
         val named = args.str("target", "id", "title", "widget", "name") != null
         val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
-        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read", "read_aloud", "stop_reading")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
+        // eval reaches a book only while it is showing the read-along page (our own, scripted);
+        // on the chapter itself scripting is off and the window answers "Not available".
+        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read", "read_aloud", "stop_reading", "eval")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
             return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")
         }
         DesktopBridge.setActive(w.id)
@@ -1835,6 +1837,9 @@ class WebTool(private val context: Context) : AiTool {
         if (action == "read") return Result.success(readPage(w, args))
         if (action == "stop_reading") {
             com.tapgem.app.core.read.BookReader.stop()
+            // The book was showing the read-along; give it back its chapter.
+            DesktopBridge.current().widgets.filter { it.state["readAlong"] == "1" }
+                .forEach { b -> DesktopBridge.mutateWidget(b.id) { it.withState("readAlong" to "") } }
             return Result.success("Stopped reading.")
         }
         if (action == "read_aloud") {
@@ -1855,15 +1860,24 @@ class WebTool(private val context: Context) : AiTool {
             // lights each one as it is said, which is the point for anyone who needs to see where
             // they are. The book's own window keeps its place and is left alone.
             LiveApps.install(context, "reader.html", LiveApps.READER)
-            val reader = LiveApps.window(LiveApps.READER)?.id ?: run {
+            // A book reads in the book's own window. Two windows meant looking away from the book
+            // to follow the words in it, and the one you needed could sit behind the other.
+            // Anything that is not a book keeps its own page, so the read-along gets a window.
+            val reader = if (w.type == WidgetType.EPUB) {
+                LiveApps.window(LiveApps.READER)?.let { stale ->
+                    DesktopBridge.mutate { d -> d.copy(widgets = d.widgets.filterNot { it.id == stale.id }) }
+                }
+                DesktopBridge.mutateWidget(w.id) { it.withState("readAlong" to "1") }
+                w.id
+            } else LiveApps.window(LiveApps.READER)?.id ?: run {
                 LiveApps.ensureWindow(context, "reader.html", LiveApps.READER, "Read-along",
                     Args(mapOf("w" to "420", "h" to "330", "anchor" to "bottom right")))
                 LiveApps.window(LiveApps.READER)?.id
             }
-            // In front of the book. The window it reads from is usually bigger and was opened
-            // later, so the read-along sat underneath it — measured: the lit word was completely
-            // hidden behind the book's cover art in one frame of run 3, which defeats the point.
-            if (reader != null) DesktopBridge.mutate(pushUndo = false) { d ->
+            // A read-along in its own window goes in front of the page it is reading: run 3's lit
+            // word was completely hidden behind the book's cover art in one frame, which defeats
+            // the point. (A book reads in its own window and is already where the reader is looking.)
+            if (reader != null && reader != w.id) DesktopBridge.mutate(pushUndo = false) { d ->
                 d.widget(reader)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d
             }
             com.tapgem.app.core.read.BookReader.start(context, reader, text, from, w.title,

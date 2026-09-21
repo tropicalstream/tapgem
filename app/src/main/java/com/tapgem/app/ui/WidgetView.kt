@@ -830,7 +830,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 epubChapters = ch
                 if (ch.isEmpty()) showError("No readable chapters")
                 else if (widget.state["chapters"] != ch.size.toString()) onStateChange?.invoke(widget.id, mapOf("chapters" to ch.size.toString()))
-                loadEpubChapter()
+                refreshEpub()
             }
         }, "tapgem-epub").start()
     }
@@ -840,6 +840,26 @@ class WidgetView(context: Context) : FrameLayout(context) {
         val px = (widget.style.fontSize ?: (15f * theme.fontScale)).roundToInt()
         return "<style id=\"tapgem-reader\">html,body{background:#000!important;color:$fg!important;font-size:${px}px!important;line-height:1.45!important;padding:8px!important;margin:0!important;max-width:100%!important}" +
             "*{color:inherit!important;background:transparent!important;max-width:100%!important}a{color:$accent!important}img,svg{max-width:100%!important;height:auto!important}</style>"
+    }
+
+    /**
+     * An ebook window shows one of two things: the chapter, or the read-along — the exact words
+     * being spoken, lit one at a time. They share a window because someone following a highlight
+     * to hold their place should not have to look at a second window to do it.
+     *
+     * Scripting stays off for the book's own markup: an epub is a stranger's HTML and may carry
+     * scripts. The read-along page is ours, so it loads with scripting on, and while it runs the
+     * book's markup is not on screen at all.
+     */
+    private fun refreshEpub() {
+        val wv = webView ?: return
+        if (widget.state["readAlong"] == "1") {
+            wv.settings.javaScriptEnabled = true
+            if (wv.url != READER_PAGE) wv.loadUrl(READER_PAGE)
+        } else {
+            wv.settings.javaScriptEnabled = false
+            loadEpubChapter()
+        }
     }
 
     private fun loadEpubChapter() {
@@ -1009,6 +1029,9 @@ class WidgetView(context: Context) : FrameLayout(context) {
     }
 
     private enum class Kind { WEB, APP, EPUB, MODEL, MAP }
+
+    /** The read-along page, shown inside an ebook's own window while it is being read. */
+    private val READER_PAGE = "file:///android_asset/reader.html"
 
     /**
      * A WebView that never summons the soft keyboard. The IME only ever
@@ -1449,7 +1472,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
             WidgetType.PDF -> if (old["page"] != new["page"]) {
                 (content.getChildAt(0) as? ImageView)?.let { iv -> (content.tag as? TextView)?.let { renderPdfPage(iv, it) } }
             }
-            WidgetType.EPUB -> if (old["chapter"] != new["chapter"]) loadEpubChapter()
+            WidgetType.EPUB -> if (old["chapter"] != new["chapter"] || old["readAlong"] != new["readAlong"]) refreshEpub()
             WidgetType.WEB, WidgetType.MODEL3D -> if (old["reload"] != new["reload"]) webView?.reload()
             // An app reload re-reads its file (the page was served as data, so WebView.reload() would replay the old bytes).
             WidgetType.APP -> if (old["reload"] != new["reload"]) webView?.let { loadApp(it) }
