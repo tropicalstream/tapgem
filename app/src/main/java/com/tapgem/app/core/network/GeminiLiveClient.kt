@@ -116,7 +116,13 @@ class GeminiLiveClient(
                 "a station or city by name → action=search. Spotify: these glasses have no Widevine DRM, so its " +
                 "web player streams only 30-second previews and only while signed out; signed in it shows " +
                 "'Playback disabled' — say so, offer to sign out (web action=url https://www.spotify.com/logout/) " +
-                "or to play the song on YouTube instead. YouTube Music (music.youtube.com): once a track plays, " +
+                "or to play the song on YouTube instead. YouTube Music (music.youtube.com): OPENING THE SITE " +
+                "PLAYS THE ACCOUNT'S OWN RECOMMENDATIONS, NOT WHAT WAS ASKED FOR — landing on its home page " +
+                "and hearing music is not success. Go straight to " +
+                "https://music.youtube.com/search?q=<artist+title>, click the matching album or song, then " +
+                "action=play. Then CHECK with action=inspect that the track now playing is the one asked " +
+                "for, and if it is not, say so plainly instead of reporting success — cover art on the page " +
+                "proves nothing about what is coming out of the speakers. Once a track plays, " +
                 "its player page has a Song / Video switch — 'show the video' → click 'Video', 'just the audio' → click 'Song'; " +
                 "'full screen' → click 'Enter full screen' (fills the window; action=back leaves it). " +
                 "Never guess deep links from memory; never repeat a call that just failed — change " +

@@ -105,7 +105,14 @@ class MusicTool(private val context: Context) : AiTool {
             "play", "start", "listen", "put_on" -> {
                 window(args, expanded = false)
                 val tracks = resolve(args)
-                if (tracks.isEmpty()) return@withContext Result.success("Nothing matched — ask me to list the library.")
+                // Say what is true: it is not here. Falling back to a web player silently is how a
+                // request for one album ends up playing an account's recommendations with the
+                // right artwork on screen and the wrong music coming out.
+                if (tracks.isEmpty()) return@withContext Result.success(
+                    "\"${args.str("query", "text", "title", "artist", "album", "name") ?: "that"}\" isn't on the glasses. " +
+                    "The library here is: ${MusicPlayer.library().map { it.album }.filter { it.isNotBlank() }.distinct().take(4).joinToString(", ").ifBlank { "empty" }}. " +
+                    "I can look for it on a music site instead — say so and I'll search there, " +
+                    "or push the files to /sdcard/Music.")
                 // "the third one" arrives as an index into whatever was just read out.
                 val pick = args.int("index", "number", "position")?.minus(1)
                 Result.success(
