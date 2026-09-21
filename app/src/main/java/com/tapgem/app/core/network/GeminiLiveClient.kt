@@ -515,7 +515,7 @@ class GeminiLiveClient(
                 "wants to be read to or to follow the text. Use it for \"read this to me\", \"read the book " +
                 "aloud\", \"start reading from the beginning\" (from=0), \"keep reading\" (continue=true). " +
                 "It keeps going by itself until stop_reading. After calling it say ONE short sentence and " +
-                "then stay silent — the glasses are speaking, not you. stop_reading: \"stop reading\", \"stop\", " +
+                "then stay silent — the glasses are speaking, not you. skip_reading: \"skip ahead\", \"skip this part\" — only when the reader asks, never on your own. stop_reading: \"stop reading\", \"stop\", " +
                 "\"that's enough\". read: what the page says — the WHOLE page is read, not just the " +
                 "top of it, and comes back condensed, so use it freely on long articles. Pass query to ask " +
                 "something specific of the page (\"what does it say about X\") instead of reading it all. click: the item whose " +
@@ -525,7 +525,7 @@ class GeminiLiveClient(
                 "up|down|left|right|top|bottom, amount px (default 300). zoom: direction in|out (Google Maps zooms " +
                 "the map; other pages scale). play / pause: the page's media, " +
                 "verified by sound. url: open a URL in the same widget. back, forward, reload.",
-            mapOf("action" to "search|inspect|read|read_aloud|stop_reading|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
+            mapOf("action" to "search|inspect|read|read_aloud|stop_reading|skip_reading|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
                 "from" to "read_aloud: character offset to start from; 0 = the very beginning. Omit to resume where it left off.",
                 "continue" to "read_aloud: true = carry on from where it stopped last time.",
                 "target" to "Widget id/title; defaults to the most recent web or app widget.",

@@ -1828,7 +1828,7 @@ class WebTool(private val context: Context) : AiTool {
         private const val EPUB_LIMIT = 400_000
     }
 
-    private val actions = setOf("search", "inspect", "read", "read_aloud", "stop_reading", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
+    private val actions = setOf("search", "inspect", "read", "read_aloud", "stop_reading", "skip_reading", "click", "type", "press", "scroll", "zoom", "play", "pause", "url", "back", "forward", "reload", "eval")
 
     override suspend fun execute(args: Args): Result<String> {
         val action = when (args.action) {
@@ -1843,6 +1843,7 @@ class WebTool(private val context: Context) : AiTool {
             "text", "content", "summarize" -> "read"
             "read_out", "read_to_me", "narrate", "aloud" -> "read_aloud"
             "stop_read", "stop_aloud", "quiet" -> "stop_reading"
+            "skip", "skip_ahead", "skip_part", "next_part", "move_on" -> "skip_reading"
             "stop" -> "pause"
             "resume", "start" -> "play"
             else -> args.action
@@ -1852,7 +1853,7 @@ class WebTool(private val context: Context) : AiTool {
         val w = resolveTarget(args) ?: return Result.success("No web page or app is open. Add one with widget action=add type=web url=…")
         // eval reaches a book only while it is showing the read-along page (our own, scripted);
         // on the chapter itself scripting is off and the window answers "Not available".
-        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read", "read_aloud", "stop_reading", "eval")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
+        if (!w.type.isWebLike && !(w.type == WidgetType.EPUB && action in setOf("scroll", "read", "read_aloud", "stop_reading", "skip_reading", "eval")) && !(w.type == WidgetType.MAP && action in setOf("scroll", "press", "click", "zoom", "eval"))) {
             return Result.success("\"${w.title}\" is a ${w.type.name.lowercase(Locale.US)} widget, not a web page. Use widget action=navigate for it.")
         }
         DesktopBridge.setActive(w.id)
@@ -1878,6 +1879,10 @@ class WebTool(private val context: Context) : AiTool {
             return WidgetTool(context).execute(Args(mapOf("action" to "navigate", "id" to w.id, "nav" to (if (dir.startsWith("out")) "out" else "in")) + (args.str("amount", "levels")?.let { mapOf("value" to it) } ?: emptyMap())))
         }
         if (action == "read") return Result.success(readPage(w, args))
+        if (action == "skip_reading") {
+            com.tapgem.app.core.read.BookReader.skip()
+            return Result.success("Skipped that part and moved on.")
+        }
         if (action == "stop_reading") {
             com.tapgem.app.core.read.BookReader.stop()
             // The book was showing the read-along; give it back its chapter.

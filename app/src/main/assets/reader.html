@@ -51,6 +51,8 @@ body.waiting w:not(.said):not(.now){color:#46525f}
 @keyframes drift{0%,100%{opacity:1}50%{opacity:.3}}
 /* Taking far longer than it should: stop implying progress. */
 w.now.hold.stalled{animation:none}
+w.skip{color:#5b6775;text-decoration:line-through;text-decoration-color:#3a4550}
+.gap{color:#ffd479;font-size:11px;letter-spacing:.5px;margin:6px 0;opacity:.8}
 </style></head>
 <body>
 <div id="bar"><b id="title">Reading</b><span id="pos"></span><span id="prog"><i id="progi"></i></span></div>
@@ -133,10 +135,21 @@ window.__read = {
        appearing from nowhere. */
     var el = cur ? cur.words[cur.idx] : (blocks[1] && blocks[1].words[0]);
     if(el){ if(on) el.className='now hold'; else el.className = cur ? 'now' : ''; }
-    if(on) stallTimer=setTimeout(function(){
-      if(el) el.className='now hold stalled';
-      window.__read.note('The voice is taking longer than usual. Say “stop reading” to give up on it.');
-    }, 60000);
+    /* A wait with no exit is its own harm. Under ten seconds the hold says nothing more; past
+       that it admits there is trouble, and past twenty it stops asking the reader to sit through
+       an open-ended silence and hands them the choice. The reader may skip; the system may not —
+       a highlight that jumps on its own reads as one's own attention lapsing. */
+    if(on){
+      stallTimer=setTimeout(function(){
+        window.__read.note('This part is taking longer than usual. Say “stop reading” to stop.');
+        trace.push({ev:'hold10', t:Date.now(), p:cur?cur.k:0, i:cur?cur.idx:-1});
+        stallTimer=setTimeout(function(){
+          if(el) el.className='now hold stalled';
+          window.__read.note('Still waiting for this part. Say “skip ahead”, or “stop reading”.');
+          trace.push({ev:'giveup', t:Date.now(), p:cur?cur.k:0, i:cur?cur.idx:-1});
+        }, 10000);
+      }, 10000);
+    }
     /* Say which wait this is. Before the first word there is no place to hold and nothing has
        been promised — what the reader needs is to know the voice is coming and roughly when.
        Mid-reading the message is the opposite: the place IS held, and saying so is the point.
@@ -147,6 +160,17 @@ window.__read = {
       ? 'Holding your place — the next part is still coming.'
       : 'Finding the reading voice — about ' + (secs || 30) + ' seconds.'), on && !started ? (secs || 30) : 0);
     trace.push({ev:'wait', t:Date.now(), on:!!on, p:cur?cur.k:0, i:cur?cur.idx:-1});
+    return true;
+  },
+  /* A passage the reader chose to skip. The omission is left legible — an unmarked gap is
+     indistinguishable from one's own attention having wandered, which is the reading this
+     population makes of any discontinuity. */
+  skipped: function(k){
+    var b=blocks[k]; if(!b) return false;
+    b.words.forEach(function(w){ w.className='skip'; });
+    var m=document.createElement('div'); m.className='gap'; m.textContent='— skipped —';
+    if(b.el && b.el.parentNode) b.el.parentNode.insertBefore(m, b.el);
+    trace.push({ev:'skipped', t:Date.now(), p:k, n:b.n});
     return true;
   },
   /* A line at the foot of the window: why the reading stopped, without disturbing the text. */

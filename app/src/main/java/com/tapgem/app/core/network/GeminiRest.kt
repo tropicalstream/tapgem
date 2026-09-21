@@ -74,11 +74,18 @@ object GeminiRest {
         return SpeechLimited(secs, perDay || secs > 300)
     }
 
-    /** Raw PCM for [text], or a failure. Voices are Gemini's prebuilt set; Kore reads plainly. */
-    fun speak(context: Context, text: String, voice: String = "Kore"): Result<ByteArray> =
-        callAudio(context, text, voice)
+    /**
+     * Raw PCM for [text], or a failure. Voices are Gemini's prebuilt set; Kore reads plainly.
+     *
+     * [maxSecs] is the longest rendering worth receiving. A rendering far longer than the passage
+     * can possibly take is not that passage, and waiting for all of it costs the reader silence:
+     * one took 156 seconds to deliver 654 seconds of audio for 160 words. The body is read with a
+     * ceiling so that answer is abandoned as it arrives rather than after.
+     */
+    fun speak(context: Context, text: String, voice: String = "Kore", maxSecs: Double = 0.0): Result<ByteArray> =
+        callAudio(context, text, voice, maxSecs)
 
-    private fun callAudio(context: Context, text: String, voice: String): Result<ByteArray> = runCatching {
+    private fun callAudio(context: Context, text: String, voice: String, maxSecs: Double): Result<ByteArray> = runCatching {
         val key = ApiKeyStore.resolve(context)?.trim()?.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("No Gemini API key")
         val body = JSONObject()
@@ -94,7 +101,17 @@ object GeminiRest {
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()
         audioHttp.newCall(req).execute().use { resp ->
-            val raw = resp.body?.string().orEmpty()
+            // PCM16 at 24 kHz, carried as base64 in JSON: 4 bytes of response per 3 of audio,
+            // plus a little envelope. Generous, and still an order of magnitude under a runaway.
+            val cap = if (maxSecs > 0) (maxSecs * SPEECH_RATE_HZ * 2 * 4 / 3).toLong() + 8_192 else Long.MAX_VALUE
+            val raw = resp.body?.let { body ->
+                val sink = okio.Buffer()
+                val src = body.source()
+                while (src.read(sink, 64 * 1024) != -1L)
+                    if (sink.size > cap) throw IllegalStateException(
+                        "speech reply past ${(maxSecs).toInt()}s of audio — abandoned")
+                sink.readUtf8()
+            }.orEmpty()
             if (resp.code == 429) throw limitFrom(raw)
             if (!resp.isSuccessful) throw IllegalStateException("speech HTTP ${resp.code}: ${raw.take(140)}")
             val part = JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)
@@ -109,8 +126,11 @@ object GeminiRest {
     /** Speech takes far longer than text: a minute of audio is ~26s of generation. */
     private val audioHttp by lazy {
         http.newBuilder()
-            .callTimeout(java.time.Duration.ofSeconds(180))
-            .readTimeout(java.time.Duration.ofSeconds(180))
+            // A request that runs this long is not making the passage — it is making something
+            // else. One took 156s and returned 654 seconds of audio for 160 words. Cut it off and
+            // let the reader try the passage in halves.
+            .callTimeout(java.time.Duration.ofSeconds(90))
+            .readTimeout(java.time.Duration.ofSeconds(90))
             .build()
     }
     const val IMAGE_MODEL = "gemini-3.1-flash-image"

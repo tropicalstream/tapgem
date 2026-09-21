@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -40,7 +41,7 @@ object BookReader {
     private const val PASSAGE = 1_000
 
     /** Passages of speech kept in flight ahead of the voice. */
-    private const val AHEAD = 2
+    private const val AHEAD = 3
 
     /** A join longer than this stops looking like a pause, so the page is told to hold the place. */
     private const val HOLD_MS = 3_000L
@@ -192,12 +193,18 @@ object BookReader {
                             page(id, if (first) "__read.waiting(true, $EXPECT_SECS)" else "__read.waiting(true)")
                         }
                         if (stall > 0 && spoken == STALL_AT) { delay(stall); stall = 0 }
-                        val got = queued.await()
+                        waitingOn = queued
+                        val got = runCatching { queued.await() }.getOrNull()
+                        waitingOn = null
                         hold.cancelAndJoin()
                         if (held) page(id, "__read.waiting(false)")
                         got
                     } ?: voiceOrSplit(context, passage)
                     request()?.let { pending.addLast(it) }
+                    if (skipped.getAndSet(false)) {
+                        page(id, "__read.skipped($block)")
+                        continue                        // the next passage is already on its way
+                    }
                     if (audio == null || audio.pcm.isEmpty()) {
                         // Say it on the page too. A reading that dies silently leaves the last
                         // word lit and looks exactly like a pause — run 3 sat that way for twelve
@@ -304,18 +311,34 @@ object BookReader {
         return if (ws >= 0) at + ws + 1 else at
     }
 
-    /** End a passage on a sentence, so a pause never lands mid-clause. */
+    /**
+     * End a passage on a sentence, so a pause never lands mid-clause — and in preference to that,
+     * end it just before a heading.
+     *
+     * A heading is a real pause: the voice takes one, and rightly. But a pause INSIDE a passage is
+     * spread across that passage's words by the schedule, so the highlight drifts around it. Both
+     * renderings this reader has had to throw away spanned a letter ending, a heading, and the
+     * start of the next letter — the same shape. Let a heading begin a passage and its pause falls
+     * at a join, where a pause belongs.
+     */
     private fun cut(text: String, start: Int): Int {
         val room = PASSAGE
         var end = (start + room).coerceAtMost(text.length)
         if (end >= text.length) return text.length
         val window = text.substring(start, end)
+        headingStart(window, room / 3)?.let { return start + it }
         val para = window.lastIndexOf("\n\n")
         val stop = if (para > room / 3) para
                    else window.lastIndexOfAny(charArrayOf('.', '!', '?', '”', '"'))
         if (stop > room / 3) end = start + stop + 1
         return end
     }
+
+    /** The last "short line on its own" in the window — "Letter 4", "CHAPTER II" — past [least]. */
+    private fun headingStart(window: String, least: Int): Int? =
+        Regex("\\n\\n(?=[^\\n]{1,60}\\n)").findAll(window)
+            .map { it.range.first + 2 }
+            .lastOrNull { it > least && it < window.length }
 
     /**
      * Give each word a slice of the passage's audio.
@@ -359,7 +382,10 @@ object BookReader {
         var tries = 0       // requests that failed and are worth making again
         var waits = 0       // pauses for a rate limit, which is not a failure
         while (tries < 3 && waits < 3 && running.get()) {
-            val result = GeminiRest.speak(context, passage, voice)
+            // The slowest rendering that could still be this passage read once. Anything past it
+            // is abandoned while it downloads instead of being waited out and then rejected.
+            val cap = passage.split(Regex("\\s+")).count { it.isNotBlank() } / MIN_WPM * 60.0 * 1.2
+            val result = GeminiRest.speak(context, passage, voice, cap)
             val limit = result.exceptionOrNull() as? GeminiRest.SpeechLimited
             if (limit != null && limit.perDay) {
                 quietUntil = System.currentTimeMillis() + limit.retrySecs * 1_000L
@@ -382,8 +408,13 @@ object BookReader {
             val words = passage.split(Regex("\\s+")).count { it.isNotBlank() }
             val wpm = if (secs > 0) words / (secs / 60.0) else 0.0
             if (wpm >= MIN_WPM && wpm <= MAX_WPM) return pcm
-            Log.w(TAG, "speech pace not believable (${"%.0f".format(wpm)} wpm: $words words in ${"%.1f".format(secs)}s) — asking again")
-            tries++
+            // Asking for the same passage again cost 65.8 seconds of silence once: the bad
+            // rendering took 156s to make (654s of audio for 160 words) and the replacement
+            // another 32s. A passage the model paces this badly tends to do it again, so give up
+            // on the whole passage at once and let the caller read it in halves instead — they
+            // render in parallel, and shorter chunks are what the model gets right.
+            Log.w(TAG, "speech pace not believable (${"%.0f".format(wpm)} wpm: $words words in ${"%.1f".format(secs)}s)")
+            return null
         }
         // Deliberately nothing rather than the bad audio. A schedule stretched over a rendering
         // that is 1.5s long for 803 characters would tear through a passage at a rate no one can
@@ -407,16 +438,20 @@ object BookReader {
      * reliably — the failures seen here were long passages that the model paced strangely — so a
      * failure becomes a slightly different rhythm rather than a dead end.
      */
-    private fun voiceOrSplit(context: Context, passage: String, depth: Int = 0): Speech? {
+    private suspend fun voiceOrSplit(context: Context, passage: String, depth: Int = 0): Speech? {
         if (passage.isBlank()) return Speech(ByteArray(0), emptyList())
-        voice(context, passage)?.let { return Speech(it, listOf(passage to it.size)) }
+        withContext(Dispatchers.IO) { voice(context, passage) }
+            ?.let { return Speech(it, listOf(passage to it.size)) }
         if (depth >= SPLIT_DEPTH || passage.length < SPLIT_MIN) return null
         val at = splitPoint(passage)
         if (at <= 0 || at >= passage.length) return null
         Log.i(TAG, "splitting a passage the voice would not render (${passage.length} chars)")
-        val a = voiceOrSplit(context, passage.substring(0, at).trim(), depth + 1) ?: return null
-        val b = voiceOrSplit(context, passage.substring(at).trim(), depth + 1) ?: return null
-        return Speech(a.pcm + b.pcm, a.parts + b.parts)
+        return coroutineScope {
+            val a = async { voiceOrSplit(context, passage.substring(0, at).trim(), depth + 1) }
+            val b = async { voiceOrSplit(context, passage.substring(at).trim(), depth + 1) }
+            val ra = a.await(); val rb = b.await()
+            if (ra == null || rb == null) null else Speech(ra.pcm + rb.pcm, ra.parts + rb.parts)
+        }
     }
 
     /** Halfway, but on a sentence — a split mid-clause would be heard as a stumble. */
@@ -425,6 +460,22 @@ object BookReader {
         val ends = Regex("[.!?\u201d]\\s+|\\n\\n").findAll(text).map { it.range.last + 1 }.toList()
         return ends.minByOrNull { kotlin.math.abs(it - mid) } ?: mid
     }
+
+    /**
+     * Skip the passage the reader is waiting on. Only ever on request — a reading that skips by
+     * itself puts a discontinuity in front of someone who will read it as their own attention
+     * having wandered, and they lose text without knowing they lost it. The page marks the gap so
+     * it stays legible.
+     */
+    fun skip() {
+        val w = waitingOn ?: return
+        Log.i(TAG, "skipping the passage the reader is waiting on")
+        skipped.set(true)
+        w.cancel()
+    }
+
+    @Volatile private var waitingOn: Deferred<Speech?>? = null
+    private val skipped = AtomicBoolean(false)
 
     /** Wait, but give up the instant the reading is stopped. False if it was. */
     private fun nap(ms: Long): Boolean {
