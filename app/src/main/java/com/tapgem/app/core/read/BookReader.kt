@@ -61,6 +61,15 @@ object BookReader {
     private const val STALL_AT = 2
 
     /**
+     * Test hooks (debug builds): reject the nth rendering as implausible, or abandon it
+     * mid-download. Both paths exist for faults that happen rarely and at the worst moment, and a
+     * path that has never run is a path nobody has seen work.
+     */
+    @Volatile var testReject = 0
+    @Volatile var testAbandon = 0
+    private val rendered = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
      * The voice. Pace is a property of the voice, not a parameter — the API rejects every rate
      * field, and an instruction to read slowly made Kore faster. Measured over the same 1000
      * characters: Kore 177 wpm, Charon 186, Aoede 192, Zephyr 142, Rasalgethi 143, Iapetus 148.
@@ -125,6 +134,7 @@ object BookReader {
               onProgress: ((Int, Int) -> Unit)? = null, onDone: ((String) -> Unit)? = null) {
         stop()
         if (System.currentTimeMillis() >= quietUntil) limitMsg = null   // yesterday's quota is not today's
+        rendered.set(0)
         val clean = tidy(text)
         if (clean.isBlank()) { onDone?.invoke("Nothing to read."); return }
         running.set(true)
@@ -413,8 +423,16 @@ object BookReader {
         while (tries < 3 && waits < 3 && running.get()) {
             // The slowest rendering that could still be this passage read once. Anything past it
             // is abandoned while it downloads instead of being waited out and then rejected.
-            val cap = passage.split(Regex("\\s+")).count { it.isNotBlank() } / MIN_WPM * 60.0 * 1.2
+            val nth = rendered.incrementAndGet()
+            var cap = passage.split(Regex("\\s+")).count { it.isNotBlank() } / MIN_WPM * 60.0 * 1.2
+            if (nth == testAbandon) { testAbandon = 0; cap = 0.01; Log.w(TAG, "test hook: abandoning rendering $nth") }
+            val began = System.currentTimeMillis()
             val result = GeminiRest.speak(context, passage, voice, cap)
+            // Per-request latency, because three-ahead generation hides it: the seam residual says
+            // the buffer held, never how close it came. A repeat of the 156-second request would be
+            // invisible here until it had eaten the whole buffer and the reader saw a hold.
+            Log.i(TAG, "speech request $nth: ${passage.length} chars, ${System.currentTimeMillis() - began} ms" +
+                (result.getOrNull()?.let { ", ${"%.1f".format(it.size / 2.0 / GeminiRest.SPEECH_RATE_HZ)}s audio" } ?: ", failed"))
             val limit = result.exceptionOrNull() as? GeminiRest.SpeechLimited
             if (limit != null && limit.perDay) {
                 quietUntil = System.currentTimeMillis() + limit.retrySecs * 1_000L
@@ -436,6 +454,11 @@ object BookReader {
             val secs = pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
             val words = passage.split(Regex("\\s+")).count { it.isNotBlank() }
             val wpm = if (secs > 0) words / (secs / 60.0) else 0.0
+            if (nth == testReject) {
+                testReject = 0
+                Log.w(TAG, "test hook: rejecting rendering $nth as implausible")
+                return null
+            }
             if (wpm >= MIN_WPM && wpm <= MAX_WPM) return pcm
             // Asking for the same passage again cost 65.8 seconds of silence once: the bad
             // rendering took 156s to make (654s of audio for 160 words) and the replacement

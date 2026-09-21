@@ -1929,7 +1929,11 @@ class WebTool(private val context: Context) : AiTool {
                 d.widget(reader)?.let { d.replaceWidget(it.copy(z = (d.widgets.maxOfOrNull { o -> o.z } ?: 0) + 1)) } ?: d
             }
             // Debug-only test hook: stall one join to exercise the hold-the-place state.
-            if (com.tapgem.app.BuildConfig.DEBUG) args.int("stall")?.let { com.tapgem.app.core.read.BookReader.stall = it.toLong() }
+            if (com.tapgem.app.BuildConfig.DEBUG) {
+                args.int("stall")?.let { com.tapgem.app.core.read.BookReader.stall = it.toLong() }
+                args.int("reject")?.let { com.tapgem.app.core.read.BookReader.testReject = it }
+                args.int("abandon")?.let { com.tapgem.app.core.read.BookReader.testAbandon = it }
+            }
             com.tapgem.app.core.read.BookReader.start(context, reader, text, from, w.title,
                 onProgress = { at, _ -> DesktopBridge.mutateWidget(w.id) { it.withState("readAt" to at.toString()) } },
                 onDone = { msg -> HudStateBridge.notice(msg) })
