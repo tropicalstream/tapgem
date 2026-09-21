@@ -82,8 +82,9 @@ object BookReader {
     private const val SPLIT_DEPTH = 2
     private const val SPLIT_MIN = 200
 
-    /** Short lines closer together than this are one heading, not two. */
+    /** Short lines closer together than this are one heading, not two — and at most this many. */
     private const val HEADING_RUN = 80
+    private const val HEADING_LINES = 3
 
     private const val MIN_WPM = 100.0
     private const val MAX_WPM = 260.0
@@ -350,8 +351,22 @@ object BookReader {
             .map { it.range.first + 2 }.filter { it < window.length }.toList()
         if (starts.isEmpty()) return null
         var i = starts.lastIndex
-        while (i > 0 && starts[i] - starts[i - 1] <= HEADING_RUN) i--   // walk back over the run
-        return starts[i].takeIf { it > least }
+        var run = 0
+        while (i > 0 && starts[i] - starts[i - 1] <= HEADING_RUN && run < HEADING_LINES) { i--; run++ }
+        val at = starts[i]
+        // Short is not the same as a heading. A page of dialogue is nothing but short lines, and
+        // cutting the passage at every one of them would chop a conversation into fragments. A
+        // heading does not end like a sentence, or it says what it is.
+        if (!looksLikeHeading(window.substring(at).substringBefore('\n'))) return null
+        return at.takeIf { it > least }
+    }
+
+    private fun looksLikeHeading(line: String): Boolean {
+        val t = line.trim()
+        if (t.isEmpty()) return false
+        if (Regex("^(letter|chapter|part|book|volume|canto|act|scene)\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)) return true
+        if (Regex("^[IVXLC]+\\.?$").matches(t) || Regex("^\\d+\\.?$").matches(t)) return true
+        return t.last() !in ".!?\u201d\"" && t.last() != ','
     }
 
     /**

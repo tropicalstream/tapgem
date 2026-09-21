@@ -59,7 +59,13 @@ object Bookmarks {
         val source = keepFile(w.source, id)
         // Geometry is kept for size only; the bookmark is placed afresh when opened. Live playback
         // position/page/app state travel with it — that is the point.
+        // A book keeps its place — which chapter, and how far the reading had got, so "keep
+        // reading" carries on from where the bookmark was made. What it does not keep is the
+        // read-along itself: that window is only a read-along while a reading is running behind
+        // it, and restoring the flag without one would reopen the book as a page of words with
+        // nothing to light them.
         val snap = w.copy(id = id, title = title, source = source, z = 0, onTop = false)
+            .withState("readAlong" to "")
         val b = Bookmark(id, title, snap, System.currentTimeMillis(), null, origin = w.source)
         synchronized(lock) {
             File(dir, "$id.json").writeText(toJson(b).toString())

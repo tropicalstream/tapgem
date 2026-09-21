@@ -529,6 +529,13 @@ chapter. (A web page keeps its page; its read-along opens in a window of its
 own, in front.) The assistant says one short sentence and then stays quiet; the
 voice you hear after that is the reader, not the conversation.
 
+Bookmarking a book keeps your place: the bookmark stores how far the reading
+got, so reopening it and saying "keep reading" carries on from the same
+sentence — on any desktop, after the window has been closed. The read-along
+state itself is not kept, because a read-along window without a reading behind
+it is just a page of words with nothing to light them; a reopened bookmark is
+the book, at your place.
+
 It reads the **whole book**, turning pages itself, not just the chapter in
 view. Playback is slowed to 0.82× with pitch preserved, because every Gemini
 voice reads real prose faster than the 100–170 wpm a reading specialist asks

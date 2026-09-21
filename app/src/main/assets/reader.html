@@ -139,16 +139,22 @@ window.__read = {
        that it admits there is trouble, and past twenty it stops asking the reader to sit through
        an open-ended silence and hands them the choice. The reader may skip; the system may not —
        a highlight that jumps on its own reads as one's own attention lapsing. */
+    /* Escalate against what the reader was PROMISED, not against a clock. Telling someone "this
+       is taking longer than usual" at ten seconds of a wait you told them would take thirty
+       contradicts your own estimate — and a reader already inclined to read trouble as their own
+       fault is the worst audience for a system arguing with itself. Where no estimate was shown
+       (a mid-reading join promises nothing) ten seconds still stands. */
     if(on){
+      var late = (secs ? secs*1000 : 0) || 10000;
       stallTimer=setTimeout(function(){
         window.__read.note('This part is taking longer than usual. Say “stop reading” to stop.');
-        trace.push({ev:'hold10', t:Date.now(), p:cur?cur.k:0, i:cur?cur.idx:-1});
+        trace.push({ev:'late', t:Date.now(), p:cur?cur.k:0, i:cur?cur.idx:-1});
         stallTimer=setTimeout(function(){
           if(el) el.className='now hold stalled';
           window.__read.note('Still waiting for this part. Say “skip ahead”, or “stop reading”.');
           trace.push({ev:'giveup', t:Date.now(), p:cur?cur.k:0, i:cur?cur.idx:-1});
-        }, 10000);
-      }, 10000);
+        }, 20000);
+      }, late);
     }
     /* Say which wait this is. Before the first word there is no place to hold and nothing has
        been promised — what the reader needs is to know the voice is coming and roughly when.
