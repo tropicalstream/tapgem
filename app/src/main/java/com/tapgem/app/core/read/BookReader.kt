@@ -48,6 +48,17 @@ object BookReader {
     /** How far into a file a Project Gutenberg header can be and still be a header. */
     private const val HEADER_LIMIT = 20_000
 
+    /** Measured: a passage takes 22-29s to voice. What the page tells the reader to expect. */
+    private const val EXPECT_SECS = 30
+
+    /**
+     * Test hook (debug builds): hold up one join by this many milliseconds, to see what a reader
+     * actually sees when a request runs long. The path that holds someone's place is the one that
+     * must not be trusted untested, and real joins are under 1.5s so it never runs by itself.
+     */
+    @Volatile var stall = 0L
+    private const val STALL_AT = 2
+
     /**
      * The voice. Pace is a property of the voice, not a parameter — the API rejects every rate
      * field, and an instruction to read slowly made Kore faster. Measured over the same 1000
@@ -65,6 +76,9 @@ object BookReader {
      * over that audio would light every word while the voice said half of them. Ask again.
      */
     private const val MIN_SECS_PER_CHAR = 0.040
+
+    /** And the other end: real speech runs about 0.065 s/char, so anything this slow is wrong too. */
+    private const val MAX_SECS_PER_CHAR = 0.150
 
     /** When the speech model's daily quota returns, and what to say about it meanwhile. */
     @Volatile private var quietUntil = 0L
@@ -161,8 +175,19 @@ object BookReader {
                     // beyond it, silence with a lit word reads as "I broke it".
                     val queued = pending.removeFirstOrNull()
                     val audio = if (queued == null) voice(context, passage) else {
+                        // The start of a reading is acknowledged straight away, not after the
+                        // join threshold: a specialist's ruling, and the reason is that silence
+                        // after a command is read by this population as "I did it wrong" rather
+                        // than "it is working". Mid-reading the threshold still applies, because
+                        // a short join is just a breath.
+                        val first = spoken == 0
                         var held = false
-                        val hold = launch { delay(HOLD_MS); held = true; page(id, "__read.waiting(true)") }
+                        val hold = launch {
+                            delay(if (first) 100L else HOLD_MS)
+                            held = true
+                            page(id, if (first) "__read.waiting(true, $EXPECT_SECS)" else "__read.waiting(true)")
+                        }
+                        if (stall > 0 && spoken == STALL_AT) { delay(stall); stall = 0 }
                         val got = queued.await()
                         hold.cancelAndJoin()
                         if (held) page(id, "__read.waiting(false)")
@@ -309,7 +334,6 @@ object BookReader {
     private fun voice(context: Context, passage: String): ByteArray? {
         if (passage.isBlank()) return ByteArray(0)
         if (System.currentTimeMillis() < quietUntil) return null
-        var short: ByteArray? = null
         var tries = 0       // requests that failed and are worth making again
         var waits = 0       // pauses for a rate limit, which is not a failure
         while (tries < 3 && waits < 3 && running.get()) {
@@ -333,11 +357,15 @@ object BookReader {
                 .getOrNull()
             if (pcm == null) { tries++; nap(1_500L * tries); continue }
             val secs = pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
-            if (secs >= passage.length * MIN_SECS_PER_CHAR) return pcm
-            Log.w(TAG, "speech too short (${"%.1f".format(secs)}s for ${passage.length} chars) — asking again")
-            short = pcm; tries++
+            if (secs >= passage.length * MIN_SECS_PER_CHAR && secs <= passage.length * MAX_SECS_PER_CHAR) return pcm
+            Log.w(TAG, "speech length not believable (${"%.1f".format(secs)}s for ${passage.length} chars) — asking again")
+            tries++
         }
-        return short
+        // Deliberately nothing rather than the bad audio. A schedule stretched over a rendering
+        // that is 1.5s long for 803 characters would tear through a passage at a rate no one can
+        // follow — the run-1 desync in its worst form. A wait the reader can see beats a
+        // highlight the reader cannot trust.
+        return null
     }
 
     /** Wait, but give up the instant the reading is stopped. False if it was. */

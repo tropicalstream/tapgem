@@ -41,11 +41,21 @@ body.waiting w:not(.said):not(.now){color:#46525f}
    window kept the last word lit with no other change — indistinguishable from a pause, for twelve
    minutes. Someone following the highlight deserves to be told the voice is not coming back. */
 #note{flex:none;display:none;padding:6px 12px;border-top:1px solid #1a2230;color:var(--now);font-size:12px}
+/* A wait with nothing moving in it is indistinguishable from a wait that has failed. The bar is
+   calibrated to how long the speech actually takes to make (measured, not guessed), fills to 90%
+   and then keeps breathing rather than sitting at 100% looking stuck. */
+#notebar{display:none;height:3px;margin-top:5px;background:#1a2230;border-radius:2px;overflow:hidden}
+#notebar.on{display:block}
+#notebar s{display:block;height:100%;width:0;background:var(--now);border-radius:2px}
+#notebar.run s{animation:drift 1.2s ease-in-out infinite}
+@keyframes drift{0%,100%{opacity:1}50%{opacity:.3}}
+/* Taking far longer than it should: stop implying progress. */
+w.now.hold.stalled{animation:none}
 </style></head>
 <body>
 <div id="bar"><b id="title">Reading</b><span id="pos"></span><span id="prog"><i id="progi"></i></span></div>
 <div id="text"></div>
-<div id="note"></div>
+<div id="note"><b id="notetext"></b><i id="notebar"><s></s></i></div>
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
@@ -55,7 +65,7 @@ var KEEP=4;                  // passages held on the page; older ones are trimme
 /* Blocks are passages, numbered by the host in the order shown. The host shows a block a passage
    AHEAD of the voice, so the lines under the lit word are always the next words, and then plays
    blocks in order. `cur` is the block being read. */
-var blocks={}, cur=null, timer=0, startedAt=0, lastShown=0, started=false;
+var blocks={}, cur=null, timer=0, startedAt=0, lastShown=0, started=false, barTimer=0, stallTimer=0;
 var progress={done:0,total:0,start:-1};
 /* Every highlight change is recorded: which word lit, when, and where the view was. Read-along is
    verified from this record — sync and skipping are judged from it rather than guessed. */
@@ -69,7 +79,7 @@ window.__read = {
     /* Block 1 is a new reading: clear the page, the schedule and the record. Without this the
        previous reading's text stayed above the new one and its trace entries were still counted
        in the audit — run 3's record opened with two passages from an abandoned attempt. */
-    if(k===1){ clearTimeout(timer); box().innerHTML=''; blocks={}; cur=null; trace=[]; lastShown=0; started=false;
+    if(k===1){ clearTimeout(timer); clearTimeout(stallTimer); box().innerHTML=''; blocks={}; cur=null; trace=[]; lastShown=0; started=false;
                progress={done:0,total:0,start:-1}; $('progi').style.width='0'; $('pos').textContent='';
                window.__read.note(''); }
     $('title').textContent = title || 'Reading';
@@ -114,10 +124,19 @@ window.__read = {
   ended: function(k){ var b=blocks[k]; trace.push({ev:'end', p:k, t:Date.now(), lit:b?b.idx:-1, n:b?b.n:0}); return true; },
   /* The voice has nothing ready yet. Hold the place visibly rather than looking like a reading
      that is simply going very slowly. */
-  waiting: function(on){
+  waiting: function(on, secs){
     document.body.className = on ? 'waiting' : '';
-    var el = cur && cur.words[cur.idx];
-    if(el && el.className.indexOf('now')===0) el.className = on ? 'now hold' : 'now';
+    clearTimeout(stallTimer);
+    /* Before the first word there is no lit word to hold, so the FIRST word of the reading is
+       marked instead: somewhere for the eye to rest, and a line to pre-locate, so when the voice
+       starts it is a change of state on a word already looked at rather than a highlight
+       appearing from nowhere. */
+    var el = cur ? cur.words[cur.idx] : (blocks[1] && blocks[1].words[0]);
+    if(el){ if(on) el.className='now hold'; else el.className = cur ? 'now' : ''; }
+    if(on) stallTimer=setTimeout(function(){
+      if(el) el.className='now hold stalled';
+      window.__read.note('The voice is taking longer than usual. Say “stop reading” to give up on it.');
+    }, 60000);
     /* Say which wait this is. Before the first word there is no place to hold and nothing has
        been promised — what the reader needs is to know the voice is coming and roughly when.
        Mid-reading the message is the opposite: the place IS held, and saying so is the point.
@@ -126,15 +145,25 @@ window.__read = {
        silence at the start of a reading looked like nothing happening at all. */
     window.__read.note(!on ? '' : (started
       ? 'Holding your place — the next part is still coming.'
-      : 'Finding the reading voice. This takes about half a minute.'));
+      : 'Finding the reading voice — about ' + (secs || 30) + ' seconds.'), on && !started ? (secs || 30) : 0);
     trace.push({ev:'wait', t:Date.now(), on:!!on, p:cur?cur.k:0, i:cur?cur.idx:-1});
     return true;
   },
   /* A line at the foot of the window: why the reading stopped, without disturbing the text. */
-  note: function(msg){
-    var n=$('note');
-    if(!msg){ n.style.display='none'; n.textContent=''; return true; }
-    n.textContent=msg; n.style.display='block';
+  note: function(msg, secs){
+    var n=$('note'), t=$('notetext'), bar=$('notebar'), fill=bar.firstChild;
+    clearTimeout(barTimer);
+    if(!msg){ n.style.display='none'; t.textContent=''; bar.className='';
+              fill.style.transition='none'; fill.style.width='0'; return true; }
+    t.textContent=msg; n.style.display='block';
+    if(secs>0){
+      bar.className='on';
+      fill.style.transition='none'; fill.style.width='0';
+      barTimer=setTimeout(function(){
+        fill.style.transition='width '+secs+'s linear'; fill.style.width='90%';
+        barTimer=setTimeout(function(){ bar.className='on run'; }, secs*1000);
+      }, 30);
+    } else { bar.className=''; fill.style.transition='none'; fill.style.width='0'; }
     return true;
   },
   stop: function(){ clearTimeout(timer); trace.push({ev:'stop', p:cur?cur.k:0, t:Date.now()}); return true; },
