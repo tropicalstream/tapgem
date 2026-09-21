@@ -1844,7 +1844,11 @@ class WebTool(private val context: Context) : AiTool {
             "read_out", "read_to_me", "narrate", "aloud" -> "read_aloud"
             "stop_read", "stop_aloud", "quiet" -> "stop_reading"
             "skip", "skip_ahead", "skip_part", "next_part", "move_on" -> "skip_reading"
-            "stop" -> "pause"
+            // While a book is being read, "stop" and "pause" mean the reading — not a media
+            // element on some page. "Stop the reading" was arriving as action=stop, becoming
+            // pause, and pausing nothing; the voice went on.
+            "stop", "pause", "stop_playing", "hold" ->
+                if (com.tapgem.app.core.read.BookReader.isReading) "stop_reading" else if (args.action == "stop") "pause" else args.action
             "resume", "start" -> "play"
             else -> args.action
         }
@@ -1904,7 +1908,10 @@ class WebTool(private val context: Context) : AiTool {
             val loaded = com.tapgem.app.core.read.BookReader.load(text = text, chapters = chapters)
             // Where the reader is now: live if this very text is being read, else where it left off.
             val live = com.tapgem.app.core.read.BookReader.isReading && com.tapgem.app.core.read.BookReader.sourceId == w.id
-            val base = (if (live) com.tapgem.app.core.read.BookReader.position else w.state["readAt"]?.toIntOrNull() ?: 0)
+            // Where it left off: live position, the window's own record, or — for a book whose
+            // window was closed and opened again — the place remembered for the file itself.
+            val base = (if (live) com.tapgem.app.core.read.BookReader.position
+                        else w.state["readAt"]?.toIntOrNull() ?: com.tapgem.app.core.read.BookReader.placeOf(context, w.source))
                 .coerceIn(0, loaded.length)
             val resume = args.bool("continue", "more", "next") == true
             // "Skip ahead two pages", "next chapter", "go back to chapter 3": a jump is relative
@@ -1962,7 +1969,7 @@ class WebTool(private val context: Context) : AiTool {
             // The place is kept on the window being read, in three forms a bookmark can show:
             // the offset the reader resumes from, a percentage, and the chapter.
             com.tapgem.app.core.read.BookReader.start(context, reader, loaded, from, w.title,
-                onProgress = { at, total -> DesktopBridge.mutateWidget(w.id) { it.withState(
+                onProgress = { at, total -> com.tapgem.app.core.read.BookReader.remember(context, w.source, at); DesktopBridge.mutateWidget(w.id) { it.withState(
                     "readAt" to at.toString(),
                     "readPct" to (if (total > 0) (at * 100L / total).toString() else ""),
                     "readChapter" to loaded.chapterAt(at).let { c -> if (c > 0) c.toString() else "" }) } },

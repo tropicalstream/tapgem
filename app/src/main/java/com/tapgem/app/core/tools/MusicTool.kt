@@ -122,12 +122,18 @@ class MusicTool(private val context: Context) : AiTool {
 
             "queue", "add", "play_next", "enqueue" -> Result.success(MusicPlayer.enqueue(resolve(args)))
 
-            "pause", "stop_playing", "hold" -> Result.success(MusicPlayer.pause())
+            // "Stop" is routed to the music player as often as not. If nothing is playing here and
+            // a book is being read, the book is what they mean.
+            "pause", "stop_playing", "hold" -> Result.success(
+                if (!MusicPlayer.playing && com.tapgem.app.core.read.BookReader.isReading) { com.tapgem.app.core.read.BookReader.stop(); "Stopped reading." }
+                else MusicPlayer.pause())
             "resume", "unpause", "continue" -> Result.success(MusicPlayer.resume())
             "toggle", "play_pause" -> Result.success(MusicPlayer.toggle())
             "next", "skip", "forward" -> Result.success(MusicPlayer.next())
             "previous", "prev", "back", "again" -> Result.success(MusicPlayer.previous())
-            "stop", "off", "quiet" -> Result.success(MusicPlayer.stop())
+            "stop", "off", "quiet" -> Result.success(
+                if (!MusicPlayer.playing && com.tapgem.app.core.read.BookReader.isReading) { com.tapgem.app.core.read.BookReader.stop(); "Stopped reading." }
+                else MusicPlayer.stop())
 
             "seek" -> {
                 val to = args.int("to", "position", "seconds")

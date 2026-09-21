@@ -525,7 +525,7 @@ class GeminiLiveClient(
                 "percentage and chapter) — reopening it and saying keep reading resumes there; several " +
                 "bookmarks in one book at different places are all kept. " +
                 "It keeps going by itself until stop_reading. After calling it say ONE short sentence and " +
-                "then stay silent — the glasses are speaking, not you. skip_reading: \"skip ahead\", \"skip this part\" — only when the reader asks, never on your own. stop_reading: \"stop reading\", \"stop\", " +
+                "then stay silent — the glasses are speaking, not you. skip_reading: \"skip ahead\", \"skip this part\" — only when the reader asks, never on your own. stop_reading: \"stop reading\", \"stop the reading\", \"stop\", \"pause\", \"be quiet\" — WHILE A BOOK IS BEING READ, ANY of these is web action=stop_reading, never music, never pause, never a page control; " +
                 "\"that's enough\". read: what the page says — the WHOLE page is read, not just the " +
                 "top of it, and comes back condensed, so use it freely on long articles. Pass query to ask " +
                 "something specific of the page (\"what does it say about X\") instead of reading it all. click: the item whose " +

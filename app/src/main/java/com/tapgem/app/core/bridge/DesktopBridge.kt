@@ -271,6 +271,12 @@ object DesktopBridge {
 
     private fun fire(d: Desktop) {
         for (l in listeners) runCatching { l(d) }
+        // Closing the book — or switching to a desktop it isn't on — pauses the reading. A voice
+        // carrying on from a window that no longer exists cannot be stopped by anything the
+        // reader can see. The place is kept, so "keep reading" picks it back up.
+        val src = com.tapgem.app.core.read.BookReader.sourceId
+        if (src != null && com.tapgem.app.core.read.BookReader.isReading && d.widget(src) == null)
+            com.tapgem.app.core.read.BookReader.stop()
     }
 
     private fun scheduleAutosave(thumb: Boolean = true) {

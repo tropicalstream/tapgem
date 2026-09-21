@@ -173,6 +173,15 @@ object BookReader {
         return Loaded(sb.toString().trim(), starts)
     }
 
+    /** The place reached in a file, kept beyond its window: close the book, open it again, keep reading. */
+    fun remember(context: Context, source: String, at: Int) {
+        if (source.isBlank()) return
+        context.getSharedPreferences(PLACES, Context.MODE_PRIVATE).edit().putInt(source, at).apply()
+    }
+    fun placeOf(context: Context, source: String): Int =
+        if (source.isBlank()) 0 else context.getSharedPreferences(PLACES, Context.MODE_PRIVATE).getInt(source, 0)
+    private const val PLACES = "reading_places"
+
     /** Which window's text is being read — the book or page, not the window lighting the words. */
     @Volatile var sourceId: String? = null
     @Volatile var loaded: Loaded? = null
