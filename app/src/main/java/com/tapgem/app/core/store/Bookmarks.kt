@@ -54,7 +54,12 @@ object Bookmarks {
     /** Snapshot [w] (with [thumb] if available). A bookmark of the same source+title replaces the old one. */
     fun save(w: Widget, thumb: Bitmap?, name: String? = null): Bookmark {
         val title = (name?.trim()?.takeIf { it.isNotBlank() } ?: w.title).take(32)
-        val existing = list().firstOrNull { !it.isWallpaper && it.origin == w.source && it.title.equals(title, ignoreCase = true) }
+        // Same window, same name → the same bookmark, refreshed. A book is the exception: two
+        // bookmarks in one book at different places are two bookmarks, and only the same place
+        // is the same bookmark. Otherwise a second place in the book would erase the first.
+        val at = w.state["readAt"]
+        val existing = list().firstOrNull { !it.isWallpaper && it.origin == w.source &&
+            (if (at != null) it.widget?.state?.get("readAt") == at else it.title.equals(title, ignoreCase = true)) }
         val id = existing?.id ?: UUID.randomUUID().toString().take(8)
         val source = keepFile(w.source, id)
         // Geometry is kept for size only; the bookmark is placed afresh when opened. Live playback
@@ -127,6 +132,13 @@ object Bookmarks {
     }
 
     /** "checkers", "the radio one", an id → best match (exact title, then contains, then word overlap). */
+    /** "5% · chapter 3" — where a reading had got to when a window was bookmarked, or null. */
+    fun placeOf(w: Widget?): String? {
+        val pct = w?.state?.get("readPct")?.toIntOrNull() ?: return null
+        val ch = w.state["readChapter"]?.toIntOrNull()
+        return "$pct%" + (if (ch != null && ch > 0) " · chapter $ch" else "")
+    }
+
     fun find(ref: String?): Bookmark? {
         val all = list(); if (all.isEmpty()) return null
         val q = ref?.trim()?.lowercase(Locale.US).orEmpty()

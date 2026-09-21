@@ -38,12 +38,19 @@ class BookmarkTool : AiTool {
                     else DesktopBridge.activeWidgetId?.let { DesktopBridge.current().widget(it) }
                         ?: DesktopBridge.current().widgets.maxByOrNull { it.z }
                         ?: return Result.failure(IllegalStateException("There's no window to bookmark — open something first."))
-                BookmarksBridge.freeze(w.id)   // app state as of this very moment, not the last tick
-                val fresh = DesktopBridge.current().widget(w.id) ?: w
-                val b = Bookmarks.save(fresh, BookmarksBridge.thumbnail(w.id), args.str("name", "as"))
+                // Bookmarking the read-along window means bookmarking what it is reading. The
+                // window itself is a page of lit words with a reading behind it; saved on its own it
+                // came back as a nameless "Read-along" app with nothing to say and no place to keep.
+                val target = if (w.type == com.tapgem.app.core.model.WidgetType.APP && w.source.endsWith(com.tapgem.app.core.tools.LiveApps.READER))
+                    com.tapgem.app.core.read.BookReader.sourceId?.let { DesktopBridge.current().widget(it) } ?: w else w
+                BookmarksBridge.freeze(target.id)   // app state as of this very moment, not the last tick
+                val fresh = DesktopBridge.current().widget(target.id) ?: target
+                val b = Bookmarks.save(fresh, BookmarksBridge.thumbnail(target.id), args.str("name", "as"))
+                val place = Bookmarks.placeOf(fresh)
                 Result.success(if (fresh.type == com.tapgem.app.core.model.WidgetType.APP)
                     "Saved \"${b.title}\" with its current state — it's in the apps drawer on every desktop; say 'open ${b.title}' to bring it back."
-                    else "Bookmarked \"${b.title}\" — it's in the bookmarks drawer on every desktop; say 'open my ${b.title} bookmark' to bring it back.")
+                    else "Bookmarked \"${b.title}\"${if (place != null) " at $place" else ""} — it's in the bookmarks drawer on every desktop; " +
+                         "say 'open my ${b.title} bookmark' to bring it back${if (place != null) ", and 'keep reading' carries on from there" else ""}.")
             }
             "open" -> {
                 val b = Bookmarks.find(args.str("name", "target", "title", "id", "query"))

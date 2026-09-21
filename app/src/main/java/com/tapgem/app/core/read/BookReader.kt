@@ -49,6 +49,12 @@ object BookReader {
     /** How far into a file a Project Gutenberg header can be and still be a header. */
     private const val HEADER_LIMIT = 20_000
 
+    /** Chapter marker while tidying: a control character no text or tidy rule contains. */
+    private const val MARK = "\u0001"
+
+    /** A "page" for "skip ahead two pages": what fits a read-along window at this type size. */
+    const val PAGE_CHARS = 1_800
+
     /** Measured: a passage takes 22-29s to voice. What the page tells the reader to expect. */
     private const val EXPECT_SECS = 30
 
@@ -126,16 +132,69 @@ object BookReader {
         private set
 
     /**
-     * Start reading [text] aloud, lighting words in the window [readerId], from [from].
+     * A text made ready to read: tidied, with each chapter's start in the tidied text's own
+     * coordinates — the ones [position], `readAt` and every `from` are in. Chapter starts from
+     * the raw text would be wrong by everything tidy() removed before them.
+     */
+    class Loaded(val clean: String, val chapterStarts: List<Int>) {
+        val length: Int get() = clean.length
+        /** 1-based chapter holding [pos]; 0 when there are no chapters. */
+        fun chapterAt(pos: Int): Int = chapterStarts.indexOfLast { it <= pos }.let { if (it < 0) 0 else it + 1 }
+        fun startOf(chapter1: Int): Int? = chapterStarts.getOrNull(chapter1 - 1)
+        val chapters: Int get() = chapterStarts.size
+    }
+
+    /**
+     * Tidy a book given as chapters, keeping where each chapter begins. The chapters are joined
+     * with a marker that no tidy rule touches, the whole is tidied exactly as a flat text would
+     * be, and the markers are then read off and removed — so the starts are exact, and a chapter
+     * the Gutenberg-header rule removes entirely is simply recorded as starting at 0.
+     */
+    fun load(text: String? = null, chapters: List<String>? = null): Loaded {
+        if (chapters.isNullOrEmpty()) return Loaded(tidy(text.orEmpty()), emptyList())
+        val joined = chapters.joinToString("\n\n$MARK\n\n")
+        val tidied = tidy(joined)
+        val kept = tidied.count { it == MARK[0] }
+        val starts = ArrayList<Int>(chapters.size)
+        repeat(chapters.size - 1 - kept) { starts += 0 }          // chapters removed with the header
+        val sb = StringBuilder(tidied.length)
+        starts += 0
+        var i = 0
+        while (i < tidied.length) {
+            val j = tidied.indexOf(MARK, i)
+            if (j < 0) { sb.append(tidied, i, tidied.length); break }
+            sb.append(tidied, i, j)
+            while (sb.isNotEmpty() && sb[sb.length - 1] == '\n') sb.setLength(sb.length - 1)
+            if (sb.isNotEmpty()) sb.append("\n\n")
+            starts += sb.length
+            i = j + MARK.length
+            while (i < tidied.length && tidied[i] == '\n') i++
+        }
+        return Loaded(sb.toString().trim(), starts)
+    }
+
+    /** Which window's text is being read — the book or page, not the window lighting the words. */
+    @Volatile var sourceId: String? = null
+    @Volatile var loaded: Loaded? = null
+        private set
+
+    fun start(context: Context, readerId: String?, text: String, from: Int = 0,
+              bookTitle: String = "Reading",
+              onProgress: ((Int, Int) -> Unit)? = null, onDone: ((String) -> Unit)? = null) =
+        start(context, readerId, load(text = text), from, bookTitle, onProgress, onDone)
+
+    /**
+     * Start reading [book] aloud, lighting words in the window [readerId], from [from].
      * Returns at once; [onDone] runs when the reading ends or is stopped.
      */
-    fun start(context: Context, readerId: String?, text: String, from: Int = 0,
+    fun start(context: Context, readerId: String?, book: Loaded, from: Int = 0,
               bookTitle: String = "Reading",
               onProgress: ((Int, Int) -> Unit)? = null, onDone: ((String) -> Unit)? = null) {
         stop()
         if (System.currentTimeMillis() >= quietUntil) limitMsg = null   // yesterday's quota is not today's
         rendered.set(0)
-        val clean = tidy(text)
+        loaded = book
+        val clean = book.clean
         if (clean.isBlank()) { onDone?.invoke("Nothing to read."); return }
         running.set(true)
         this.readerId = readerId

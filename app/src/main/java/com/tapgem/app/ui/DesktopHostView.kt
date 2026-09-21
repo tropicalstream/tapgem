@@ -400,6 +400,40 @@ class DesktopHostView @JvmOverloads constructor(
         v.snapshotAppState(done)
     }
 
+    /**
+     * One window as it is actually displayed, letterboxed into [w]×[h] and handed to [cb].
+     *
+     * Drawing a WebView onto a bitmap is not a picture of the page. With hardware acceleration
+     * on, several WebViews share one draw path, and asking one to draw itself off-screen handed
+     * back whichever page had drawn last — a bookmark of climate.copernicus.eu got a thumbnail
+     * of a news site. PixelCopy reads what the compositor put on the display for this window's
+     * rectangle, which is the only thing a thumbnail should ever be. Falls back to drawing when
+     * the copy cannot be made (no window yet, view not laid out).
+     */
+    fun captureWidget(id: String, w: Int, h: Int, cb: (Bitmap?) -> Unit) {
+        val v = views[id] ?: return cb(null)
+        val win = (context as? android.app.Activity)?.window
+        if (v.width <= 0 || v.height <= 0 || win == null) return cb(renderWidgetThumbnail(id, w, h))
+        val loc = IntArray(2); v.getLocationInWindow(loc)
+        val full = Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888)
+        val rect = android.graphics.Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
+        val letterbox = { src: Bitmap ->
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val c = Canvas(out); c.drawColor(0xFF0B1016.toInt())
+            val sc = minOf(w.toFloat() / src.width, h.toFloat() / src.height)
+            c.translate((w - src.width * sc) / 2f, (h - src.height * sc) / 2f); c.scale(sc, sc)
+            c.drawBitmap(src, 0f, 0f, null); src.recycle(); out
+        }
+        try {
+            android.view.PixelCopy.request(win, rect, full, { r ->
+                if (r == android.view.PixelCopy.SUCCESS) cb(letterbox(full))
+                else { full.recycle(); cb(renderWidgetThumbnail(id, w, h)) }
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
+        } catch (e: Exception) {
+            full.recycle(); cb(renderWidgetThumbnail(id, w, h))
+        }
+    }
+
     /** One window as it looks right now (bookmark tile), letterboxed into [w]×[h]. */
     fun renderWidgetThumbnail(id: String, w: Int = 232, h: Int = 148): Bitmap? {
         val v = views[id] ?: return null

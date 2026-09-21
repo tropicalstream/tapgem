@@ -563,7 +563,7 @@ class MainActivity : AppCompatActivity() {
 
         bookmarkSub = Bookmarks.observe { uiHandler.post { if (bookmarkPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.BOOKMARKS); if (appsPanel.isVisible) refreshDrawer(LibraryBridge.Drawer.APPS) } }
         LibraryBridge.opener = { d, show -> if (show) openDrawer(d) else closeDrawers() }
-        BookmarksBridge.thumbnailer = { id -> host.renderWidgetThumbnail(id) }
+        BookmarksBridge.thumbnailer = { id, cb -> host.captureWidget(id, 232, 148, cb) }
         DesktopBridge.windowShot = { id, w, h -> host.renderWidgetThumbnail(id, w, h) }
         BookmarksBridge.freezer = { id, done -> host.snapshotAppState(id, done) }
     }
@@ -606,7 +606,8 @@ class MainActivity : AppCompatActivity() {
                 // Apps live in the apps drawer, wallpapers in the wallpapers drawer: this one is pages and windows.
                 tiles += Bookmarks.list().filter { !it.isWallpaper && it.type != WidgetType.APP }.map { b ->
                     LibraryPanel.Tile("bm:" + b.id, b.title, glyphFor(b.type), b.thumb?.let { runCatching { android.graphics.BitmapFactory.decodeFile(it.absolutePath) }.getOrNull() }, deletable = true,
-                        badge = b.type?.name?.lowercase(java.util.Locale.US))
+                        // A book says where you were; anything else says what it is.
+                        badge = Bookmarks.placeOf(b.widget) ?: b.type?.name?.lowercase(java.util.Locale.US))
                 }
                 panel.show("Bookmarks", listOf(LibraryPanel.Section("Saved pages & windows", tiles, maxRows = 3)), accent,
                     if (tiles.size <= 1) "Saved pages and windows appear here — a video, a PDF at its page, a map. Focus one and tap +, or say “bookmark this”. Apps are in the apps drawer."

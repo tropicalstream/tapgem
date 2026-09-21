@@ -519,7 +519,11 @@ class GeminiLiveClient(
                 "including ones below the fold. read_aloud: READ THE BOOK OR PAGE OUT LOUD, word by word, in the " +
                 "glasses' own voice, with each word lit in a Read-along window as it is spoken — for anyone who " +
                 "wants to be read to or to follow the text. Use it for \"read this to me\", \"read the book " +
-                "aloud\", \"start reading from the beginning\" (from=0), \"keep reading\" (continue=true). " +
+                "aloud\", \"start reading from the beginning\" (from=0), \"keep reading\" (continue=true), \"next chapter\" / " +
+                "\"go to chapter 4\" (chapter=next / 4), \"skip ahead two pages\" / \"back a page\" (pages=2 / -1). " +
+                "BOOKMARKS: \"bookmark this\" while a book is being read keeps the place (name of the book, " +
+                "percentage and chapter) — reopening it and saying keep reading resumes there; several " +
+                "bookmarks in one book at different places are all kept. " +
                 "It keeps going by itself until stop_reading. After calling it say ONE short sentence and " +
                 "then stay silent — the glasses are speaking, not you. skip_reading: \"skip ahead\", \"skip this part\" — only when the reader asks, never on your own. stop_reading: \"stop reading\", \"stop\", " +
                 "\"that's enough\". read: what the page says — the WHOLE page is read, not just the " +
@@ -534,6 +538,8 @@ class GeminiLiveClient(
             mapOf("action" to "search|inspect|read|read_aloud|stop_reading|skip_reading|click|type|press|scroll|zoom|play|pause|url|back|forward|reload",
                 "from" to "read_aloud: character offset to start from; 0 = the very beginning. Omit to resume where it left off.",
                 "continue" to "read_aloud: true = carry on from where it stopped last time.",
+                "chapter" to "read_aloud: jump to a chapter and read from there — a number (\"chapter 5\"), or next / previous / +2 / -1 relative to the one being read.",
+                "pages" to "read_aloud: skip this many pages from where the reading is (negative = back): \"skip ahead two pages\" = 2, \"go back a page\" = -1.",
                 "target" to "Widget id/title; defaults to the most recent web or app widget.",
                 "target_text" to "click: visible text, aria-label or placeholder of the element.",
                 "index" to "click: number from the last inspect.",

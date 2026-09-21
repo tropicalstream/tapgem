@@ -1897,13 +1897,37 @@ class WebTool(private val context: Context) : AiTool {
             // usually a title page that finishes in five seconds.
             // A book is read as one run of text with the chapter offsets alongside, so the reader
             // can open the chapter it has reached instead of leaving the page where it started.
-            val book = if (w.type == WidgetType.EPUB) epubBook(w) else null
-            val text = book?.first
-                ?: WebCommandBus.execute(w.id, WebCommandBus.Command("read",
-                    mapOf("cap" to "400000")), timeoutMs = 30_000L)
-            if (text.isBlank()) return Result.success("Nothing to read in \"${w.title}\".")
+            val chapters = if (w.type == WidgetType.EPUB) epubChapters(w) else null
+            val text = if (chapters != null) null
+                else WebCommandBus.execute(w.id, WebCommandBus.Command("read", mapOf("cap" to "400000")), timeoutMs = 30_000L)
+            if (chapters.isNullOrEmpty() && text.isNullOrBlank()) return Result.success("Nothing to read in \"${w.title}\".")
+            val loaded = com.tapgem.app.core.read.BookReader.load(text = text, chapters = chapters)
+            // Where the reader is now: live if this very text is being read, else where it left off.
+            val live = com.tapgem.app.core.read.BookReader.isReading && com.tapgem.app.core.read.BookReader.sourceId == w.id
+            val base = (if (live) com.tapgem.app.core.read.BookReader.position else w.state["readAt"]?.toIntOrNull() ?: 0)
+                .coerceIn(0, loaded.length)
             val resume = args.bool("continue", "more", "next") == true
-            val from = (if (resume) w.state["readAt"]?.toIntOrNull() else args.int("from")) ?: 0
+            // "Skip ahead two pages", "next chapter", "go back to chapter 3": a jump is relative
+            // to where the reading is, in the reader's own coordinates. A page is what fits the
+            // window at this type size; a chapter is the epub's own division.
+            val chapterArg = args.str("chapter")?.trim()?.lowercase(Locale.US)
+            val pagesArg = args.int("pages", "page")
+            val from = when {
+                chapterArg != null && loaded.chapters > 0 -> {
+                    val cur = loaded.chapterAt(base)
+                    val want = when {
+                        chapterArg in setOf("next", "+1", "forward", "ahead") -> cur + 1
+                        chapterArg in setOf("previous", "prev", "-1", "back", "last") -> cur - 1
+                        chapterArg.startsWith("+") -> cur + (chapterArg.drop(1).toIntOrNull() ?: 1)
+                        chapterArg.startsWith("-") -> cur - (chapterArg.drop(1).toIntOrNull() ?: 1)
+                        else -> chapterArg.filter { it.isDigit() }.toIntOrNull() ?: cur
+                    }.coerceIn(1, loaded.chapters)
+                    loaded.startOf(want) ?: base
+                }
+                pagesArg != null -> (base + pagesArg * com.tapgem.app.core.read.BookReader.PAGE_CHARS).coerceIn(0, loaded.length)
+                resume -> base
+                else -> args.int("from") ?: 0
+            }
             // Read-along happens in its own window: it shows the exact words being spoken and
             // lights each one as it is said, which is the point for anyone who needs to see where
             // they are. The book's own window keeps its place and is left alone.
@@ -1934,10 +1958,21 @@ class WebTool(private val context: Context) : AiTool {
                 args.int("reject")?.let { com.tapgem.app.core.read.BookReader.testReject = it }
                 args.int("abandon")?.let { com.tapgem.app.core.read.BookReader.testAbandon = it }
             }
-            com.tapgem.app.core.read.BookReader.start(context, reader, text, from, w.title,
-                onProgress = { at, _ -> DesktopBridge.mutateWidget(w.id) { it.withState("readAt" to at.toString()) } },
+            com.tapgem.app.core.read.BookReader.sourceId = w.id
+            // The place is kept on the window being read, in three forms a bookmark can show:
+            // the offset the reader resumes from, a percentage, and the chapter.
+            com.tapgem.app.core.read.BookReader.start(context, reader, loaded, from, w.title,
+                onProgress = { at, total -> DesktopBridge.mutateWidget(w.id) { it.withState(
+                    "readAt" to at.toString(),
+                    "readPct" to (if (total > 0) (at * 100L / total).toString() else ""),
+                    "readChapter" to loaded.chapterAt(at).let { c -> if (c > 0) c.toString() else "" }) } },
                 onDone = { msg -> HudStateBridge.notice(msg) })
-            return Result.success("Reading \"${w.title}\" aloud now, with the words highlighted in the " +
+            val where = when {
+                chapterArg != null && loaded.chapters > 0 -> " from chapter ${loaded.chapterAt(from)}"
+                pagesArg != null -> " ${if (pagesArg > 0) "$pagesArg page${if (pagesArg == 1) "" else "s"} ahead" else "${-pagesArg} page${if (pagesArg == -1) "" else "s"} back"}"
+                else -> ""
+            }
+            return Result.success("Reading \"${w.title}\" aloud now$where, with the words highlighted in the " +
                 "read-along window — say stop to end it. Do not read anything yourself; the glasses are speaking it.")
         }
         val result = WebCommandBus.execute(w.id, WebCommandBus.Command(action, passthrough))
@@ -2009,6 +2044,18 @@ class WebTool(private val context: Context) : AiTool {
     }.onFailure { Log.w("WebTool", "epub read failed: ${it.message}") }.getOrDefault("")
 
     /** The whole book as one run of text, with the offset each chapter starts at. */
+    /** The book as its chapters, each as plain text, in reading order. */
+    private fun epubChapters(w: Widget): List<String>? = runCatching {
+        val files = EpubUnpacker.chapters(context, File(w.source))
+        if (files.isEmpty()) return null
+        val out = ArrayList<String>(files.size); var total = 0
+        for (f in files) {
+            val t = stripHtml(f.readText()); out += t; total += t.length
+            if (total > EPUB_LIMIT) break
+        }
+        out
+    }.onFailure { Log.w("WebTool", "epub chapters read failed: ${it.message}") }.getOrNull()
+
     private fun epubBook(w: Widget): Pair<String, List<Int>>? = runCatching {
         val chapters = EpubUnpacker.chapters(context, File(w.source))
         if (chapters.isEmpty()) return null
