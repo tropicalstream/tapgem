@@ -71,14 +71,18 @@ object BookReader {
     @Volatile var voice: String = "Zephyr"
 
     /**
-     * Audio shorter than this per character means the model did not read the whole passage —
-     * seen once as a 1000-character passage rendered in 30 s at 383 wpm. A schedule stretched
-     * over that audio would light every word while the voice said half of them. Ask again.
+     * What a rendering's pace must be to be believed, measured on the audio before it is slowed.
+     * Pace is the honest test, not seconds per character: a per-character bound of 0.150 s let a
+     * passage through at 73 wpm because it happened to be 985 characters long, and the schedule
+     * then crawled two and a half times slower than the voice. Real renderings of real prose sit
+     * between 130 and 210 wpm; outside this band the audio is not the passage read once.
      */
-    private const val MIN_SECS_PER_CHAR = 0.040
+    /** How far a passage may be halved, and the length below which halving is pointless. */
+    private const val SPLIT_DEPTH = 2
+    private const val SPLIT_MIN = 200
 
-    /** And the other end: real speech runs about 0.065 s/char, so anything this slow is wrong too. */
-    private const val MAX_SECS_PER_CHAR = 0.150
+    private const val MIN_WPM = 100.0
+    private const val MAX_WPM = 260.0
 
     /** When the speech model's daily quota returns, and what to say about it meanwhile. */
     @Volatile private var quietUntil = 0L
@@ -149,12 +153,12 @@ object BookReader {
                 // The requests belong to this reading's own scope, so stopping cancels them
                 // instead of leaving them to finish into nothing and spend the day's quota.
                 var fetchAt = position
-                fun request(): Deferred<ByteArray?>? {
+                fun request(): Deferred<Speech?>? {
                     if (fetchAt >= clean.length) return null
                     val s0 = fetchAt; val e0 = cut(clean, s0); fetchAt = e0
-                    return async { voice(context, clean.substring(s0, e0).trim()) }
+                    return async { voiceOrSplit(context, clean.substring(s0, e0).trim()) }
                 }
-                val pending = ArrayDeque<Deferred<ByteArray?>>()
+                val pending = ArrayDeque<Deferred<Speech?>>()
                 repeat(AHEAD) { request()?.let { pending.addLast(it) } }
 
                 while (isActive && running.get() && position < clean.length) {
@@ -174,7 +178,7 @@ object BookReader {
                     // specialist's threshold — under 3 s reads as a pause between sentences;
                     // beyond it, silence with a lit word reads as "I broke it".
                     val queued = pending.removeFirstOrNull()
-                    val audio = if (queued == null) voice(context, passage) else {
+                    val audio = if (queued == null) voiceOrSplit(context, passage) else {
                         // The start of a reading is acknowledged straight away, not after the
                         // join threshold: a specialist's ruling, and the reason is that silence
                         // after a command is read by this population as "I did it wrong" rather
@@ -192,9 +196,9 @@ object BookReader {
                         hold.cancelAndJoin()
                         if (held) page(id, "__read.waiting(false)")
                         got
-                    } ?: voice(context, passage)
+                    } ?: voiceOrSplit(context, passage)
                     request()?.let { pending.addLast(it) }
-                    if (audio == null || audio.isEmpty()) {
+                    if (audio == null || audio.pcm.isEmpty()) {
                         // Say it on the page too. A reading that dies silently leaves the last
                         // word lit and looks exactly like a pause — run 3 sat that way for twelve
                         // minutes with nothing on screen to say the voice had gone.
@@ -204,10 +208,20 @@ object BookReader {
                         onDone?.invoke(why); break
                     }
 
-                    val secs = audio.size / 2.0 / GeminiRest.SPEECH_RATE_HZ / SPEED
-                    page(id, "__read.retime($block, ${wordTimings(passage, secs).joinToString(",", "[", "]")}, ${(secs * 1000).toInt()})")
+                    // One schedule per rendering. A passage read in two halves has two paces, and
+                    // spreading one average over both puts the highlight ahead in the first half
+                    // and behind in the second.
+                    var at = 0
+                    val times = ArrayList<Int>()
+                    for ((chunk, bytes) in audio.parts) {
+                        val cs = bytes / 2.0 / GeminiRest.SPEECH_RATE_HZ / SPEED
+                        times += wordTimings(chunk, cs)
+                        at += bytes
+                    }
+                    val secs = audio.pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ / SPEED
+                    page(id, "__read.retime($block, ${times.joinToString(",", "[", "]")}, ${(secs * 1000).toInt()})")
                     onProgress?.invoke(end, clean.length)
-                    play(audio, id, block)
+                    play(audio.pcm, id, block)
                     spoken++
                 }
                 val msg = if (position >= clean.length) "Finished reading." else "Stopped after $spoken passage(s)."
@@ -241,6 +255,14 @@ object BookReader {
      * them off screen. A separator becomes a paragraph break and nothing more.
      */
     private fun tidy(text: String): String = unwrapGutenberg(text)
+        // Structural whitespace is not silence to be performed. An epub's markup leaves lines of
+        // spaces and runs of indentation around headings, and the speech model reads them as
+        // pauses: measured on one Frankenstein passage, 170 words came back as 234.9s of audio
+        // (43 wpm) exactly as the file gives them, and 62.0s (164 wpm) with the same words and the
+        // whitespace collapsed. A schedule spread over the first is hopelessly behind the voice
+        // within a sentence — the highlight and the reading come apart completely.
+        .replace(Regex("(?m)^[ \\t\\u00a0]+$"), "")
+        .replace(Regex("[ \\t\\u00a0]{2,}"), " ")
         // A scene break is typeset with NON-BREAKING spaces between the asterisks, which is why
         // this rule used to miss it: twenty "*" tokens were read as words and lit one by one,
         // 20 flickers of nothing in 2.7 s, and they inflated that passage's measured pace from
@@ -357,8 +379,10 @@ object BookReader {
                 .getOrNull()
             if (pcm == null) { tries++; nap(1_500L * tries); continue }
             val secs = pcm.size / 2.0 / GeminiRest.SPEECH_RATE_HZ
-            if (secs >= passage.length * MIN_SECS_PER_CHAR && secs <= passage.length * MAX_SECS_PER_CHAR) return pcm
-            Log.w(TAG, "speech length not believable (${"%.1f".format(secs)}s for ${passage.length} chars) — asking again")
+            val words = passage.split(Regex("\\s+")).count { it.isNotBlank() }
+            val wpm = if (secs > 0) words / (secs / 60.0) else 0.0
+            if (wpm >= MIN_WPM && wpm <= MAX_WPM) return pcm
+            Log.w(TAG, "speech pace not believable (${"%.0f".format(wpm)} wpm: $words words in ${"%.1f".format(secs)}s) — asking again")
             tries++
         }
         // Deliberately nothing rather than the bad audio. A schedule stretched over a rendering
@@ -366,6 +390,40 @@ object BookReader {
         // follow — the run-1 desync in its worst form. A wait the reader can see beats a
         // highlight the reader cannot trust.
         return null
+    }
+
+    /**
+     * A rendering of one passage: the audio, and the pieces it was rendered in. Usually one piece;
+     * a passage the model keeps getting wrong is read in halves instead, and each half's words are
+     * scheduled against its own audio.
+     */
+    class Speech(val pcm: ByteArray, val parts: List<Pair<String, Int>>)
+
+    /**
+     * Speech for a passage, halving it if the model will not render it plausibly.
+     *
+     * Three rejected renderings used to end the reading, which for a passage that reliably comes
+     * back wrong means the book stops at the same place every time. Shorter chunks render
+     * reliably — the failures seen here were long passages that the model paced strangely — so a
+     * failure becomes a slightly different rhythm rather than a dead end.
+     */
+    private fun voiceOrSplit(context: Context, passage: String, depth: Int = 0): Speech? {
+        if (passage.isBlank()) return Speech(ByteArray(0), emptyList())
+        voice(context, passage)?.let { return Speech(it, listOf(passage to it.size)) }
+        if (depth >= SPLIT_DEPTH || passage.length < SPLIT_MIN) return null
+        val at = splitPoint(passage)
+        if (at <= 0 || at >= passage.length) return null
+        Log.i(TAG, "splitting a passage the voice would not render (${passage.length} chars)")
+        val a = voiceOrSplit(context, passage.substring(0, at).trim(), depth + 1) ?: return null
+        val b = voiceOrSplit(context, passage.substring(at).trim(), depth + 1) ?: return null
+        return Speech(a.pcm + b.pcm, a.parts + b.parts)
+    }
+
+    /** Halfway, but on a sentence — a split mid-clause would be heard as a stumble. */
+    private fun splitPoint(text: String): Int {
+        val mid = text.length / 2
+        val ends = Regex("[.!?\u201d]\\s+|\\n\\n").findAll(text).map { it.range.last + 1 }.toList()
+        return ends.minByOrNull { kotlin.math.abs(it - mid) } ?: mid
     }
 
     /** Wait, but give up the instant the reading is stopped. False if it was. */

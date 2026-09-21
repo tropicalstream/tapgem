@@ -2016,6 +2016,10 @@ class WebTool(private val context: Context) : AiTool {
     /** Chapter files are XHTML; the words are all that is wanted. */
     private fun stripHtml(html: String): String = html
         .replace(Regex("(?is)<(script|style)[^>]*>.*?</\\1>"), " ")
+        // The head is not the book. An epub chapter carries <title>Letter 3</title> and then a
+        // heading saying the same thing, so reading the file top to bottom said "Letter 3 Letter
+        // 3" aloud — heard on the glasses, and every Gutenberg chapter is built this way.
+        .replace(Regex("(?is)<head[^>]*>.*?</head>"), " ")
         .replace(Regex("(?i)<(br|/p|/div|/h[1-6])[^>]*>"), "\n")
         .replace(Regex("<[^>]+>"), " ")
         .replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", "\"")

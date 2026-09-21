@@ -12,7 +12,7 @@ A=/opt/homebrew/bin/adb
 export ANDROID_SERIAL=A06B4A96A733283
 OUT="${1:?out dir}"; FROM="${2:-5000}"; PAGES="${3:-3}"
 TARGET=$(( PAGES * 1800 ))
-BOOK="Alice in Wonderland"
+BOOK="${BOOK:-Alice in Wonderland}"
 mkdir -p "$OUT"
 
 T(){ $A shell "am broadcast -a com.tapgem.app.TOOL --es name $1 --es args '$2'" >/dev/null 2>&1; }
@@ -21,10 +21,10 @@ T(){ $A shell "am broadcast -a com.tapgem.app.TOOL --es name $1 --es args '$2'" 
 # run 2's `logcat -c` before every query threw away the reader's own error messages, and the
 # reason a passage failed was lost with them.
 q(){ local N="rq$RANDOM$RANDOM"
-python3 - "$1" "$N" > "$OUT/.ev.sh" <<'PY'
+python3 - "$1" "$N" "$BOOK" > "$OUT/.ev.sh" <<'PY'
 import json,sys
 js="'%s|'+String(%s)"%(sys.argv[2], sys.argv[1])
-args=json.dumps({"action":"eval","target":"Alice in Wonderland","js":js})
+args=json.dumps({"action":"eval","target":sys.argv[3],"js":js})
 print("am broadcast -a com.tapgem.app.TOOL --es name web --es args " + "'" + args.replace("'", "'\\''") + "'")
 PY
 $A shell < "$OUT/.ev.sh" >/dev/null 2>&1; sleep 2
