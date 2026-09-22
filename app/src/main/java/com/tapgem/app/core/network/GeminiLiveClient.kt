@@ -635,7 +635,7 @@ class GeminiLiveClient(
             mapOf("action" to "open|start|stop|set|read|status|languages", "mode" to "listen|speak|conversation",
                 "my_language" to "The user's language (name or code), default English.", "their_language" to "The other language (name or code).") + geometryProps))
         .put(decl("tutor",
-            "Language-lesson window (a separate tutoring session on the microphone; runs after your turn ends). start: " +
+            "The Language Tutor window (a separate tutoring session on the microphone; runs after your turn ends). start: " +
                 "begin a spoken lesson (language, level A1–C2 or beginner/intermediate/advanced, scenario like 'ordering " +
                 "coffee' or 'job interview'). stop: end it. set: change settings. status: progress, corrections, vocabulary.",
             mapOf("action" to "open|start|stop|set|status", "language" to "Language to learn.", "native" to "The user's own language (default English).",

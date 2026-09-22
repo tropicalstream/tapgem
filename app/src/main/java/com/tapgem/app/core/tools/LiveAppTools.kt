@@ -73,9 +73,9 @@ class TutorTool(private val context: Context) : AiTool {
     override suspend fun execute(args: Args): Result<String> = withContext(Dispatchers.IO) {
         val t = Tutor
         when (args.action) {
-            "open", "show" -> { val o = LiveApps.ensureWindow(context, "tutor.html", LiveApps.TUTOR, "Tutor", args); t.configure(args.str("language"), args.str("native", "my_language"), args.str("level"), args.str("scenario", "topic")); Result.success("Tutor: ${t.langName()} at ${t.level}, scenario \"${t.scenario}\".$o Say start the lesson to begin.") }
+            "open", "show" -> { val o = LiveApps.ensureWindow(context, "tutor.html", LiveApps.TUTOR, "Language Tutor", args); t.configure(args.str("language"), args.str("native", "my_language"), args.str("level"), args.str("scenario", "topic")); Result.success("Tutor: ${t.langName()} at ${t.level}, scenario \"${t.scenario}\".$o Say start the lesson to begin.") }
             "start", "begin", "lesson" -> {
-                val o = LiveApps.ensureWindow(context, "tutor.html", LiveApps.TUTOR, "Tutor", args)
+                val o = LiveApps.ensureWindow(context, "tutor.html", LiveApps.TUTOR, "Language Tutor", args)
                 t.configure(args.str("language"), args.str("native", "my_language"), args.str("level"), args.str("scenario", "topic"))
                 val now = MicOwner.whenMicFree { t.start() }
                 Result.success((if (now) "Lesson starting: " else "The lesson starts the moment I stop talking — say nothing for a second. ") + "${t.langName()} at ${t.level}, \"${t.scenario}\".$o Tap the desktop to come back to me; that ends the lesson.")

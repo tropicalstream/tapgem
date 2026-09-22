@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Tutor</title><!-- state lives in TapGemTutor; not instrumented (window.__tgReg) -->
+<title>Language Tutor</title><!-- state lives in TapGemTutor; not instrumented (window.__tgReg) -->
 <style>
 :root{--bg:#04060a;--fg:#e8eef6;--dim:#6b7686;--you:#dfe7f2;--tutor:#9ad7ff;--fix:#ffc766;--ok:#39d98a;--font:-apple-system,"Roboto","Helvetica Neue",Arial,sans-serif}
 *{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;overflow:hidden}
@@ -55,14 +55,16 @@ function turn(t,live){var c=$('chat');$('hint')&&$('hint').remove();var id='live
   if(live){if(!t.text){if(el)el.remove();return}if(!el){el=document.createElement('div');el.id=id;el.className='t live '+t.who;el.innerHTML='<div class="w">'+(t.who==='you'?'you':'tutor')+'</div><div class="x"></div>';c.appendChild(el)}el.querySelector('.x').textContent=t.text}
   else{if(el)el.remove();var d=document.createElement('div');d.className='t '+t.who;d.innerHTML='<div class="w">'+(t.who==='you'?'you':'tutor')+'</div><div class="x">'+esc(t.text)+'</div>';c.appendChild(d);while(c.childNodes.length>80)c.removeChild(c.firstChild)}
   c.scrollTop=c.scrollHeight}
-function fix(f){var d=document.createElement('div');d.className='fix';d.innerHTML='<div class="s">'+esc(f.said)+'</div><div class="b">'+esc(f.better)+'</div><div class="y">'+esc(f.why)+'</div>';$('fixes').appendChild(d);$('fixes').scrollTop=$('fixes').scrollHeight}
+var seenFix={};
+function fix(f){var k=(f.t||'')+'|'+f.said+'|'+f.better;if(seenFix[k])return;seenFix[k]=1;var d=document.createElement('div');d.className='fix';d.innerHTML='<div class="s">'+esc(f.said)+'</div><div class="b">'+esc(f.better)+'</div><div class="y">'+esc(f.why)+'</div>';$('fixes').appendChild(d);$('fixes').scrollTop=$('fixes').scrollHeight}
 function vocab(list){var v=$('vocab');v.innerHTML='';var now=Date.now();list.slice().reverse().forEach(function(w){var d=document.createElement('div');d.className='v';d.innerHTML='<span class="w'+(w.due&&w.due<=now?' due':'')+'">'+esc(w.word)+'</span><span class="m">'+esc(w.meaning)+(w.hits?' ✓'+w.hits:'')+'</span>';v.appendChild(d)})}
 function render(){$('clang').textContent=S.languageName;$('clevel').textContent=S.level;$('cscen').textContent=S.scenario;
   $('go').textContent=S.status==='off'?'start lesson':'end lesson';$('go').classList.toggle('on',S.status!=='off');
   $('stext').textContent=S.status==='live'?'● lesson live':S.status==='connecting'?'○ connecting…':'○ off'}
 function load(full){if(!B)return;var s;try{s=JSON.parse(B.snapshot(String(full?0:S.seq)))}catch(e){return}
   S.status=s.status;S.language=s.language;S.languageName=s.languageName;S.level=s.level;S.scenario=s.scenario;S.langs=s.langs||S.langs;
-  if(full){$('chat').querySelectorAll('.t').forEach(function(e){e.remove()});$('fixes').innerHTML='';S.seq=0;(s.corrections||[]).forEach(fix)}
+  if(full){$('chat').querySelectorAll('.t').forEach(function(e){e.remove()});$('fixes').innerHTML='';seenFix={};S.seq=0}
+  (s.corrections||[]).forEach(fix);   // every load, not only full ones: a card whose push was lost still arrives
   (s.turns||[]).forEach(function(t){if(t.seq>S.seq){S.seq=t.seq;turn(t,false)}});vocab(s.vocab||[]);
   $('summary').classList.toggle('on',!!s.summary);$('summary').textContent=s.summary||'';render()}
 window.__lxEvent=function(js){var o;try{o=JSON.parse(js)}catch(e){return}

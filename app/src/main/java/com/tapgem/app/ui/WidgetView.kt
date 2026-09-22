@@ -1057,6 +1057,8 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun newWebView(kind: Kind): WebView {
         val wv = NoImeWebView(context)
         webView = wv
+        // Sites pick a codec by asking the browser; make the answer match the hardware.
+        if (kind == Kind.WEB || kind == Kind.APP) com.tapgem.app.core.media.Codecs.install(wv)
         with(wv.settings) {
             javaScriptEnabled = kind != Kind.EPUB
             domStorageEnabled = kind == Kind.WEB || kind == Kind.APP
@@ -1140,6 +1142,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 pageLoading = true; lastHttpStatus = 0
+                if (kind == Kind.WEB || kind == Kind.APP) com.tapgem.app.core.media.Codecs.onPageStarted(view)
             }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
                 if (request.isForMainFrame) lastHttpStatus = errorResponse.statusCode
@@ -1640,17 +1643,40 @@ class WidgetView(context: Context) : FrameLayout(context) {
                     }
                     completeWithTap(wv, o, digest = false, done = { msg ->
                         if (!wantPlay) { main.postDelayed({ done("$msg ${soundLine()}") }, 600L); return@completeWithTap }
+                        if (o?.optBoolean("already") == true) { done("$msg Sound: playing."); return@completeWithTap }
                         // Verify the page really started: page media state or sound on the glasses,
                         // polled for a few seconds (streams buffer), with one nudge via the media API.
+                        // "Playing" means the clock is moving. YouTube's player fires playing and
+                        // then pauses within 100 ms when it overrules a play it did not start; a
+                        // single poll caught that instant and reported success over a paused video.
+                        var lastT = -1.0; var retried = false
                         fun verify(left: Int) {
                             jsObj(wv, "__tg.isPlaying()") { st ->
                                 val has = st?.optBoolean("has") == true
-                                val playing = st?.optBoolean("playing") == true || soundActive()
+                                val t = st?.optDouble("t", 0.0) ?: 0.0
+                                val advancing = st?.optBoolean("playing") == true && lastT >= 0 && t > lastT + 0.3
+                                val wasT = lastT; lastT = t
                                 when {
-                                    playing -> done("$msg Sound: playing.")
-                                    left == 0 -> done("$msg Sound: none — the player hasn't started; click its own play control by text or index.")
+                                    advancing || (!has && soundActive()) -> done("$msg Sound: playing.")
+                                    left == 0 -> {
+                                        // YouTube's mobile player will not resume from anything we
+                                        // can send it once it has paused. What it does do is autoplay
+                                        // a watch page, and it honours a start time — so reload it at
+                                        // the second it stopped on. Once.
+                                        val url = wv.url.orEmpty()
+                                        if (!retried && has && url.contains("youtube.com/watch")) {
+                                            retried = true
+                                            val at = maxOf(0, t.toInt())
+                                            val u = url.replace(Regex("[&?]t=\\d+s?"), "") + (if (url.contains('?')) "&" else "?") + "t=${at}s"
+                                            pageLoading = true; wv.loadUrl(u)
+                                            awaitLoad(12_000L) { main.postDelayed({ lastT = -1.0; verify(4) }, 1_500L) }
+                                        } else done("$msg Sound: none — the player hasn't started; click its own play control by text or index.")
+                                    }
                                     else -> {
-                                        if (has && left == 3) jsObj(wv, "({ok:__tg.forcePlay()})") {}
+                                        // The nudge must land inside the gesture's window (Chromium
+                                        // allows ~5 s after a real tap), so it goes at once, not
+                                        // three polls in.
+                                        if (has && left == 5 && wasT < 0) jsObj(wv, "({ok:__tg.forcePlay()})") {}
                                         main.postDelayed({ verify(left - 1) }, 900L)
                                     }
                                 }
@@ -1951,9 +1977,23 @@ class WidgetView(context: Context) : FrameLayout(context) {
  T.siteSearch=function(text){ if(/(^|\.)radio\.garden$/.test(location.host)){ T.asyncOut=null; fetch('/api/search?q='+encodeURIComponent(text)).then(function(r){ return r.json(); }).then(function(j){ var hits=(j.hits&&j.hits.hits)||[]; var items=[]; hits.forEach(function(h){ var p=h._source&&h._source.page; if(!p||!p.url) return; items.push({label:p.title+(p.subtitle?' – '+p.subtitle:'')+(p.type==='channel'?' (station)':' (place)'),url:p.url}); }); T.virtual=items.slice(0,12); T.asyncOut=items.length?('Radio Garden found: '+T.virtual.map(function(it,i){ return (i+1)+'. '+it.label; }).join(' | ')+'. Click one by index or name, then play.'):('Nothing on Radio Garden matches "'+text+'".'); }).catch(function(e){ T.asyncOut='Radio Garden search failed: '+e; }); return {async:true,msg:'Searching Radio Garden…'}; } return null; };
  T.search=function(text){ var v=T.siteSearch(text); if(v) return v; var el=T.searchField(); if(el){ var u=T.unblock(el,T.center(el),'the search box'); if(u) return u; T.setValue(el,text); T.enter(el); return {msg:'Searched for "'+text+'".'}; } var b=T.searchOpener(); if(b){ var pt=T.center(b); var u=T.unblock(b,pt,'search'); if(u) return u; return {tap:pt,retry:true,msg:'Opened search.'}; } return {msg:'I can\'t find a search box on this page — try clicking a Search link or menu first.'}; };
  T.type=function(field,text,submit){ var el=T.findField(field); if(!el&&field){ var b=T.findByText(field); if(b&&b!==document.body){ var pt=T.center(b); var u=T.unblock(b,pt,field); if(u) return u; return {tap:pt,retry:true,msg:'Opened "'+(txt(b)||'the control')+'".'}; } } if(!el) return {msg:field?('I couldn\'t find a field matching "'+field+'".'):'There\'s no text field on this page.'}; var label=attr(el,'placeholder')||attr(el,'aria-label')||attr(el,'name')||labelFor(el)||'the field'; var u=T.unblock(el,T.center(el),label); if(u) return u; T.setValue(el,text); if(submit){ T.enter(el); return {msg:'Typed "'+text+'" into '+label+' and pressed enter.'}; } return {msg:'Typed "'+text+'" into '+label+'.'}; };
- T.media=function(play){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0]; if(el){ try{ if(play){ var p=el.play(); if(p&&p.catch) p.catch(function(){}); el.muted=false; } else el.pause(); return {msg:(play?'Playing ':'Paused ')+(document.title||el.tagName.toLowerCase())+'.'}; }catch(e){} } var re=play?/(^|\s)(play|resume|listen now)(\s|$|\b)/i:/(^|\s)(pause|stop)(\s|$|\b)/i; var pool=all().filter(laidOut); var cand=pool.filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return false; return re.test(txt(el)); }); var visc=cand.filter(vis); if(visc.length) cand=visc; if(!cand.length&&play) cand=pool.filter(vis).filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea') return false; return /(^|[\s_-])play([\s_-]|$)/i.test(attr(el,'aria-label')+' '+attr(el,'title')+' '+(typeof el.className==='string'?el.className:'')); }); cand.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var btn=cand[0]||null; if(!btn) return {none:true,msg:play?'I couldn\'t find anything to play here — try inspect or click a specific item.':'I couldn\'t find a pause control.'}; var pt=T.center(btn); return {tap:pt,msg:(play?'Pressed play':'Pressed pause')+' on "'+(txt(btn)||document.title)+'".'}; };
- T.isPlaying=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } if(!m.length) return {has:false}; var p=m.some(function(e){ return !e.paused&&!e.ended&&e.readyState>0||(!e.paused&&e.currentTime>0); }); var playing=m.some(function(e){ return !e.paused; }); return {has:true,playing:playing,ready:p}; };
- T.forcePlay=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } var ok=false; m.forEach(function(e){ try{ var pr=e.play(); if(pr&&pr.catch) pr.catch(function(){}); ok=true; }catch(err){} }); return ok; };
+ T.media=function(play){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0]; var title=document.title||(el?el.tagName.toLowerCase():'the page');
+   if(el){ if(!play){ try{ el.pause(); }catch(e){} return {msg:'Paused '+title+'.'}; }
+     /* Already going: leave it alone. Pressing play on a playing video toggled it off. */
+     if(!el.paused&&!el.ended) return {msg:'Already playing '+title+'.',already:true};
+     try{ var p=el.play(); if(p&&p.catch) p.catch(function(){}); }catch(e){}
+     /* A scripted play() the browser refused (on battery media needs a gesture) or the page's own
+        player overruled leaves paused true. Tap the player itself — on YouTube and most players
+        its centre is the play control — so the page gets a real gesture; the verify loop's nudge
+        then runs inside that gesture's window. */
+     if(!el.paused){ el.muted=false; return {msg:'Playing '+title+'.'}; }
+     if(el.tagName==='VIDEO'&&vis(el)){ var vp=T.center(el); return {tap:vp,msg:'Pressed play on '+title+'.'}; } }
+   var re=play?/(^|\s)(play|resume|listen now)(\s|$|\b)/i:/(^|\s)(pause|stop)(\s|$|\b)/i; var pool=all().filter(laidOut); var cand=pool.filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return false; return re.test(txt(el)); }); var visc=cand.filter(vis); if(visc.length) cand=visc; if(!cand.length&&play) cand=pool.filter(vis).filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea') return false; return /(^|[\s_-])play([\s_-]|$)/i.test(attr(el,'aria-label')+' '+attr(el,'title')+' '+(typeof el.className==='string'?el.className:'')); }); cand.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var btn=cand[0]||null; if(!btn) return {none:true,msg:play?'I couldn\'t find anything to play here — try inspect or click a specific item.':'I couldn\'t find a pause control.'}; var pt=T.center(btn); return {tap:pt,msg:(play?'Pressed play':'Pressed pause')+' on "'+(txt(btn)||document.title)+'".'}; };
+ T.isPlaying=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } if(!m.length) return {has:false}; var playing=m.some(function(e){ return !e.paused&&!e.ended&&e.readyState>=2; }); var t=0; m.forEach(function(e){ if(e.currentTime>t) t=e.currentTime; }); return {has:true,playing:playing,ready:playing,t:t}; };
+ T.forcePlay=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } var ok=false;
+   /* YouTube: ask its player, which is the one thing its own state machine will not overrule. */
+   try{ var yp=document.getElementById('movie_player'); if(yp&&typeof yp.playVideo==='function'){ yp.playVideo(); ok=true; } }catch(e){}
+   m.forEach(function(e){ try{ var pr=e.play(); if(pr&&pr.catch) pr.catch(function(){}); ok=true; }catch(err){} }); return ok; };
  T.scroller=function(){ var d=document.scrollingElement||document.documentElement; if(d.scrollHeight>d.clientHeight+10) return d; var best=d,ba=0; try{ Array.prototype.forEach.call(document.querySelectorAll('div,main,section,ul,ol'),function(el){ var s=getComputedStyle(el); if(!/(auto|scroll)/.test(s.overflowY+' '+s.overflowX)) return; if(el.scrollHeight<=el.clientHeight+10&&el.scrollWidth<=el.clientWidth+10) return; var r=el.getBoundingClientRect(); var a=Math.min(r.width,innerWidth)*Math.min(r.height,innerHeight); if(a>ba){ba=a;best=el;} }); }catch(e){} return best; };
  T.scroll=function(dir,amount){ if(window.__tgScroll) return window.__tgScroll(dir,amount); var a=amount||300; var se=T.scroller(); var bx=se.scrollLeft,by=se.scrollTop; if(dir==='up') se.scrollBy(0,-a); else if(dir==='down') se.scrollBy(0,a); else if(dir==='left') se.scrollBy(-a,0); else if(dir==='right') se.scrollBy(a,0); else if(dir==='top') se.scrollTo(0,0); else if(dir==='bottom') se.scrollTo(0,se.scrollHeight); else return 'Unknown direction '+dir+'.'; var moved=(se.scrollLeft!==bx)||(se.scrollTop!==by); return moved?('Scrolled '+dir+'.'):('Can\'t scroll '+dir+' any further.'); };
  window.__tg=T;
