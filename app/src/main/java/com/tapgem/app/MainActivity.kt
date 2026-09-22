@@ -614,9 +614,10 @@ class MainActivity : AppCompatActivity() {
                 panel.show("Apps & widgets", listOf(
                     // Six across at 84px: a dozen apps in two rows, and the widgets and sites still
                     // on screen beneath them. Past that it scrolls.
-                    LibraryPanel.Section("Apps", apps, tileW = 84, tileH = 78, cols = 6, maxRows = 20, labelLines = 2),
-                    LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 46, cols = 6, maxRows = 1),
-                    LibraryPanel.Section("Sites", sites, tileW = 62, tileH = 42, cols = 8, maxRows = 1)
+                    LibraryPanel.Section("Apps", apps, tileW = 84, tileH = 76, cols = 6, maxRows = 20, labelLines = 2),
+                    LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 44, cols = 6, maxRows = 1),
+                    // Seven sites, one row, names in full on two lines: "Radio Garden", not "Radio G…".
+                    LibraryPanel.Section("Sites", sites, tileW = 70, tileH = 62, cols = 7, maxRows = 1, labelLines = 2)
                 ), accent, if (apps.isEmpty()) "No apps yet — say “make me a …” and it appears here." else null)
             }
             LibraryBridge.Drawer.BOOKMARKS -> {

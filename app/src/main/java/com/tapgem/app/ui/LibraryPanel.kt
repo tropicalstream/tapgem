@@ -126,6 +126,8 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
     private fun tile(t: Tile, w: Int, h: Int, labelLines: Int = 1): View {
         val small = h < 70
         val labelH = if (labelLines > 1) LABEL_H + 12 * (labelLines - 1) else LABEL_H
+        // On a small tile the label sits over the face; two lines need a deeper strip.
+        val stripH = if (labelLines > 1) 30 else 18
         val f = FrameLayout(context).apply {
             isClickable = true; isFocusable = true; contentDescription = t.label
             background = GradientDrawable().apply {
@@ -151,7 +153,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         if (t.thumb == null && t.glyph.isNotEmpty()) f.addView(TextView(context).apply {
             text = t.glyph; textSize = if (small) 14f else 22f; setTextColor(if (t.swatch != null) 0xFFFFFFFF.toInt() else accent); gravity = Gravity.CENTER
             if (t.swatch != null) setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
-        }, LayoutParams(LayoutParams.MATCH_PARENT, faceH))
+        }, LayoutParams(LayoutParams.MATCH_PARENT, if (small && labelLines > 1) faceH - stripH else faceH))
         if (t.dashed && t.thumb != null) f.addView(TextView(context).apply {
             text = "+"; textSize = 24f; setTextColor(accent); gravity = Gravity.CENTER; includeFontPadding = false; setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
         }, LayoutParams(LayoutParams.MATCH_PARENT, faceH))
@@ -160,7 +162,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(6, 0, 4, 0)
             if (small) background = GradientDrawable().apply { cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, 8f, 8f, 8f, 8f); setColor(0x99000000.toInt()) }
             addView(TextView(context).apply {
-                text = t.label; textSize = 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = labelLines; ellipsize = TextUtils.TruncateAt.END
+                text = t.label; textSize = if (small && labelLines > 1) 9.5f else 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = labelLines; ellipsize = TextUtils.TruncateAt.END
                 if (labelLines > 1) { setLineSpacing(0f, 0.95f); gravity = Gravity.CENTER_VERTICAL }
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -169,7 +171,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
                 text = b; textSize = 9f; setTextColor(accent); setPadding(4, 0, 0, 0)
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }) }
-        }, LayoutParams(LayoutParams.MATCH_PARENT, if (small) 18 else labelH, Gravity.BOTTOM))
+        }, LayoutParams(LayoutParams.MATCH_PARENT, if (small) stripH else labelH, Gravity.BOTTOM))
         if (t.selected && small) f.addView(TextView(context).apply { text = "✓"; textSize = 10f; setTextColor(accent); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt()) }, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { topMargin = 2; marginEnd = 5 })
         if (t.deletable) f.addView(TextView(context).apply {
             text = "✕"; textSize = 9.5f; gravity = Gravity.CENTER; setTextColor(0xFFE0F4FF.toInt())
