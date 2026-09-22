@@ -27,6 +27,8 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -1418,6 +1420,38 @@ class WidgetView(context: Context) : FrameLayout(context) {
         }
         /** True on battery: apps should animate slower (or not at all). */
         @JavascriptInterface fun eco(): Boolean = eco
+        /**
+         * HTTPS GET on the app's behalf, answered through `window.__tgFetched(token, status, body)`.
+         * App pages are served from a file: URL, whose origin is null, and a fetch() from there is at
+         * the mercy of each site's CORS headers; going through the host is what makes a weather
+         * app that talks to a forecast service work at all. Asynchronous, so the page keeps drawing.
+         */
+        @JavascriptInterface fun fetch(url: String, token: String) {
+            val wv = webView ?: return
+            val t = token.take(24).replace(Regex("[^A-Za-z0-9_]"), "")
+            if (!url.startsWith("https://")) { main.post { wv.evaluateJavascript("window.__tgFetched&&__tgFetched('$t',0,'https only')", null) }; return }
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                var status = 0; var body = ""
+                runCatching {
+                    val req = okhttp3.Request.Builder().url(url).header("User-Agent", "TapGem/1.0 (RayNeo X3 Pro)").build()
+                    com.tapgem.app.core.media.Net.http.newCall(req).execute().use { r -> status = r.code; body = r.body?.string().orEmpty().take(1_500_000) }
+                }.onFailure { body = it.message ?: "request failed" }
+                main.post { runCatching { wv.evaluateJavascript("window.__tgFetched&&__tgFetched('$t',$status,${org.json.JSONObject.quote(body)})", null) } }
+            }
+        }
+        /** Where the glasses are, answered through `window.__tgLocated(token, json)` with lat/lon or an error. */
+        @JavascriptInterface fun locate(token: String) {
+            val wv = webView ?: return
+            val t = token.take(24).replace(Regex("[^A-Za-z0-9_]"), "")
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                val fix = runCatching { com.tapgem.app.core.location.LocationSource.current(context) }.getOrNull()
+                // Named, when it can be: "Here" on a weather app is a coordinate pretending to be a place.
+                val name = fix?.let { runCatching { com.tapgem.app.core.network.Geocoder.reverse(it.lat, it.lon) }.getOrNull() }
+                val json = if (fix != null) org.json.JSONObject().put("lat", fix.lat).put("lon", fix.lon).put("accuracy", fix.accuracyM).put("source", fix.source).put("name", name ?: "").toString()
+                           else org.json.JSONObject().put("error", "No location yet").toString()
+                main.post { runCatching { wv.evaluateJavascript("window.__tgLocated&&__tgLocated('$t',${org.json.JSONObject.quote(json)})", null) } }
+            }
+        }
         @JavascriptInterface fun load(key: String): String {
             val k = "app." + key.take(32).replace(Regex("[^A-Za-z0-9_.-]"), "_")
             return widget.state[k].orEmpty()

@@ -550,6 +550,12 @@ class MainActivity : AppCompatActivity() {
             else Bookmarks.list().firstOrNull { "bm:" + it.id == t.key }?.let { b -> closeDrawers(); val placed = BookmarkTool.place(b); showNotice("Opened \"${placed.title}\"") }
         }
         bookmarkPanel.onDelete = { t -> Bookmarks.list().firstOrNull { "bm:" + it.id == t.key }?.let { b -> Bookmarks.delete(b.id); showNotice("Forgot \"${b.title}\"") } }
+        // Deleting an app is not undoable — the file and whatever it saved go — so it asks first.
+        appsPanel.onDelete = { t -> Library.apps().firstOrNull { it.key == t.key }?.let { e ->
+            appsPanel.confirm("Delete “${e.title}”?", "Removes the app and anything it saved. Any window showing it closes.", "Delete") {
+                if (Library.deleteApp(e)) { showNotice("Deleted \"${e.title}\""); refreshDrawer(LibraryBridge.Drawer.APPS) }
+                else showNotice("\"${e.title}\" is part of TapGem and stays.")
+            } } }
         wallpaperPanel.onTap = { t ->
             when {
                 t.key == "keep" -> { val wp = DesktopBridge.current().wallpaper; val b = Bookmarks.saveWallpaper(wp, BookmarkTool.wallpaperThumb(wp)); showNotice(if (b != null) "Kept wallpaper \"${b.title}\"" else "No wallpaper to keep"); refreshDrawer(LibraryBridge.Drawer.WALLPAPERS) }
@@ -606,7 +612,7 @@ class MainActivity : AppCompatActivity() {
         val panel = panelFor(d)
         when (d) {
             LibraryBridge.Drawer.APPS -> {
-                val apps = Library.apps().map { LibraryPanel.Tile(it.key, it.title, "◈", it.thumb) }
+                val apps = Library.apps().map { LibraryPanel.Tile(it.key, it.title, "◈", it.thumb, deletable = !it.builtIn) }
                 val kinds = Library.KINDS.map { LibraryPanel.Tile("kind:" + it.key, it.label, it.glyph) }
                 val sites = Library.SITES.map { LibraryPanel.Tile("site:" + it.key, it.label, "◎") }
                 // The drawer scrolls, so every app is shown; a "+4 more — say its name" line

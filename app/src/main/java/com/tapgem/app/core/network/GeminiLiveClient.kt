@@ -46,7 +46,7 @@ class GeminiLiveClient(
                 "MODES: hud = black background (transparent on the glasses), small unobtrusive panels; " +
                 "desktop = wallpaper plus windows with title bars. Wallpapers only show in desktop mode.\n" +
                 "WIDGET TYPES: text, clock, live (auto-refreshing info card via web search: scores, news, " +
-                "weather, prices), ticker (a one-line scrolling crawl of items: stocks, headlines, scores, " +
+                "prices — for weather use desktop action=weather instead), ticker (a one-line scrolling crawl of items: stocks, headlines, scores, " +
                 "weather — query=what to show), image, video, audio, pdf, epub, web, app (mini web apps you " +
                 "design with app_builder), model3d (glTF/GLB/OBJ), map (Google Maps in a window: search a " +
                 "place, directions=true with travel_mode for navigation, and any 'ask Maps' question through " +
@@ -453,8 +453,12 @@ class GeminiLiveClient(
                 "locate: where the glasses are right now (place name + coordinates). phone_gps: check whether " +
                 "the paired phone is streaming its GPS to the glasses (troubleshooting). usage: which models " +
                 "are in use and this session's token/turn/tool counts — call it for any question about the " +
-                "model, tokens, context or quota, and read the numbers back plainly.",
-            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|apps|wallpapers|locate|phone_gps|usage",
+                "model, tokens, context or quota, and read the numbers back plainly. weather: THE weather — " +
+                "opens the weather app (real forecast with units, hourly and ten-day, air quality, its own " +
+                "settings) for where the glasses are, or for place=<city> (\"weather in Lisbon\"). Use it for " +
+                "any weather request instead of a live card or a web search; it shows the numbers itself.",
+            mapOf("action" to "describe|arrange|new|save|load|delete|list|rename|set_mode|undo|clear|apps|wallpapers|locate|phone_gps|usage|weather",
+                "place" to "weather: a city or place name to follow instead of the glasses' own location.",
                 "name" to "Desktop name for new/save/load/delete/rename.",
                 "mode" to "set_mode: hud or desktop.",
                 "layout" to "arrange: grid (default) | columns | rows | cascade.",

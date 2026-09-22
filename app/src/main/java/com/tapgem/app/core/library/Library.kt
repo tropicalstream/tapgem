@@ -33,7 +33,11 @@ object Library {
 
     // ── apps & widgets ────────────────────────────────────────────
 
-    class AppEntry(val key: String, val title: String, val thumb: Bitmap?, val bookmark: Bookmarks.Bookmark?, val file: File?)
+    class AppEntry(val key: String, val title: String, val thumb: Bitmap?, val bookmark: Bookmarks.Bookmark?, val file: File?,
+                   /** Shipped with TapGem and reinstalled at launch — cannot be deleted from the drawer. */
+                   val builtIn: Boolean = false)
+
+    private val BUILT_IN = setOf("music_player", "tutor_client", "interpreter_client", "discord_client", "irc_client", "weather_app")
 
     /** Bookmarked apps first (they carry state), then app files on desktops that have no bookmark; one per app name. */
     private val HELPER_PAGES = setOf(
@@ -59,14 +63,14 @@ object Library {
                 if (f.name in HELPER_PAGES || appBase(f) in HELPER_BASES) return@forEach
                 val base = appBase(f)
                 if (!seen.add(base)) return@forEach
-                out += AppEntry("file:" + f.absolutePath, prettify(base), thumbOf(appThumbFile(base), 232, 148), null, f)
+                out += AppEntry("file:" + f.absolutePath, prettify(base), thumbOf(appThumbFile(base), 232, 148), null, f, builtIn = base in BUILT_IN)
             }
         return out
     }
 
     /** `smart_aquarium__v2_1789…` / `bm_5cf76cb6_checkers__v1_…` → "smart_aquarium" / "checkers". */
     fun appBase(f: File): String = f.nameWithoutExtension.replace(Regex("^(bm_[0-9a-f]{8}_|[0-9a-f]{8}-)+"), "").substringBefore("__v").replace(Regex("_\\d{10,}$"), "")
-    private fun prettify(base: String) = base.removeSuffix("_client").split('_').filter { it.isNotBlank() }
+    private fun prettify(base: String) = base.removeSuffix("_client").removeSuffix("_app").split('_').filter { it.isNotBlank() }
         .joinToString(" ") { w -> if (w.equals("irc", true)) "IRC" else w.replaceFirstChar { it.uppercase() } }
 
     /** Built-in kinds a tap can create on the spot, with what the tap adds. */
@@ -76,8 +80,8 @@ object Library {
         Kind("note", "Note", "¶", mapOf("type" to "text", "text" to "New note — say what to write here.", "title" to "Note")),
         Kind("live", "Live card", "◉", mapOf("type" to "live", "query" to "top news headlines right now", "title" to "Headlines")),
         Kind("ticker", "Ticker", "≋", mapOf("type" to "ticker", "query" to "S&P 500, Nasdaq, Dow, Apple, Nvidia")),
-        Kind("map", "Map", "⌖", mapOf("type" to "map", "query" to "here")),
-        Kind("weather", "Weather", "☁", mapOf("type" to "live", "query" to "current weather and today's forecast where I am", "title" to "Weather"))
+        Kind("map", "Map", "⌖", mapOf("type" to "map", "query" to "here"))
+        // Weather is an app now (LiveApps.WEATHER) and lives in the Apps row, not here.
     )
 
     class Site(val key: String, val label: String, val url: String)
@@ -99,7 +103,28 @@ object Library {
         return e.title
     }
 
-    suspend fun addKind(context: Context, k: Kind): Result<String> = WidgetOps.add(context, Args(k.args))
+    suspend fun addKind(context: Context, k: Kind): Result<String> =
+        // Weather is an app now, not a card of generated text: measurements from a forecast
+        // service with their units, hourly and ten-day, air quality, settings.
+        if (k.key == "weather") Result.success(com.tapgem.app.core.tools.LiveApps.ensureWindow(context, "weather.html",
+                com.tapgem.app.core.tools.LiveApps.WEATHER, "Weather", Args(mapOf("w" to "560", "h" to "400", "anchor" to "top left"))).ifBlank { "Weather is already open." })
+        else WidgetOps.add(context, Args(k.args))
+
+    /**
+     * Delete an app from the glasses: its bookmark, every version of its file, its picture, and
+     * any window showing it. Built-ins are refused — they are reinstalled at launch anyway.
+     */
+    fun deleteApp(e: AppEntry): Boolean {
+        if (e.builtIn) return false
+        val base = e.file?.let { appBase(it) } ?: e.bookmark?.widget?.let { appBase(File(it.source)) } ?: return false
+        e.bookmark?.let { Bookmarks.delete(it.id) }
+        val files = (DesktopStore.appsDir.listFiles { f -> f.extension == "html" && appBase(f) == base } ?: emptyArray()).toList()
+        val gone = files.map { it.absolutePath }.toSet()
+        DesktopBridge.mutate { d -> d.copy(widgets = d.widgets.filterNot { it.type == WidgetType.APP && it.source in gone }) }
+        files.forEach { it.delete() }
+        appThumbFile(base).delete()
+        return true
+    }
     suspend fun openSite(context: Context, s: Site): Result<String> = WidgetOps.add(context, Args(mapOf("type" to "web", "url" to s.url, "title" to s.label)))
 
     // ── wallpapers & themes ───────────────────────────────────────

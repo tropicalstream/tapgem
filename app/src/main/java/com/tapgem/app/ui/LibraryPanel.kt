@@ -92,6 +92,39 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
     }
 
+    /**
+     * Ask before doing something that cannot be undone, in the drawer itself: a card over the
+     * tiles with the question and two answers, tapped with the cursor like everything else.
+     */
+    fun confirm(title: String, detail: String, yes: String, onYes: () -> Unit) {
+        val shade = FrameLayout(context).apply {
+            isClickable = true; isFocusable = true      // swallows taps on the tiles beneath
+            setBackgroundColor(0xB3060A10.toInt())
+        }
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(16, 14, 16, 12)
+            background = GradientDrawable().apply { cornerRadius = 12f; setColor(0xFF161E27.toInt()); setStroke(1, 0x55FFFFFF) }
+            addView(TextView(context).apply { text = title; textSize = 13.5f; setTextColor(0xFFE0F4FF.toInt()); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) })
+            addView(TextView(context).apply { text = detail; textSize = 10.5f; setTextColor(0xFF8FA6B8.toInt()); setPadding(0, 4, 0, 10); maxWidth = 260 })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END
+                fun button(label: String, filled: Boolean, onTap: () -> Unit) = TextView(context).apply {
+                    text = label; textSize = 11.5f; gravity = Gravity.CENTER; setPadding(16, 7, 16, 7)
+                    setTextColor(if (filled) 0xFF0B1016.toInt() else 0xFFE0F4FF.toInt())
+                    background = GradientDrawable().apply { cornerRadius = 8f; if (filled) setColor(0xFFFF6B6B.toInt()) else setStroke(1, 0x66FFFFFF) }
+                    isClickable = true; isFocusable = true; contentDescription = label
+                    setOnClickListener { onTap() }
+                }
+                // this@LibraryPanel: inside the row's apply{} a bare removeView would ask the row,
+                // which does not hold the shade — the card could never be dismissed.
+                addView(button("Keep", false) { this@LibraryPanel.removeView(shade) })
+                addView(button(yes, true) { this@LibraryPanel.removeView(shade); onYes() }, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginStart = 8 })
+            })
+        }
+        shade.addView(card, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        addView(shade, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+    }
+
     /** Scroll by a wheel/two-finger delta; true when it actually moved. */
     fun scrollByDelta(dy: Float): Boolean {
         val before = scroller.scrollY

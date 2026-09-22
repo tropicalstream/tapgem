@@ -1317,6 +1317,19 @@ class DesktopTool(private val context: Context) : AiTool {
                 Result.success(if (fix != null) "Phone GPS is flowing: ${fix.latLon()}, about ${fix.accuracyM.toInt()} m."
                     else "No phone GPS yet — ${pg.whyNot(context)}. Launcher status: ${pg.lastStatus} ${pg.lastStatusMessage ?: ""}; BLE link ${if (pg.isPhoneConnected(context)) "up" else "down"}.")
             }
+            "weather", "forecast" -> {
+                // The weather app: real measurements with units, hourly and ten-day, air quality.
+                // A named place is handed to the app; without one it uses where the glasses are.
+                val note = LiveApps.ensureWindow(context, "weather.html", LiveApps.WEATHER, "Weather",
+                    Args(mapOf("w" to (args.str("w") ?: "560"), "h" to (args.str("h") ?: "400"), "anchor" to (args.str("anchor", "position") ?: "top left"))))
+                val place = args.str("place", "city", "location", "where", "query")?.takeIf { it.isNotBlank() && !it.equals("here", true) && !it.contains("where i am", true) }
+                LiveApps.window(LiveApps.WEATHER)?.let { w ->
+                    DesktopBridge.mutateWidget(w.id) { it.withState("app.place" to (place ?: "")) }
+                    DesktopBridge.setActive(w.id)
+                }
+                Result.success("Weather is up" + (if (place != null) " for $place" else " for where the glasses are") + "." + note +
+                    " It shows the forecast itself — don't read the numbers out unless asked.")
+            }
             "apps", "app_drawer", "widgets" -> {
                 com.tapgem.app.core.bridge.LibraryBridge.show(com.tapgem.app.core.bridge.LibraryBridge.Drawer.APPS)
                 val apps = com.tapgem.app.core.library.Library.apps().joinToString(", ") { it.title }.ifBlank { "none yet" }

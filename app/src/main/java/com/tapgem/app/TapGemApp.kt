@@ -96,6 +96,7 @@ class TapGemApp : Application() {
         runCatching {
             com.tapgem.app.core.tools.LiveApps.install(this, "winamp.html", com.tapgem.app.core.tools.LiveApps.MUSIC)
             com.tapgem.app.core.tools.LiveApps.install(this, "skins.html", com.tapgem.app.core.tools.LiveApps.MUSIC_SKINS)
+            com.tapgem.app.core.tools.LiveApps.install(this, "weather.html", com.tapgem.app.core.tools.LiveApps.WEATHER)
         }
         WidgetRefreshEngine.start(this)
         runCatching {

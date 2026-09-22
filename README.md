@@ -185,6 +185,9 @@ of tiles, a ✕, tap outside to close:
   drives well (YouTube, Radio Garden, Internet Archive, Wikipedia, Google Maps,
   SoundCloud, Bandcamp). Tap anything and it lands on the current desktop.
   *"Show my apps"*.
+- Every app you generated has an **✕** on its tile; it asks before deleting, then removes
+  the app, anything it saved and any window showing it. The apps that ship with TapGem
+  (music player, weather, the live clients) have no ✕ — they come back at launch anyway.
 - **Bookmarks** (ribbon) — saved pages and windows that aren't apps: a video, a
   PDF at its page, a map, a note; see *Bookmarks* below. The three drawers never
   show the same thing twice.
@@ -567,6 +570,22 @@ reader stops and says how long until it returns (the quota resets at midnight
 UTC — 5pm Pacific). A per-minute rate limit is different: the reader waits it
 out and carries on. Billing on the key raises the daily cap; nothing in TapGem
 can.
+
+**Weather** (a real weather app, not a card of generated text)
+- "What's the weather?" · "Weather in Lisbon." · "Show me the forecast."
+
+Opens the weather app for where the glasses are, or for a named place. Today
+(current conditions, feels-like, high/low, the next 24 hours, a conditions grid:
+UV with its scale, wind with compass and Beaufort, humidity and dew point,
+pressure with its three-hour trend, visibility, cloud cover, precipitation,
+sun times and daylight, air quality or moon phase), **10 days** with
+temperature range bars, **Charts** (48 h temperature, feels-like and chance of
+precipitation; pressure and humidity; today's UV curve) and **Air** (US and
+European AQI with pollutant levels scaled to the WHO guidelines). The ⚙ has
+units for temperature, wind, pressure and precipitation, 12/24-hour clock,
+refresh interval and text size. Data is Open-Meteo (forecast, geocoding) and
+CAMS (air quality); no key needed. Places are set by voice — the glasses have no
+keyboard.
 
 **Look**
 - "Give it a neon theme." (presets: midnight, neon, paper, forest, sunset, mono, ocean, **wood** — dark walnut

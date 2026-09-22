@@ -19,6 +19,7 @@ object LiveApps {
     const val MUSIC = "music_player.html"
     const val READER = "reader.html"
     const val MUSIC_SKINS = "music_skins.html"
+    const val WEATHER = "weather_app.html"
     fun install(context: Context, asset: String, file: String): File {
         val f = File(DesktopStore.appsDir, file)
         val html = context.assets.open(asset).bufferedReader().readText()
