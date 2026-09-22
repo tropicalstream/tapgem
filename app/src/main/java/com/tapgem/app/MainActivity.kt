@@ -263,6 +263,11 @@ class MainActivity : AppCompatActivity() {
             override fun onReceive(c: Context?, i: Intent?) {
                 when (i?.action) {
                     TapGemApp.ACTION_VOICE -> when (i.getStringExtra("cmd")?.lowercase()) {
+                        "ask" -> if (com.tapgem.app.BuildConfig.DEBUG) {
+                            val t = i.getStringExtra("text").orEmpty()
+                            if (t.isNotBlank() && !com.tapgem.app.core.bridge.AskBridge.ask(t))
+                                showNotice("No assistant session to ask.")
+                        }
                         "start", "on" -> activateAssistant()
                         "stop", "off" -> exitAssistant()
                         "toggle", null -> toggleAssistant()

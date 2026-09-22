@@ -116,7 +116,16 @@ class GeminiLiveClient(
                 "a station or city by name → action=search. Spotify: these glasses have no Widevine DRM, so its " +
                 "web player streams only 30-second previews and only while signed out; signed in it shows " +
                 "'Playback disabled' — say so, offer to sign out (web action=url https://www.spotify.com/logout/) " +
-                "or to play the song on YouTube instead. YouTube Music (music.youtube.com): OPENING THE SITE " +
+                "or to play the song on YouTube instead. " +
+                "PLAYING SOMETHING: \"play <song / artist / video / trailer / anything>\" → media action=play_video " +
+                "query=<what they said>. ONE call: it searches YouTube, opens the video's own page and it plays. " +
+                "That is the answer for music videos too — a song is a video on YouTube unless they asked for " +
+                "something else. Do NOT open youtube.com yourself, do NOT search the page, do NOT use YouTube " +
+                "Music for a plain \"play X\", and do not follow it with web action=play; it is already playing. " +
+                "Use the music tool ONLY for audio files on the glasses (music action=list shows them), and " +
+                "music.youtube.com ONLY when they say \"YouTube Music\". A QUESTION IS NOT A REQUEST TO PLAY: " +
+                "\"who sang X\", \"what year was X\", \"tell me about X\" → answer in one or two spoken sentences " +
+                "and open nothing. YouTube Music (music.youtube.com): OPENING THE SITE " +
                 "PLAYS THE ACCOUNT'S OWN RECOMMENDATIONS, NOT WHAT WAS ASKED FOR — landing on its home page " +
                 "and hearing music is not success. Go straight to " +
                 "https://music.youtube.com/search?q=<artist+title>, click the matching album or song, then " +
@@ -612,7 +621,9 @@ class GeminiLiveClient(
                 "channel" to "Channel name (with or without #) or a DM person's name.", "server" to "Server (guild) name to disambiguate.",
                 "text" to "say: the message, exactly as dictated.", "count" to "read: how many lines.", "theme" to "Theme name.") + geometryProps))
         .put(decl("music",
-            "The local music player (a classic-skinned window; audio plays natively, not in a web page). " +
+            "The local music player, for audio FILES ON THE GLASSES only (a classic-skinned window; audio plays " +
+                "natively, not in a web page). Anything not on the glasses — a song, a video, a radio stream by " +
+                "name — is media action=play_video instead; check with list/search before assuming a file exists. " +
                 "list/search: what audio is on the glasses — each line carries an [id N] to play. play: by id, " +
                 "or a query, or index=N to pick the Nth of what you just listed. queue adds to the end. " +
                 "pause/resume/next/previous/stop/seek/shuffle/repeat/volume. status: what is playing now. " +
@@ -647,12 +658,16 @@ class GeminiLiveClient(
                 "adds one or says plainly that no model source is configured (that needs the user's own setup, not " +
                 "something to keep retrying). A model named after something copyrighted (a film ship, a game " +
                 "character) is a fan upload wearing a licence that does not cover the design itself; say so once " +
-                "if it comes up, don't just present it as free to use. BOOKS: open also fetches a book from " +
+                "if it comes up, don't just present it as free to use. PLAY_VIDEO: play anything on YouTube — " +
+                "\"play Do You Wanna Break Up by the Eurythmics\", \"play the Dune trailer\", \"play lofi radio\" — " +
+                "in one call: it finds the video, opens its page and plays it, and tells you what started. " +
+                "Music videos included; this is the default for \"play X\", not YouTube Music, and not the local " +
+                "music player unless the file is on the glasses. BOOKS: open also fetches a book from " +
                 "Project Gutenberg when nothing local matches, so \"open Frankenstein\", \"get me Moby Dick\", " +
                 "\"find the book Dracula\" all work whether or not it is already on the glasses — it downloads " +
                 "and opens it. Use fetch_book to insist on the archive. These are public-domain texts. After " +
                 "opening a book, \"read it to me\" (web action=read_aloud) reads it out loud with the words lit.",
-            mapOf("action" to "find|open|fetch_book", "query" to "Words from the file name, or a book title/author.",
+            mapOf("action" to "find|open|play_video|fetch_book", "query" to "Words from the file name, a book title/author, or what to play on YouTube.",
                 "type" to "image|video|audio|pdf|epub|model3d|text|any.",
                 "path" to "open: exact path if already known.",
                 "anchor" to geometryProps.getValue("anchor"), "size" to geometryProps.getValue("size"))))

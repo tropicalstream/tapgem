@@ -1742,6 +1742,10 @@ class MediaTool(private val context: Context) : AiTool {
                 if (query.isNullOrBlank()) return@withContext Result.success("What model?")
                 fetchModel(context, query, args)
             }
+            "play_video", "youtube", "play_youtube", "watch", "video" -> {
+                if (query.isNullOrBlank()) return@withContext Result.success("What should I play?")
+                playOnYouTube(context, query, args)
+            }
             "fetch_book", "find_book", "download_book", "get_book", "read_book" -> {
                 if (query.isNullOrBlank()) return@withContext Result.success("Which book?")
                 fetchBook(context, query, args)
@@ -1755,6 +1759,61 @@ class MediaTool(private val context: Context) : AiTool {
      * has to obtain themselves (see ModelStore) — with no key this says so plainly instead of a
      * bare "not found", since the two cases mean different things to fix.
      */
+    /**
+     * Play something on YouTube: find it, open its watch page, confirm it is running.
+     *
+     * Done here rather than by the assistant driving the site, because that took three steps
+     * (search, click the right result, press play) and any one of them could land somewhere else
+     * — most often on YouTube Music's home page, which plays the account's recommendations and
+     * looks like success. The search is read here, the first video's own watch URL is opened, and
+     * a fresh watch page starts by itself.
+     */
+    private suspend fun playOnYouTube(context: Context, query: String, args: Args): Result<String> {
+        val hit = youtubeTop(query)
+            ?: return Result.success("I couldn't find \"$query\" on YouTube.")
+        val (id, title) = hit
+        // Reuse a YouTube window if one is open; anything else keeps its page.
+        val existing = DesktopBridge.current().widgets.firstOrNull {
+            it.type == WidgetType.WEB && it.source.contains("youtube.com") && !it.source.contains("music.youtube.com")
+        }
+        val w = existing ?: run {
+            WidgetOps.add(context, Args(mapOf("type" to "web", "url" to "https://m.youtube.com/watch?v=$id",
+                "title" to "YouTube") + args.raw.filterKeys { it in setOf("w", "h", "x", "y", "anchor", "size", "position") }),
+                forcedType = WidgetType.WEB)
+            DesktopBridge.current().widgets.firstOrNull { it.type == WidgetType.WEB && it.source.contains("watch?v=$id") }
+        } ?: return Result.success("Found \"$title\" but couldn't open a window for it.")
+        if (existing != null) WebCommandBus.execute(w.id, WebCommandBus.Command("url",
+            mapOf("url" to "https://m.youtube.com/watch?v=$id")), timeoutMs = 20_000L)
+        DesktopBridge.setActive(w.id)
+        // A fresh watch page plays by itself; ask anyway, which verifies and recovers if it did not.
+        val played = WebCommandBus.execute(w.id, WebCommandBus.Command("play", emptyMap()), timeoutMs = 30_000L)
+        val ok = played.contains("Sound: playing", true) || played.contains("Already playing", true)
+        return Result.success(if (ok) "Playing \"$title\" on YouTube."
+            else "Opened \"$title\" on YouTube but it isn't playing yet — $played")
+    }
+
+    /** The first video a YouTube search returns: its id and title. */
+    private fun youtubeTop(query: String): Pair<String, String>? = runCatching {
+        // sp=EgIQAQ%3D%3D restricts the search to videos, so a channel or a playlist cannot come first.
+        val url = "https://www.youtube.com/results?search_query=" +
+            URLEncoder.encode(query.trim(), "UTF-8") + "&sp=EgIQAQ%3D%3D"
+        val req = okhttp3.Request.Builder().url(url)
+            // A desktop agent on purpose: asked as a phone, YouTube redirects to m.youtube.com,
+            // whose results page carries no video ids in its HTML at all. The window that plays it
+            // still gets the mobile site, which is the one that fits these glasses.
+            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+            .header("Accept-Language", "en-US,en;q=0.9").build()
+        val html = com.tapgem.app.core.media.Net.http.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) return null else r.body?.string().orEmpty()
+        }
+        val id = Regex("\"videoId\":\"([A-Za-z0-9_-]{11})\"").find(html)?.groupValues?.get(1) ?: return null
+        val after = html.substring(html.indexOf(id).coerceAtLeast(0))
+        val title = Regex("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]{1,120})\"").find(after)?.groupValues?.get(1)
+            ?: Regex("\"title\":\\{\"simpleText\":\"([^\"]{1,120})\"").find(after)?.groupValues?.get(1)
+        id to (title?.replace("\\u0026", "&")?.replace("\\\"", "\"") ?: query)
+    }.onFailure { Log.w("MediaTool", "youtube search failed: ${it.message}") }.getOrNull()
+
     /** Words that mean the thing being asked for is a book, when no type was given. */
     private fun looksLikeABook(args: Args): Boolean {
         val said = args.raw.values.joinToString(" ").lowercase(Locale.US)

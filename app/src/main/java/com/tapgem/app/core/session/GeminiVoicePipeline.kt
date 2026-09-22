@@ -184,6 +184,7 @@ class GeminiVoicePipeline(context: Context) {
             val session = liveSession; liveSession = null
             liveSessionReady = false; localBargeAtMs = 0L; interruptedAtMs = 0L
             com.tapgem.app.core.bridge.NavCueBridge.speaker = null
+            com.tapgem.app.core.bridge.AskBridge.asker = null
             runCatching { session?.close() }
             connectJob?.cancel(); connectJob = null
             dropLateOutputUntilMs = 0L
@@ -257,6 +258,8 @@ class GeminiVoicePipeline(context: Context) {
             if (!isSessionEpochCurrent(epoch)) return
             liveSessionReady = true
             com.tapgem.app.core.bridge.NavCueBridge.speaker = { text -> speakNavCue(text) }
+            // Debug: a typed turn stands in for a spoken one (see AskBridge).
+            com.tapgem.app.core.bridge.AskBridge.asker = { text -> liveSession?.sendClientText(text) == true }
             noteConversationActivity()
             HudStateBridge.update { it.copy(connection = ConnectionStatus.CONNECTED, notification = null) }
             startAudioStreaming(epoch)
