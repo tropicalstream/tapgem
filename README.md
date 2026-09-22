@@ -1,5 +1,23 @@
 # TapGem
 
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://youtu.be/mlOHp4i1ey8"><img src="https://img.youtube.com/vi/mlOHp4i1ey8/maxresdefault.jpg" alt="TapGem promo — a voice-driven desktop on RayNeo X3 Pro glasses" width="100%"></a><br>
+      <b><a href="https://youtu.be/mlOHp4i1ey8">TapGem promo</a></b> · 3:22<br>
+      <sub>The desktop, the assistant, windows by voice, navigation, generated apps</sub>
+    </td>
+    <td width="50%" align="center">
+      <a href="https://youtu.be/Wbjki8uyqlk"><img src="https://img.youtube.com/vi/Wbjki8uyqlk/maxresdefault.jpg" alt="TapGem interpreter and tutor demo" width="100%"></a><br>
+      <b><a href="https://youtu.be/Wbjki8uyqlk">Interpreter &amp; tutor</a></b><br>
+      <sub>Live translation and language learning, in the glasses' own voice</sub>
+    </td>
+  </tr>
+</table>
+
+Every frame in both is a screen recording of the glasses running TapGem on a
+free-tier Gemini key; the assistant's voice is the device's own.
+
 > ## ⚠️ Experimental — personal sideloaded build
 > Unofficial, not a RayNeo product. Talks straight to Google's Gemini API with
 > **your own key** (your usage, your bill). Widgets can fail to refresh, the
