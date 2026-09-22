@@ -576,11 +576,23 @@ class MainActivity : AppCompatActivity() {
     private fun openDrawer(d: LibraryBridge.Drawer) {
         closeDrawers(); settingsPanel.visibility = View.GONE
         refreshDrawer(d)
+        if (d == LibraryBridge.Drawer.APPS) snapshotOpenApps { if (appsPanel.isVisible) refreshDrawer(d) }
         buttonFor(d).background = GradientDrawable().apply { cornerRadius = 6f; setColor((DesktopBridge.current().theme.accent and 0x00FFFFFF) or 0x33000000) }
     }
 
     private fun closeDrawers() {
         for (d in LibraryBridge.Drawer.values()) { panelFor(d).visibility = View.GONE; buttonFor(d).background = null }
+    }
+
+    /** Every app window on this desktop gets its picture taken for the drawer; [then] runs once all are in. */
+    private fun snapshotOpenApps(then: () -> Unit) {
+        val open = DesktopBridge.current().widgets.filter { it.type == WidgetType.APP }
+        if (open.isEmpty()) return
+        var left = open.size
+        for (w in open) host.captureWidget(w.id, 232, 148) { bmp ->
+            if (bmp != null) Library.saveAppThumb(Library.appBase(java.io.File(w.source)), bmp)
+            if (--left == 0) uiHandler.post(then)
+        }
     }
 
     /** Rebuild one drawer's tiles from the live stores. */

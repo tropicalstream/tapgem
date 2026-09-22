@@ -59,7 +59,7 @@ object Library {
                 if (f.name in HELPER_PAGES || appBase(f) in HELPER_BASES) return@forEach
                 val base = appBase(f)
                 if (!seen.add(base)) return@forEach
-                out += AppEntry("file:" + f.absolutePath, prettify(base), null, null, f)
+                out += AppEntry("file:" + f.absolutePath, prettify(base), thumbOf(appThumbFile(base), 232, 148), null, f)
             }
         return out
     }
@@ -163,6 +163,16 @@ object Library {
     }
 
     private fun thumbOf(f: File?, w: Int, h: Int): Bitmap? = f?.takeIf { it.exists() }?.let { decode(it, w, h) }
+
+    /**
+     * An app's picture for the drawer, taken from its window whenever the drawer opens while that
+     * window is up. A bookmarked app carries a picture with the bookmark; the live clients and any
+     * app that was never bookmarked had only a glyph, which told you nothing about them.
+     */
+    fun appThumbFile(base: String): File = File(File(DesktopStore.appsDir, "thumbs").apply { mkdirs() }, "$base.png")
+    fun saveAppThumb(base: String, bmp: Bitmap) {
+        runCatching { appThumbFile(base).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) } }
+    }
 
     fun thumbFor(wp: Wallpaper, w: Int = 232, h: Int = 148): Bitmap? = wp.imagePath?.let { decode(File(it), w, h) } ?: BookmarkTool.wallpaperThumb(wp, w, h)
 
