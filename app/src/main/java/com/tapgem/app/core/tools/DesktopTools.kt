@@ -1785,9 +1785,17 @@ class MediaTool(private val context: Context) : AiTool {
         if (existing != null) WebCommandBus.execute(w.id, WebCommandBus.Command("url",
             mapOf("url" to "https://m.youtube.com/watch?v=$id")), timeoutMs = 20_000L)
         DesktopBridge.setActive(w.id)
-        // A fresh watch page plays by itself; ask anyway, which verifies and recovers if it did not.
-        val played = WebCommandBus.execute(w.id, WebCommandBus.Command("play", emptyMap()), timeoutMs = 30_000L)
-        val ok = played.contains("Sound: playing", true) || played.contains("Already playing", true)
+        // A fresh watch page plays by itself; ask anyway, which verifies, unmutes and recovers if
+        // it did not. The player builds its <video> after the page load event, so the first ask can
+        // arrive before there is anything to play — wait for it rather than reporting nothing found.
+        var played = ""
+        var ok = false
+        for (attempt in 0 until 5) {
+            played = WebCommandBus.execute(w.id, WebCommandBus.Command("play", emptyMap()), timeoutMs = 30_000L)
+            ok = played.contains("Sound: playing", true) || played.contains("Already playing", true)
+            if (ok || !played.contains("couldn't find anything to play", true)) break
+            kotlinx.coroutines.delay(2_500L)
+        }
         return Result.success(if (ok) "Playing \"$title\" on YouTube."
             else "Opened \"$title\" on YouTube but it isn't playing yet — $played")
     }

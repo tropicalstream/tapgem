@@ -1643,7 +1643,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
                     }
                     completeWithTap(wv, o, digest = false, done = { msg ->
                         if (!wantPlay) { main.postDelayed({ done("$msg ${soundLine()}") }, 600L); return@completeWithTap }
-                        if (o?.optBoolean("already") == true) { done("$msg Sound: playing."); return@completeWithTap }
+                        if (o?.optBoolean("already") == true) { unmuteThenDone(wv, msg, done); return@completeWithTap }
                         // Verify the page really started: page media state or sound on the glasses,
                         // polled for a few seconds (streams buffer), with one nudge via the media API.
                         // "Playing" means the clock is moving. YouTube's player fires playing and
@@ -1657,7 +1657,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
                                 val advancing = st?.optBoolean("playing") == true && lastT >= 0 && t > lastT + 0.3
                                 val wasT = lastT; lastT = t
                                 when {
-                                    advancing || (!has && soundActive()) -> done("$msg Sound: playing.")
+                                    advancing || (!has && soundActive()) -> unmuteThenDone(wv, msg, done)
                                     left == 0 -> {
                                         // YouTube's mobile player will not resume from anything we
                                         // can send it once it has paused. What it does do is autoplay
@@ -1775,6 +1775,40 @@ class WidgetView(context: Context) : FrameLayout(context) {
     private fun soundLine(): String = if (soundActive()) "Sound: playing." else "Sound: none."
 
     /** JS results of the form {tap:[x,y], msg, innerWidth} get a real native tap at that CSS point. */
+    /**
+     * Sound on, then report. A page may only start by itself if it starts muted — that is the
+     * bargain Chromium offers and YouTube's mobile site takes it, which is why a video we opened
+     * played in silence with a "Tap to unmute" pill over it. Unmuting from script without a
+     * gesture is refused (and pauses the video), so the page's own unmute control is tapped for
+     * real, and the unmute is repeated inside the few seconds that gesture is worth.
+     */
+    private fun unmuteThenDone(wv: WebView, msg: String, done: (String) -> Unit) {
+        jsObj(wv, "__tg.muteState()") { ms ->
+            if (ms == null || !ms.optBoolean("muted")) { done("$msg Sound: playing."); return@jsObj }
+            val report = {
+                main.postDelayed({
+                    jsObj(wv, "__tg.muteState()") { after ->
+                        val stillMuted = after?.optBoolean("muted") == true
+                        jsObj(wv, "__tg.isPlaying()") { st ->
+                            if (st?.optBoolean("playing") != true) jsObj(wv, "({ok:__tg.forcePlay()})") {}
+                            done("$msg Sound: playing" + if (stillMuted) ", but muted — its unmute control didn't take." else ".")
+                        }
+                    }
+                }, 600L)
+            }
+            val pt = ms.optJSONArray("pt")
+            val innerW = ms.optDouble("innerWidth", 0.0)
+            if (pt != null && pt.length() >= 2 && wv.width > 0) {
+                val scale = if (innerW > 1.0) wv.width / innerW else 1.0
+                val x = (pt.optDouble(0) * scale).toFloat().coerceIn(1f, (wv.width - 2).toFloat())
+                val y = (pt.optDouble(1) * scale).toFloat().coerceIn(1f, (wv.height - 2).toFloat())
+                SyntheticInput.tap(fullscreenView ?: wv, x, y) {
+                    main.postDelayed({ jsObj(wv, "({ok:__tg.unmute()})") { report() } }, 300L)
+                }
+            } else jsObj(wv, "({ok:__tg.unmute()})") { report() }
+        }
+    }
+
     private fun completeWithTap(wv: WebView, o: JSONObject?, done: (String) -> Unit, digest: Boolean = true, prefix: String = "", sig0: String? = null) {
         if (o == null) { done("The page didn't respond."); return }
         val msg = prefix + o.optString("msg").ifBlank { "Done." }
@@ -1989,6 +2023,21 @@ class WidgetView(context: Context) : FrameLayout(context) {
      if(!el.paused){ el.muted=false; return {msg:'Playing '+title+'.'}; }
      if(el.tagName==='VIDEO'&&vis(el)){ var vp=T.center(el); return {tap:vp,msg:'Pressed play on '+title+'.'}; } }
    var re=play?/(^|\s)(play|resume|listen now)(\s|$|\b)/i:/(^|\s)(pause|stop)(\s|$|\b)/i; var pool=all().filter(laidOut); var cand=pool.filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea'||k==='select') return false; return re.test(txt(el)); }); var visc=cand.filter(vis); if(visc.length) cand=visc; if(!cand.length&&play) cand=pool.filter(vis).filter(function(el){ var k=el.tagName.toLowerCase(); if(k==='input'||k==='textarea') return false; return /(^|[\s_-])play([\s_-]|$)/i.test(attr(el,'aria-label')+' '+attr(el,'title')+' '+(typeof el.className==='string'?el.className:'')); }); cand.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var btn=cand[0]||null; if(!btn) return {none:true,msg:play?'I couldn\'t find anything to play here — try inspect or click a specific item.':'I couldn\'t find a pause control.'}; var pt=T.center(btn); return {tap:pt,msg:(play?'Pressed play':'Pressed pause')+' on "'+(txt(btn)||document.title)+'".'}; };
+ T.muteState=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0]; if(!el) return {has:false};
+   var yp=document.getElementById('movie_player'); var muted=!!el.muted||el.volume===0||!!(yp&&yp.isMuted&&yp.isMuted());
+   /* YouTube's own "Tap to unmute" pill, or any volume control it is showing. Tapping the page's
+      control is the gesture the autoplay policy is asking for, and the site then does the rest. */
+   var btn=document.querySelector('.ytp-unmute,.ytp-mute-button,button[aria-label*="nmute" i],[role=button][aria-label*="nmute" i]');
+   if(!btn){ var c=[]; document.querySelectorAll('button,[role=button]').forEach(function(b){ var l=(b.getAttribute('aria-label')||'')+' '+(typeof b.className==='string'?b.className:''); if(/unmute|mute-button|volume/i.test(l)&&vis(b)) c.push(b); }); btn=c[0]||null; }
+   var pt=null; if(btn&&vis(btn)) pt=T.center(btn);
+   /* Nothing on screen to press: a corner of the player itself. On the mobile site that reveals
+      the controls rather than toggling playback, and it still counts as a gesture. */
+   if(!pt&&el.tagName==='VIDEO'&&vis(el)){ var r=el.getBoundingClientRect(); if(r.width>40&&r.height>40) pt=[Math.round(r.left+10),Math.round(r.top+10)]; }
+   return {has:true,muted:muted,pt:pt,innerWidth:window.innerWidth}; };
+ T.unmute=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); m.sort(function(a,b){ var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect(); return rb.width*rb.height-ra.width*ra.height; }); var el=m[0];
+   try{ var yp=document.getElementById('movie_player'); if(yp&&yp.unMute){ yp.unMute(); if(yp.setVolume&&yp.getVolume&&yp.getVolume()<5) yp.setVolume(100); } }catch(e){}
+   try{ if(el){ el.muted=false; if(el.volume<0.05) el.volume=1; } }catch(e){}
+   return el?!el.muted:false; };
  T.isPlaying=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } if(!m.length) return {has:false}; var playing=m.some(function(e){ return !e.paused&&!e.ended&&e.readyState>=2; }); var t=0; m.forEach(function(e){ if(e.currentTime>t) t=e.currentTime; }); return {has:true,playing:playing,ready:playing,t:t}; };
  T.forcePlay=function(){ var m=Array.prototype.slice.call(document.querySelectorAll('video,audio')); if(!m.length){ var out=[]; walkAll(document,out,0); m=out.filter(function(e){ return e.tagName==='VIDEO'||e.tagName==='AUDIO'; }); } var ok=false;
    /* YouTube: ask its player, which is the one thing its own state machine will not overrule. */
