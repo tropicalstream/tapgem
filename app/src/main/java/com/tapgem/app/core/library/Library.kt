@@ -36,18 +36,27 @@ object Library {
     class AppEntry(val key: String, val title: String, val thumb: Bitmap?, val bookmark: Bookmarks.Bookmark?, val file: File?)
 
     /** Bookmarked apps first (they carry state), then app files on desktops that have no bookmark; one per app name. */
+    private val HELPER_PAGES = setOf(
+        com.tapgem.app.core.tools.LiveApps.MUSIC_SKINS, com.tapgem.app.core.tools.LiveApps.READER)
+    private val HELPER_BASES = HELPER_PAGES.map { File(it).nameWithoutExtension }.toSet()
+
     fun apps(): List<AppEntry> {
         val out = ArrayList<AppEntry>()
         val seen = HashSet<String>()
         for (b in Bookmarks.list()) {
             if (b.isWallpaper || b.type != WidgetType.APP) continue
             val base = appBase(File(b.widget!!.source))
+            if (base in HELPER_BASES) continue          // a bookmarked copy of a helper page is still not an app
             if (!seen.add(base)) continue
             out += AppEntry("bm:" + b.id, b.title, thumbOf(b.thumb, 232, 148), b, null)
         }
         (DesktopStore.appsDir.listFiles { f -> f.extension == "html" } ?: emptyArray())
             .sortedByDescending { it.lastModified() }
             .forEach { f ->
+                // Pages that only exist inside another window are not apps: the music player's
+                // skin chooser, the read-along page. Listed, they showed up as "Music Skins" and
+                // "Read-along" tiles that opened to nothing useful.
+                if (f.name in HELPER_PAGES || appBase(f) in HELPER_BASES) return@forEach
                 val base = appBase(f)
                 if (!seen.add(base)) return@forEach
                 out += AppEntry("file:" + f.absolutePath, prettify(base), null, null, f)

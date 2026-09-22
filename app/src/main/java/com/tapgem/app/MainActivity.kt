@@ -592,9 +592,10 @@ class MainActivity : AppCompatActivity() {
                 val apps = Library.apps().map { LibraryPanel.Tile(it.key, it.title, "◈", it.thumb) }
                 val kinds = Library.KINDS.map { LibraryPanel.Tile("kind:" + it.key, it.label, it.glyph) }
                 val sites = Library.SITES.map { LibraryPanel.Tile("site:" + it.key, it.label, "◎") }
-                // Sized to fit under the strip: two rows of apps, one of widgets, one of sites.
+                // The drawer scrolls, so every app is shown; a "+4 more — say its name" line
+                // hid exactly the ones people went looking for. Widgets and sites stay one row.
                 panel.show("Apps & widgets", listOf(
-                    LibraryPanel.Section("Apps", apps, tileW = 100, tileH = 84, cols = 5, maxRows = 2),
+                    LibraryPanel.Section("Apps", apps, tileW = 100, tileH = 84, cols = 5, maxRows = 20),
                     LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 52, cols = 6, maxRows = 1),
                     LibraryPanel.Section("Sites", sites, tileW = 62, tileH = 44, cols = 8, maxRows = 1)
                 ), accent, if (apps.isEmpty()) "No apps yet — say “make me a …” and it appears here." else "Apps open where you left them. Tap anything to put it on this desktop.")
