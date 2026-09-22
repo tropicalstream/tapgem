@@ -66,7 +66,8 @@ object Library {
 
     /** `smart_aquarium__v2_1789…` / `bm_5cf76cb6_checkers__v1_…` → "smart_aquarium" / "checkers". */
     fun appBase(f: File): String = f.nameWithoutExtension.replace(Regex("^(bm_[0-9a-f]{8}_|[0-9a-f]{8}-)+"), "").substringBefore("__v").replace(Regex("_\\d{10,}$"), "")
-    private fun prettify(base: String) = base.split('_').filter { it.isNotBlank() }.joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+    private fun prettify(base: String) = base.removeSuffix("_client").split('_').filter { it.isNotBlank() }
+        .joinToString(" ") { w -> if (w.equals("irc", true)) "IRC" else w.replaceFirstChar { it.uppercase() } }
 
     /** Built-in kinds a tap can create on the spot, with what the tap adds. */
     class Kind(val key: String, val label: String, val glyph: String, val args: Map<String, String>)

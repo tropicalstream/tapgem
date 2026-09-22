@@ -575,8 +575,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun openDrawer(d: LibraryBridge.Drawer) {
         closeDrawers(); settingsPanel.visibility = View.GONE
-        refreshDrawer(d)
-        if (d == LibraryBridge.Drawer.APPS) snapshotOpenApps { if (appsPanel.isVisible) refreshDrawer(d) }
+        // Photograph the open app windows BEFORE the drawer is drawn over them. Done the other
+        // way round, every picture was the drawer itself — seven identical tiles.
+        // …and after the frame in which any previous drawer disappears. PixelCopy returns the
+        // last composited frame, and with the bookmarks drawer just hidden that frame still had
+        // it; two animation frames is what the display capture waits for the same reason.
+        if (d == LibraryBridge.Drawer.APPS) host.postOnAnimation { host.postOnAnimation { snapshotOpenApps { refreshDrawer(d) } } }
+        else refreshDrawer(d)
         buttonFor(d).background = GradientDrawable().apply { cornerRadius = 6f; setColor((DesktopBridge.current().theme.accent and 0x00FFFFFF) or 0x33000000) }
     }
 
@@ -587,7 +592,7 @@ class MainActivity : AppCompatActivity() {
     /** Every app window on this desktop gets its picture taken for the drawer; [then] runs once all are in. */
     private fun snapshotOpenApps(then: () -> Unit) {
         val open = DesktopBridge.current().widgets.filter { it.type == WidgetType.APP }
-        if (open.isEmpty()) return
+        if (open.isEmpty()) return then()
         var left = open.size
         for (w in open) host.captureWidget(w.id, 232, 148) { bmp ->
             if (bmp != null) Library.saveAppThumb(Library.appBase(java.io.File(w.source)), bmp)
@@ -607,10 +612,12 @@ class MainActivity : AppCompatActivity() {
                 // The drawer scrolls, so every app is shown; a "+4 more — say its name" line
                 // hid exactly the ones people went looking for. Widgets and sites stay one row.
                 panel.show("Apps & widgets", listOf(
-                    LibraryPanel.Section("Apps", apps, tileW = 100, tileH = 84, cols = 5, maxRows = 20),
-                    LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 52, cols = 6, maxRows = 1),
-                    LibraryPanel.Section("Sites", sites, tileW = 62, tileH = 44, cols = 8, maxRows = 1)
-                ), accent, if (apps.isEmpty()) "No apps yet — say “make me a …” and it appears here." else "Apps open where you left them. Tap anything to put it on this desktop.")
+                    // Six across at 84px: a dozen apps in two rows, and the widgets and sites still
+                    // on screen beneath them. Past that it scrolls.
+                    LibraryPanel.Section("Apps", apps, tileW = 84, tileH = 78, cols = 6, maxRows = 20, labelLines = 2),
+                    LibraryPanel.Section("Widgets", kinds, tileW = 84, tileH = 46, cols = 6, maxRows = 1),
+                    LibraryPanel.Section("Sites", sites, tileW = 62, tileH = 42, cols = 8, maxRows = 1)
+                ), accent, if (apps.isEmpty()) "No apps yet — say “make me a …” and it appears here." else null)
             }
             LibraryBridge.Drawer.BOOKMARKS -> {
                 val active = activeWidget()

@@ -37,7 +37,9 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         val dashed: Boolean = false,
         val badge: String? = null
     )
-    class Section(val title: String, val tiles: List<Tile>, val tileW: Int = TILE_W, val tileH: Int = TILE_H, val cols: Int = 4, val maxRows: Int = 2)
+    class Section(val title: String, val tiles: List<Tile>, val tileW: Int = TILE_W, val tileH: Int = TILE_H, val cols: Int = 4, val maxRows: Int = 2,
+                  /** Lines a label may take. Two lets "Chiptune Player" be read instead of "Chiptune Pla…". */
+                  val labelLines: Int = 1)
 
     var onTap: ((Tile) -> Unit)? = null
     var onDelete: ((Tile) -> Unit)? = null
@@ -112,7 +114,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
             })
             val grid = GridLayout(context).apply { columnCount = s.cols; useDefaultMargins = false }
             val shown = s.tiles.take(s.cols * s.maxRows)
-            shown.forEach { t -> grid.addView(tile(t, s.tileW, s.tileH), GridLayout.LayoutParams().apply { width = s.tileW; height = s.tileH; setMargins(4, 4, 4, 4) }) }
+            shown.forEach { t -> grid.addView(tile(t, s.tileW, s.tileH, s.labelLines), GridLayout.LayoutParams().apply { width = s.tileW; height = s.tileH; setMargins(4, 4, 4, 4) }) }
             body.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             if (s.tiles.size > shown.size) body.addView(TextView(context).apply {
                 text = "+${s.tiles.size - shown.size} more — say its name"; setTextColor(0xFF8FA6B8.toInt()); textSize = 10f; setPadding(6, 0, 2, 2)
@@ -121,8 +123,9 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
         visibility = VISIBLE
     }
 
-    private fun tile(t: Tile, w: Int, h: Int): View {
+    private fun tile(t: Tile, w: Int, h: Int, labelLines: Int = 1): View {
         val small = h < 70
+        val labelH = if (labelLines > 1) LABEL_H + 12 * (labelLines - 1) else LABEL_H
         val f = FrameLayout(context).apply {
             isClickable = true; isFocusable = true; contentDescription = t.label
             background = GradientDrawable().apply {
@@ -133,7 +136,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
             }
             setOnClickListener { onTap?.invoke(t) }
         }
-        val faceH = if (small) h else h - LABEL_H
+        val faceH = if (small) h else h - labelH
         // Face: thumbnail, swatch, or glyph.
         if (t.thumb != null) f.addView(ImageView(context).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(t.thumb); clipToOutline = true
@@ -157,7 +160,8 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(6, 0, 4, 0)
             if (small) background = GradientDrawable().apply { cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, 8f, 8f, 8f, 8f); setColor(0x99000000.toInt()) }
             addView(TextView(context).apply {
-                text = t.label; textSize = 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                text = t.label; textSize = 10.5f; setTextColor(0xFFE0F4FF.toInt()); maxLines = labelLines; ellipsize = TextUtils.TruncateAt.END
+                if (labelLines > 1) { setLineSpacing(0f, 0.95f); gravity = Gravity.CENTER_VERTICAL }
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             // The badge earns its place over the title: it says why a tile cannot be removed.
@@ -165,7 +169,7 @@ class LibraryPanel(context: Context) : FrameLayout(context) {
                 text = b; textSize = 9f; setTextColor(accent); setPadding(4, 0, 0, 0)
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }) }
-        }, LayoutParams(LayoutParams.MATCH_PARENT, if (small) 18 else LABEL_H, Gravity.BOTTOM))
+        }, LayoutParams(LayoutParams.MATCH_PARENT, if (small) 18 else labelH, Gravity.BOTTOM))
         if (t.selected && small) f.addView(TextView(context).apply { text = "✓"; textSize = 10f; setTextColor(accent); setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt()) }, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { topMargin = 2; marginEnd = 5 })
         if (t.deletable) f.addView(TextView(context).apply {
             text = "✕"; textSize = 9.5f; gravity = Gravity.CENTER; setTextColor(0xFFE0F4FF.toInt())
