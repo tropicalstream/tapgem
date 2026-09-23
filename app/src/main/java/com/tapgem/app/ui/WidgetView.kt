@@ -575,6 +575,7 @@ class WidgetView(context: Context) : FrameLayout(context) {
 
     /** The page left fullscreen on its own: take its view down. */
     private fun dropFullscreenView() {
+        if (fullscreenView != null) webView?.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         fullscreenView?.let { v -> runCatching { content.removeView(v) } }
         fullscreenView = null; fullscreenCallback = null
     }
@@ -1102,8 +1103,20 @@ class WidgetView(context: Context) : FrameLayout(context) {
                 exitFullscreen()
                 fullscreenView = view; fullscreenCallback = callback
                 view.setBackgroundColor(Color.BLACK)
-                view.setLayerType(View.LAYER_TYPE_HARDWARE, null)   // drawn twice per frame like the WebView (see above)
+                // No cached layer here. The WebView's layer is re-rasterised when the PAGE changes,
+                // which is right for a page; fullscreen is almost always a playing video, whose
+                // frames do not mark the layer dirty — measured: subtitles kept updating over a
+                // picture frozen on one frame while the video decoded on. Drawn directly, and
+                // redrawn every frame while it is up, the picture moves; the cost is a video's.
                 content.addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+                // Chromium still renders fullscreen through the page's own view, so its cached layer
+                // has to go too while the video fills the window; it comes back on the way out.
+                wv.setLayerType(View.LAYER_TYPE_NONE, null)
+                val tick = object : Runnable { override fun run() {
+                    if (fullscreenView !== view || !view.isAttachedToWindow) return
+                    view.invalidate(); invalidate(); view.postOnAnimation(this)
+                } }
+                view.postOnAnimation(tick)
             }
             override fun onHideCustomView() { dropFullscreenView() }
             /** "Leave this page?" — a HUD has nobody to ask; navigation always proceeds. */
