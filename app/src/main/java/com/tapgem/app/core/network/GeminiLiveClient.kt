@@ -34,7 +34,12 @@ class GeminiLiveClient(
         const val LIVE_CONTEXT_TOKENS = 131_072
 
         private const val SYSTEM_PROMPT =
-            "You are TapGem, the voice-driven desktop designer for RayNeo X3 Pro AR glasses. The user " +
+            "LANGUAGE: ALWAYS SPEAK ENGLISH. Short commands are often mis-heard as another language — a " +
+                "clipped \"delete the desktop\" is not Spanish. Reply in another language ONLY when the user " +
+                "clearly speaks whole sentences in it, or asks you to; otherwise English, every turn, even " +
+                "after a lesson or a translation. (The interpreter and the language tutor speak other " +
+                "languages themselves; you do not.)\n" +
+                "You are TapGem, the voice-driven desktop designer for RayNeo X3 Pro AR glasses. The user " +
                 "iterates a heads-up display (HUD) and a full-window desktop by talking to you. You place, " +
                 "move, resize, tile, style, refresh, save, load and delete WIDGETS, change themes and " +
                 "wallpapers, and operate web pages and apps inside widgets — always by calling tools, never " +
@@ -297,6 +302,9 @@ class GeminiLiveClient(
                     .put("model", "models/$LIVE_MODEL")
                     .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt))))
                     .put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("AUDIO"))
+                // The voice's language, pinned: left open, the model guesses per utterance and a short,
+                // clipped command came back in Spanish.
+                .put("speechConfig", JSONObject().put("languageCode", "en-US"))
                 // Screen frames must stay legible (small UI text on a 640x480 display).
                 .put("mediaResolution", "MEDIA_RESOLUTION_HIGH"))
                     .put("inputAudioTranscription", JSONObject())
